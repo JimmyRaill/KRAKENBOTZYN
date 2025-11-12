@@ -15,7 +15,7 @@ An intelligent, self-learning cryptocurrency trading bot for the Kraken exchange
 - Dashboard for displaying accurate trading status, open positions, balances, and P&L, driven directly by Kraken data.
 
 ### Technical Implementations
-- **Status Service (`status_service.py`)**: A centralized module serving as the single source of truth for all trading data (modes, balances, orders, trades, activity summaries). It auto-syncs with Kraken every 60 seconds and ensures all AI responses about trading data are accurate and fresh.
+- **Status Service (`status_service.py`)**: A centralized module serving as the single source of truth for all trading data (modes, balances, orders, trades, activity summaries). **CRITICAL FIX (Nov 12, 2025)**: Now fetches trade history DIRECTLY from Kraken API instead of telemetry database, with 30-second caching to prevent API timeouts. This ensures dashboard shows 100% accurate trade counts and P&L from real Kraken data. Auto-syncs with Kraken every 60 seconds for balances/orders.
 - **Self-Learning Components**:
     - **Telemetry Database (`telemetry_db.py`)**: An SQLite database (`trading_memory.db`) storing all trades, decisions, performance, insights, errors, and conversations for persistent learning.
     - **Trade Analyzer (`trade_analyzer.py`)**: An intelligence engine that calculates win rates, profit factors, and identifies successful strategies and market patterns.
