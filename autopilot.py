@@ -16,6 +16,7 @@ import ccxt
 # Self-learning imports
 TELEMETRY_ENABLED = False
 log_trade = log_decision = log_performance = log_error = None
+notify_trade = check_summaries = None
 try:
     from telemetry_db import log_trade, log_decision, log_performance, log_error
     from sms_notifications import notify_trade, check_summaries
@@ -627,7 +628,8 @@ def loop_once(ex, symbols: List[str]) -> None:
                     try:
                         log_decision(sym, "buy", why, price, edge_pct, atr, pos_qty, eq_usd, executed=True)
                         log_trade(sym, "buy", "market_buy", approx_qty, price, usd_to_spend, None, why, "autopilot")
-                        notify_trade(sym, "buy", approx_qty, price, why)
+                        if notify_trade:
+                            notify_trade(sym, "buy", approx_qty, price or 0.0, why)
                     except Exception as log_err:
                         print(f"[TELEMETRY-ERR] {log_err}")
                 
@@ -690,12 +692,16 @@ def loop_once(ex, symbols: List[str]) -> None:
                             # Log critical safety event with verification result
                             if TELEMETRY_ENABLED and log_error:
                                 try:
-                                    log_error("bracket_failure_auto_flatten", 
-                                             f"Brackets failed for {sym}, position {'closed' if flatten_success else 'NOT CLOSED'}", {
-                                        "symbol": sym, "qty": approx_qty, "price": price,
-                                        "flatten_verified_success": flatten_success,
-                                        "emergency_sell_result": str(emergency_sell_result)[:200]
-                                    })
+                                    log_error(
+                                        error_type="bracket_failure_auto_flatten",
+                                        description=f"Brackets failed for {sym}, position {'closed' if flatten_success else 'NOT CLOSED'}",
+                                        symbol=sym,
+                                        context={
+                                            "qty": approx_qty, "price": price,
+                                            "flatten_verified_success": flatten_success,
+                                            "emergency_sell_result": str(emergency_sell_result)[:200]
+                                        }
+                                    )
                                 except Exception:
                                     pass
                             
@@ -711,9 +717,12 @@ def loop_once(ex, symbols: List[str]) -> None:
                             alert(f"🚨 FLATTEN EXCEPTION: {sym} - {flatten_err}")
                             if TELEMETRY_ENABLED and log_error:
                                 try:
-                                    log_error("flatten_exception", f"Exception during emergency flatten of {sym}", {
-                                        "symbol": sym, "exception": str(flatten_err)
-                                    })
+                                    log_error(
+                                        error_type="flatten_exception",
+                                        description=f"Exception during emergency flatten of {sym}",
+                                        symbol=sym,
+                                        context={"exception": str(flatten_err)}
+                                    )
                                 except Exception:
                                     pass
                         
@@ -733,11 +742,15 @@ def loop_once(ex, symbols: List[str]) -> None:
                             # Log critical double failure
                             if TELEMETRY_ENABLED and log_error:
                                 try:
-                                    log_error("critical_double_failure", 
-                                             f"Both brackets AND emergency flatten failed for {sym} - TRADING PAUSED", {
-                                        "symbol": sym, "qty": approx_qty, "price": price,
-                                        "paused_until": _PAUSED_UNTIL
-                                    })
+                                    log_error(
+                                        error_type="critical_double_failure",
+                                        description=f"Both brackets AND emergency flatten failed for {sym} - TRADING PAUSED",
+                                        symbol=sym,
+                                        context={
+                                            "qty": approx_qty, "price": price,
+                                            "paused_until": _PAUSED_UNTIL
+                                        }
+                                    )
                                 except Exception:
                                     pass
                             
@@ -767,7 +780,8 @@ def loop_once(ex, symbols: List[str]) -> None:
                     try:
                         log_decision(sym, "sell_all", why, price, edge_pct, atr, pos_qty, eq_now, executed=True)
                         log_trade(sym, "sell", "market_sell", pos_qty, price, None, None, why, "autopilot")
-                        notify_trade(sym, "sell", pos_qty, price, why)
+                        if notify_trade:
+                            notify_trade(sym, "sell", pos_qty, price or 0.0, why)
                     except Exception as log_err:
                         print(f"[TELEMETRY-ERR] {log_err}")
                 
