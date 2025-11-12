@@ -16,7 +16,24 @@ An **intelligent, self-learning** cryptocurrency trading bot for the Kraken exch
 - 🛑 Daily loss kill-switch for safety
 
 ## Recent Changes
-- **2025-11-12**: 🚀 **MAJOR UPGRADE** - Added self-learning AI capabilities!
+- **2025-11-12**: 🚀 **MASSIVE FEATURE UPDATE** - Added professional trading features!
+  - **Real-time Dashboard** with TradingView charts, live P/L, positions table
+  - **Multi-Strategy System** (Momentum, Mean Reversion, Breakout, SMA)
+  - **Market Regime Detection** (Bull/Bear/Sideways/Volatile)
+  - **Advanced Risk Management** (Trailing stops, Sharpe/Sortino/Calmar ratios)
+  - **Pattern Recognition** (Triangles, Head-Shoulders, Double Tops/Bottoms)
+  - **Notification System** (Telegram/Discord/Email alerts)
+  - **Loss Recovery System** (Auto-adjusts position sizes after losses)
+  - **Profit Reinvestment** (Compound gains automatically)
+  - **Portfolio Rebalancing** (Auto-allocate capital across symbols)
+- **2025-11-12**: 🧠 **Self-Learning AI** - Base intelligence system
+  - Created trading telemetry database (SQLite) to remember all trades and decisions
+  - Built TradeAnalyzer service for win/loss analysis and pattern recognition
+  - Added TimeContext module for date/time awareness and market patterns
+  - Upgraded LLM agent with learning insights and enhanced conversational skills
+  - Integrated telemetry logging throughout autopilot (logs every decision)
+  - Added conversation logging for context learning
+  - Deployed chat interface on port 5000 for easy interaction
   - Created trading telemetry database (SQLite) to remember all trades and decisions
   - Built TradeAnalyzer service for win/loss analysis and pattern recognition
   - Added TimeContext module for date/time awareness and market patterns

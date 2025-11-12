@@ -22,6 +22,24 @@ except ImportError:
     TELEMETRY_ENABLED = False
     print("[WARNING] Telemetry modules not found - learning features disabled")
 
+# Advanced feature imports
+try:
+    from strategies import (
+        detect_market_regime, select_best_strategy, execute_strategy,
+        get_multi_strategy_consensus, MarketRegime, StrategyType
+    )
+    from risk_manager import create_trailing_stop, PortfolioMetrics
+    from notifications import (
+        send_alert_sync, trade_executed_alert, daily_summary_alert,
+        strategy_switch_alert
+    )
+    from pattern_recognition import PatternDetector
+    from recovery_system import LossRecoverySystem, ProfitReinvestmentSystem
+    ADVANCED_FEATURES_ENABLED = True
+except ImportError as e:
+    ADVANCED_FEATURES_ENABLED = False
+    print(f"[WARNING] Advanced features not available: {e}")
+
 # -------------------------------------------------------------------
 # .env + constants
 # -------------------------------------------------------------------

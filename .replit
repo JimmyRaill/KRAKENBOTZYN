@@ -3,6 +3,7 @@ modules = ["python-3.11"]
 
 [nix]
 channel = "stable-25_05"
+packages = ["libxcrypt"]
 
 [unitTest]
 language = "python3"
@@ -29,10 +30,6 @@ exposeLocalhost = true
 [[ports]]
 localPort = 8001
 externalPort = 3000
-
-[[ports]]
-localPort = 45427
-externalPort = 3001
 
 [workflows]
 runButton = "Project"
