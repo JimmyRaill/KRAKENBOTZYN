@@ -120,7 +120,8 @@ def _ensure_min_cost(ex, symbol: str, amount: float, price: float) -> float:
     m = ex.market(symbol) or {}
     lim = m.get("limits") or {}
     min_cost = _safe_float((lim.get("cost") or {}).get("min"), 0.0) or 0.0
-    if price and min_cost and amount * price < min_cost:
+    # Guard against division by zero
+    if price and price > 0 and min_cost and amount * price < min_cost:
         amount = min_cost / price
     # also respect min amount if present
     min_amt = _safe_float((lim.get("amount") or {}).get("min"), 0.0) or 0.0

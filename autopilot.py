@@ -91,6 +91,61 @@ try:
 except ImportError as e:
     print(f"[WARNING] Notifications not available: {e}")
 
+# NEW ADVANCED FEATURES - Full bot upgrade
+CRYPTO_UNIVERSE_ENABLED = False
+PROFIT_TARGET_ENABLED = False
+MULTI_TIMEFRAME_ENABLED = False
+API_WATCHDOG_ENABLED = False
+BACKTEST_MODE_ENABLED = False
+
+CryptoUniverseScanner = get_target_system = MultiTimeframeAnalyzer = None
+get_watchdog = get_backtest = fetch_multi_timeframe_data = None
+
+try:
+    from crypto_universe import CryptoUniverseScanner, get_dynamic_universe
+    if CryptoUniverseScanner:
+        CRYPTO_UNIVERSE_ENABLED = os.getenv("ENABLE_CRYPTO_UNIVERSE", "0") == "1"
+        if CRYPTO_UNIVERSE_ENABLED:
+            print("[INIT] ✅ Crypto Universe Scanner enabled (200+ pairs)")
+except ImportError as e:
+    print(f"[WARNING] Crypto Universe not available: {e}")
+
+try:
+    from profit_target import ProfitTargetSystem, get_target_system
+    if ProfitTargetSystem:
+        PROFIT_TARGET_ENABLED = os.getenv("ENABLE_PROFIT_TARGET", "0") == "1"
+        if PROFIT_TARGET_ENABLED:
+            print("[INIT] ✅ Daily Profit Target System enabled (0.035-0.038%)")
+except ImportError as e:
+    print(f"[WARNING] Profit Target not available: {e}")
+
+try:
+    from multi_timeframe import MultiTimeframeAnalyzer, fetch_multi_timeframe_data
+    if MultiTimeframeAnalyzer:
+        MULTI_TIMEFRAME_ENABLED = os.getenv("ENABLE_MULTI_TIMEFRAME", "0") == "1"
+        if MULTI_TIMEFRAME_ENABLED:
+            print("[INIT] ✅ Multi-Timeframe Confirmation enabled (1m/15m/1h)")
+except ImportError as e:
+    print(f"[WARNING] Multi-Timeframe not available: {e}")
+
+try:
+    from api_watchdog import APIWatchdog, get_watchdog
+    if APIWatchdog:
+        API_WATCHDOG_ENABLED = os.getenv("ENABLE_API_WATCHDOG", "0") == "1"
+        if API_WATCHDOG_ENABLED:
+            print("[INIT] ✅ API Watchdog enabled (self-healing)")
+except ImportError as e:
+    print(f"[WARNING] API Watchdog not available: {e}")
+
+try:
+    from backtest_mode import BacktestMode, get_backtest
+    if BacktestMode:
+        BACKTEST_MODE_ENABLED = os.getenv("BACKTEST_MODE", "0") == "1"
+        if BACKTEST_MODE_ENABLED:
+            print("[INIT] ✅ Backtest Mode enabled (no real orders)")
+except ImportError as e:
+    print(f"[WARNING] Backtest Mode not available: {e}")
+
 # -------------------------------------------------------------------
 # .env + constants
 # -------------------------------------------------------------------
@@ -356,7 +411,17 @@ def loop_once(ex, symbols: List[str]) -> None:
     from commands import handle as run_command  # local import
     global _DAY_START_EQUITY
 
-    # equity & day start
+    # 1. API WATCHDOG - Check exchange health first
+    if API_WATCHDOG_ENABLED and get_watchdog:
+        try:
+            watchdog = get_watchdog()
+            health_check = watchdog.check_health(ex)
+            if watchdog.should_restart():
+                watchdog.restart_bot()
+        except Exception as e:
+            print(f"[WATCHDOG-ERR] {e}")
+
+    # 2. equity & day start
     try:
         bal: Dict[str, Any] = ex.fetch_balance()
         eq_now = account_equity_usd(bal)
@@ -366,7 +431,23 @@ def loop_once(ex, symbols: List[str]) -> None:
         print("[BAL-ERR]", e)
         eq_now = 0.0
 
-    # kill-switch
+    # 3. PROFIT TARGET - Check if we should trade
+    if PROFIT_TARGET_ENABLED and get_target_system:
+        try:
+            target_sys = get_target_system()
+            target_sys.update_equity(eq_now)
+            allowed, reason = target_sys.should_trade(eq_now)
+            if not allowed:
+                print(target_sys.get_status_message())
+                return  # Exit early if paused after hitting target
+            progress = target_sys.get_progress()
+            if progress.get("initialized"):
+                print(f"[TARGET] {progress['progress_pct']:.1f}% to goal "
+                      f"(${progress['profit_today']:.2f}/${progress['target_usd']:.2f})")
+        except Exception as e:
+            print(f"[TARGET-ERR] {e}")
+
+    # 4. kill-switch
     try:
         day_pnl = eq_now - (_DAY_START_EQUITY or eq_now)
         max_daily_loss = env_float("MAX_DAILY_LOSS_USD", 999999.0)
@@ -390,7 +471,35 @@ def loop_once(ex, symbols: List[str]) -> None:
             ohlcv, closes, price = ohlcv_1m(ex, sym, limit=60)
             atr = compute_atr(ohlcv, period=14)
             pos_qty, usd_cash = position_qty(ex, sym)
-            action, why = decide_action(price, closes, pos_qty)
+            
+            # MULTI-TIMEFRAME CONFIRMATION (if enabled)
+            mtf_approved = True
+            mtf_reason = ""
+            if MULTI_TIMEFRAME_ENABLED and MultiTimeframeAnalyzer and fetch_multi_timeframe_data:
+                try:
+                    mtf_data = fetch_multi_timeframe_data(ex, sym)
+                    analyzer = MultiTimeframeAnalyzer()
+                    mtf_analysis = analyzer.analyze_all_timeframes(mtf_data)
+                    
+                    # Check if multi-timeframe supports the intended action
+                    base_action, base_why = decide_action(price, closes, pos_qty)
+                    if base_action == "buy":
+                        if mtf_analysis["recommendation"] != "buy":
+                            mtf_approved = False
+                            mtf_reason = f"MTF: {mtf_analysis['consensus']} (alignment={mtf_analysis['alignment_score']:.0%})"
+                    elif base_action == "sell_all":
+                        if mtf_analysis["recommendation"] != "sell":
+                            mtf_approved = False
+                            mtf_reason = f"MTF: {mtf_analysis['consensus']} (alignment={mtf_analysis['alignment_score']:.0%})"
+                except Exception as e:
+                    print(f"[MTF-ERR] {sym}: {e}")
+                    mtf_approved = True  # Don't block on MTF errors
+            
+            # Get action with MTF override if needed
+            if not mtf_approved:
+                action, why = "hold", mtf_reason
+            else:
+                action, why = decide_action(price, closes, pos_qty)
             
             # Calculate edge for logging
             sma20 = mean(closes[-20:]) if len(closes) >= 20 else None
@@ -416,9 +525,17 @@ def loop_once(ex, symbols: List[str]) -> None:
                 approx_qty = usd_to_spend / price if price else 0.0
                 print(f"[BUY] {sym} ~${usd_to_spend:.2f} (qty≈{approx_qty:.6f}) @ mkt | {why} | ATR={atr if atr else 0:.4f}")
                 
-                # Execute trade
-                result = run_command(f"buy {usd_to_spend:.2f} usd {sym}")
-                print(result)
+                # Execute trade (or simulate if backtest mode)
+                if BACKTEST_MODE_ENABLED and get_backtest:
+                    backtest = get_backtest()
+                    safe_price = price if price else 0.0
+                    result = backtest.execute_trade(sym, "buy", safe_price, usd_to_spend, why)
+                    result_str = f"[BACKTEST] Buy executed - no real order"
+                else:
+                    result = run_command(f"buy {usd_to_spend:.2f} usd {sym}")
+                    result_str = str(result)
+                
+                print(result_str)
                 
                 # Log decision and trade to learning database
                 if TELEMETRY_ENABLED and log_decision and log_trade:
@@ -428,6 +545,14 @@ def loop_once(ex, symbols: List[str]) -> None:
                     except Exception as log_err:
                         print(f"[TELEMETRY-ERR] {log_err}")
                 
+                # Record to profit target system
+                if PROFIT_TARGET_ENABLED and get_target_system:
+                    try:
+                        target_sys = get_target_system()
+                        target_sys.record_trade(0.0)  # Buy has no immediate profit
+                    except Exception as e:
+                        print(f"[TARGET-RECORD-ERR] {e}")
+                
                 trade_log.append({"symbol": sym, "action": "buy", "usd": float(f"{usd_to_spend:.2f}")})
                 if atr:
                     place_brackets(sym, price, approx_qty, atr)
@@ -435,9 +560,20 @@ def loop_once(ex, symbols: List[str]) -> None:
             elif action == "sell_all" and pos_qty > 0:
                 print(f"[SELL] {sym} all @ mkt | {why}")
                 
-                # Execute trade
-                result = run_command(f"sell all {sym}")
-                print(result)
+                # Calculate profit before executing
+                sell_value = pos_qty * price if price else 0.0
+                
+                # Execute trade (or simulate if backtest mode)
+                if BACKTEST_MODE_ENABLED and get_backtest:
+                    backtest = get_backtest()
+                    safe_price = price if price else 0.0
+                    result = backtest.execute_trade(sym, "sell", safe_price, sell_value, why)
+                    result_str = f"[BACKTEST] Sell executed - no real order"
+                else:
+                    result = run_command(f"sell all {sym}")
+                    result_str = str(result)
+                
+                print(result_str)
                 
                 # Log decision and trade to learning database
                 if TELEMETRY_ENABLED and log_decision and log_trade:
@@ -446,6 +582,16 @@ def loop_once(ex, symbols: List[str]) -> None:
                         log_trade(sym, "sell", "market_sell", pos_qty, price, None, None, why, "autopilot")
                     except Exception as log_err:
                         print(f"[TELEMETRY-ERR] {log_err}")
+                
+                # Record to profit target system (estimate profit as sell_value - avg_cost)
+                # Note: This is approximate without tracking cost basis
+                if PROFIT_TARGET_ENABLED and get_target_system:
+                    try:
+                        target_sys = get_target_system()
+                        # We don't have exact cost basis here, so we'll track via update_equity instead
+                        target_sys.record_trade(0.0)
+                    except Exception as e:
+                        print(f"[TARGET-RECORD-ERR] {e}")
                 
                 alert(f"ℹ️ Exited {sym} (reason: {why})")
                 set_cooldown(sym)
@@ -556,7 +702,26 @@ def run_forever() -> None:
         return
 
     ex = mk_ex()
-    symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
+    
+    # Get trading symbols - either from Crypto Universe Scanner or static list
+    if CRYPTO_UNIVERSE_ENABLED and CryptoUniverseScanner:
+        try:
+            print("[UNIVERSE] Initializing Crypto Universe Scanner...")
+            scanner = CryptoUniverseScanner(
+                exchange=ex,
+                quote_currency="USD",
+                max_assets=env_int("MAX_UNIVERSE_ASSETS", 20),
+                min_volume_24h=env_float("MIN_VOLUME_24H", 10000.0)
+            )
+            symbols = scanner.get_tradable_symbols()
+            if not symbols:
+                print("[UNIVERSE] No symbols from scanner, falling back to static list")
+                symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
+        except Exception as e:
+            print(f"[UNIVERSE-ERR] {e}, using static symbols")
+            symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
+    else:
+        symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
     iv = env_int("TRADE_INTERVAL_SEC", 60)
     print(f"[AUTOPILOT] running on {symbols} every {iv}s (validate={env_str('KRAKEN_VALIDATE_ONLY','1')})", flush=True)
 

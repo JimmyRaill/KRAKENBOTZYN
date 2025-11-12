@@ -189,8 +189,13 @@ class CryptoUniverseScanner:
                 low_close = abs(lows[i] - closes[i-1])
                 true_ranges.append(max(high_low, high_close, low_close))
             
-            atr = statistics.mean(true_ranges) if true_ranges else 0
-            volatility = (atr / price) if price > 0 else 0
+            # Guard against empty true_ranges
+            if not true_ranges or len(true_ranges) == 0:
+                atr = 0.0
+            else:
+                atr = statistics.mean(true_ranges)
+            
+            volatility = (atr / price) if price > 0 else 0.0
             
             # Calculate liquidity score
             liquidity_score = self.calculate_liquidity_score(

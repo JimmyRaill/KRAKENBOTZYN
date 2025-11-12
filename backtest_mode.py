@@ -257,7 +257,7 @@ class BacktestMode:
             for i in range(1, len(self.equity_curve))
         ]
         sharpe = 0.0
-        if returns:
+        if returns and len(returns) > 0:
             import statistics
             avg_return = statistics.mean(returns)
             std_return = statistics.stdev(returns) if len(returns) > 1 else 0.0001

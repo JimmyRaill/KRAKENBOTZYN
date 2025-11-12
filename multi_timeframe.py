@@ -28,7 +28,7 @@ class TimeframeTrend:
     @staticmethod
     def calculate_ema(closes: List[float], period: int) -> Optional[float]:
         """Calculate Exponential Moving Average."""
-        if len(closes) < period:
+        if not closes or len(closes) < period:
             return None
         
         multiplier = 2 / (period + 1)
@@ -173,11 +173,14 @@ class MultiTimeframeAnalyzer:
         )
         neutral_count = len(available_timeframes) - bullish_count - bearish_count
         
-        # Calculate average strength
-        avg_strength = statistics.mean([
-            timeframe_results[tf]["strength"]
-            for tf in available_timeframes
-        ])
+        # Calculate average strength (guard against empty list)
+        if not available_timeframes:
+            avg_strength = 0.0
+        else:
+            avg_strength = statistics.mean([
+                timeframe_results[tf]["strength"]
+                for tf in available_timeframes
+            ])
         
         # Calculate alignment score (how well timeframes agree)
         max_count = max(bullish_count, bearish_count, neutral_count)
