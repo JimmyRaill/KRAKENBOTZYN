@@ -73,9 +73,388 @@ def chat():
     return CHAT
 
 @app.get("/", response_class=HTMLResponse)
+def control_panel():
+    """Main control panel - chat with Zyn and control the bot."""
+    return CONTROL_PANEL
+
+@app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
     """Professional real-time trading dashboard."""
     return DASHBOARD
+
+# Main Control Panel - Chat + Controls
+CONTROL_PANEL = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zyn - AI Trading Bot Control Panel</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            max-width: 900px;
+            width: 100%;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 36px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .header p { font-size: 16px; opacity: 0.9; }
+        
+        .status-bar {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            padding: 20px;
+            background: #f7fafc;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .status-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .status-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #718096;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+        .status-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2d3748;
+        }
+        .status-value.active { color: #10b981; }
+        .status-value.inactive { color: #ef4444; }
+        
+        .controls {
+            padding: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            background: #f7fafc;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .btn {
+            padding: 15px 30px;
+            font-size: 16px;
+            font-weight: 600;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-start {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+            flex: 1;
+        }
+        .btn-start:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(16, 185, 129, 0.4); }
+        .btn-stop {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: white;
+            flex: 1;
+        }
+        .btn-stop:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(239, 68, 68, 0.4); }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .chat-container {
+            padding: 20px;
+            background: white;
+        }
+        .chat-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .chat-messages {
+            background: #f7fafc;
+            border-radius: 12px;
+            height: 400px;
+            overflow-y: auto;
+            padding: 15px;
+            margin-bottom: 15px;
+            border: 1px solid #e2e8f0;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 12px 16px;
+            border-radius: 10px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .message.user {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            margin-left: auto;
+            text-align: right;
+        }
+        .message.bot {
+            background: white;
+            color: #2d3748;
+            border: 1px solid #e2e8f0;
+        }
+        .message.system {
+            background: #fef3c7;
+            color: #92400e;
+            text-align: center;
+            font-size: 14px;
+            margin: 10px auto;
+            max-width: 100%;
+        }
+        .chat-input-area {
+            display: flex;
+            gap: 10px;
+        }
+        .chat-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            font-size: 15px;
+            outline: none;
+        }
+        .chat-input:focus { border-color: #667eea; }
+        .btn-send {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .btn-send:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4); }
+        
+        .footer {
+            padding: 15px;
+            text-align: center;
+            background: #f7fafc;
+            color: #718096;
+            font-size: 14px;
+        }
+        .footer a {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .footer a:hover { text-decoration: underline; }
+        
+        @media (max-width: 768px) {
+            .status-bar { grid-template-columns: 1fr; }
+            .controls { flex-direction: column; }
+            .header h1 { font-size: 28px; }
+        }
+        
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><span>🤖</span> Zyn</h1>
+            <p>Your AI-Powered Cryptocurrency Trading Assistant</p>
+        </div>
+        
+        <div class="status-bar">
+            <div class="status-card">
+                <div class="status-label">Bot Status</div>
+                <div class="status-value" id="botStatus">Loading...</div>
+            </div>
+            <div class="status-card">
+                <div class="status-label">Portfolio Value</div>
+                <div class="status-value" id="equityValue">$0.00</div>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button class="btn btn-start" id="startBtn" onclick="startBot()">
+                ▶️ Start Trading
+            </button>
+            <button class="btn btn-stop" id="stopBtn" onclick="stopBot()">
+                ⏸️ Pause Trading
+            </button>
+        </div>
+        
+        <div class="chat-container">
+            <div class="chat-title">
+                💬 Chat with Zyn
+            </div>
+            <div class="chat-messages" id="chatMessages">
+                <div class="message system">
+                    👋 Hey! I'm Zyn, your trading assistant. Ask me anything about your portfolio, performance, or trading strategies!
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <input 
+                    type="text" 
+                    class="chat-input" 
+                    id="chatInput" 
+                    placeholder="Ask Zyn anything... (e.g., 'How am I doing today?')"
+                    onkeypress="if(event.key==='Enter') sendMessage()"
+                />
+                <button class="btn-send" onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>
+                Need more details? Check the <a href="/dashboard">full dashboard</a> | 
+                Last updated: <span id="lastUpdate">Never</span>
+            </p>
+        </div>
+    </div>
+    
+    <script>
+        let isUpdating = false;
+        
+        // Update status
+        async function updateStatus() {
+            if (isUpdating) return;
+            isUpdating = true;
+            
+            try {
+                const response = await fetch('/api/autopilot/status');
+                const data = await response.json();
+                
+                const statusEl = document.getElementById('botStatus');
+                const startBtn = document.getElementById('startBtn');
+                const stopBtn = document.getElementById('stopBtn');
+                
+                if (data.autopilot_running) {
+                    statusEl.textContent = '🟢 Active';
+                    statusEl.className = 'status-value active pulse';
+                    startBtn.disabled = true;
+                    stopBtn.disabled = false;
+                } else {
+                    statusEl.textContent = '🔴 Paused';
+                    statusEl.className = 'status-value inactive';
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true;
+                }
+                
+                document.getElementById('equityValue').textContent = `$${data.equity.toFixed(2)}`;
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+            } catch (error) {
+                console.error('Status update error:', error);
+            }
+            
+            isUpdating = false;
+        }
+        
+        // Start bot
+        async function startBot() {
+            try {
+                const response = await fetch('/api/autopilot/start', { method: 'POST' });
+                const data = await response.json();
+                addMessage(data.message, 'system');
+                updateStatus();
+            } catch (error) {
+                addMessage('Failed to start bot: ' + error.message, 'system');
+            }
+        }
+        
+        // Stop bot
+        async function stopBot() {
+            try {
+                const response = await fetch('/api/autopilot/stop', { method: 'POST' });
+                const data = await response.json();
+                addMessage(data.message, 'system');
+                updateStatus();
+            } catch (error) {
+                addMessage('Failed to stop bot: ' + error.message, 'system');
+            }
+        }
+        
+        // Send message to Zyn
+        async function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const text = input.value.trim();
+            
+            if (!text) return;
+            
+            addMessage(text, 'user');
+            input.value = '';
+            
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text })
+                });
+                const data = await response.json();
+                addMessage(data.answer || 'No response', 'bot');
+            } catch (error) {
+                addMessage('Sorry, I had trouble processing that: ' + error.message, 'bot');
+            }
+        }
+        
+        // Add message to chat
+        function addMessage(text, type) {
+            const messagesDiv = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            messageDiv.textContent = text;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        // Initial load
+        updateStatus();
+        
+        // Auto-refresh status every 3 seconds
+        setInterval(updateStatus, 3000);
+    </script>
+</body>
+</html>
+"""
 
 # Professional Trading Dashboard HTML
 DASHBOARD = """
@@ -598,6 +977,54 @@ def get_dashboard_data():
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/autopilot/start")
+def start_autopilot():
+    """Start the autopilot trading bot."""
+    try:
+        state_path = Path(os.environ.get("STATE_PATH", str(Path(__file__).with_name("state.json"))))
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["paused"] = False
+            state["autopilot_enabled"] = True
+            state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            return {"status": "success", "message": "Zyn is now active and trading!", "autopilot_running": True}
+        return {"status": "error", "message": "State file not found", "autopilot_running": False}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "autopilot_running": False}
+
+@app.post("/api/autopilot/stop")
+def stop_autopilot():
+    """Stop the autopilot trading bot."""
+    try:
+        state_path = Path(os.environ.get("STATE_PATH", str(Path(__file__).with_name("state.json"))))
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["paused"] = True
+            state["autopilot_enabled"] = False
+            state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+            return {"status": "success", "message": "Zyn has been paused. No new trades will be executed.", "autopilot_running": False}
+        return {"status": "error", "message": "State file not found", "autopilot_running": False}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "autopilot_running": False}
+
+@app.get("/api/autopilot/status")
+def autopilot_status():
+    """Get current autopilot status."""
+    try:
+        state_path = Path(os.environ.get("STATE_PATH", str(Path(__file__).with_name("state.json"))))
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            is_running = not state.get("paused", False) and state.get("autopilot_enabled", True)
+            return {
+                "autopilot_running": is_running,
+                "paused": state.get("paused", False),
+                "equity": state.get("equity_now_usd", 0),
+                "symbols": list(state.get("symbols", {}).keys()) if isinstance(state.get("symbols", {}), dict) else []
+            }
+        return {"autopilot_running": False, "paused": True, "equity": 0, "symbols": []}
+    except Exception as e:
+        return {"autopilot_running": False, "paused": True, "equity": 0, "symbols": [], "error": str(e)}
 
 @app.get("/api/equity_history")
 def get_equity_history(hours: int = 24):
