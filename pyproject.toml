@@ -1,0 +1,13 @@
+[project]
+name = "kraken-trading-bot"
+version = "0.1.0"
+description = "Autonomous Kraken trading bot with manual command interface"
+authors = ["Your Name <you@example.com>"]
+requires-python = ">=3.11"
+dependencies = [
+    "ccxt>=4.0.0",
+    "loguru>=0.7.0",
+    "tenacity>=8.2.0",
+    "python-dotenv>=1.0.0",
+    "openai>=1.0.0"
+]
