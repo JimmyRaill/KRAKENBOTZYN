@@ -1200,6 +1200,66 @@ def save_sms_config_api(config: dict):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/status")
+def get_status():
+    """
+    CRITICAL: Single source of truth for trading status.
+    Returns: {mode, lastSyncUTC, totals:{24h,7d,30d}, openOrders, recentTrades, balances, warnings}
+    """
+    try:
+        from status_service import (
+            get_mode, 
+            get_balances, 
+            get_open_orders,
+            get_trades,
+            get_activity_summary,
+            get_last_sync_time,
+            healthcheck,
+            auto_sync_if_needed
+        )
+        
+        # CRITICAL: Auto-sync FIRST to ensure data freshness
+        auto_sync_if_needed()
+        
+        # Get health status
+        health = healthcheck()
+        
+        # Get activity summaries for all windows
+        summary_24h = get_activity_summary("24h")
+        summary_7d = get_activity_summary("7d")
+        summary_30d = get_activity_summary("30d")
+        
+        # Get current data
+        mode = get_mode()
+        balances = get_balances()
+        open_orders = get_open_orders()
+        last_sync = get_last_sync_time()
+        
+        # CRITICAL: Get actual trade details (not just aggregates)
+        recent_trades = get_trades(limit=50)  # Last 50 trades with full details
+        
+        return {
+            "mode": mode,
+            "lastSyncUTC": last_sync,
+            "totals": {
+                "24h": summary_24h,
+                "7d": summary_7d,
+                "30d": summary_30d
+            },
+            "openOrders": open_orders,
+            "recentTrades": recent_trades,
+            "balances": balances,
+            "warnings": health.get('warnings', []),
+            "errors": health.get('errors', []),
+            "health_status": health.get('status', 'unknown')
+        }
+    except Exception as e:
+        import traceback
+        return JSONResponse(status_code=500, content={
+            "error": str(e),
+            "trace": traceback.format_exc()[-1000:]
+        })
+
 @app.post("/ask")
 async def ask(a: AskIn):
     try:

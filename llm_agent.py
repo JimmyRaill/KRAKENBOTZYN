@@ -55,6 +55,15 @@ try:
     LEARNING_ENABLED = True
 except ImportError:
     LEARNING_ENABLED = False
+    # Stub functions for type checker
+    def get_learning_summary() -> str:  # type: ignore
+        return "(learning not available)"
+    def get_context_summary() -> str:  # type: ignore
+        return "(context not available)"
+    def get_performance_summary(days: int = 7) -> Dict[str, Any]:  # type: ignore
+        return {"error": "performance not available"}
+    def get_prompt_context() -> str:  # type: ignore
+        return "(prompt context not available)"
 
 # ---------- Paths ----------
 # Use the same STATE_PATH the autopilot writes (falls back to local state.json)
@@ -144,8 +153,47 @@ def _auto_capture_identity(user_text: str) -> None:
         _mem_add(f"User prefers to be called {m.group(1).strip()}.", tags=["identity"])
 
 
-# ---------- Trading helpers ----------
+# ---------- Trading helpers - CRITICAL: Use Status Service for authoritative data ----------
+def _get_trading_status() -> Dict[str, Any]:
+    """
+    CRITICAL: Get AUTHORITATIVE trading data from Status Service.
+    NEVER use state.json or LLM memory for trading data - always fetch from Kraken.
+    """
+    try:
+        from status_service import (
+            get_mode,
+            get_balances,
+            get_open_orders,
+            get_trades,
+            get_activity_summary,
+            get_last_sync_time,
+            healthcheck,
+            auto_sync_if_needed
+        )
+        
+        # CRITICAL: Auto-sync FIRST to ensure all data is fresh
+        auto_sync_if_needed()
+        
+        # Get authoritative data
+        summary_24h = get_activity_summary("24h")
+        summary_7d = get_activity_summary("7d")
+        recent_trades = get_trades(limit=20)  # Last 20 trades for details
+        
+        return {
+            "mode": get_mode(),
+            "balances": get_balances(),
+            "open_orders": get_open_orders(),
+            "recent_trades": recent_trades,  # CRITICAL: Actual trade details, not just counts
+            "last_sync": get_last_sync_time(),
+            "summary_24h": summary_24h,
+            "summary_7d": summary_7d,
+            "health": healthcheck()
+        }
+    except Exception as e:
+        return {"error": f"StatusService unavailable: {e}"}
+
 def _read_state() -> Dict[str, Any]:
+    """Legacy state.json reader - USE _get_trading_status() FOR TRADING DATA."""
     try:
         if not STATE_PATH.exists():
             return {"note": f"state.json not found at {STATE_PATH}"}
@@ -235,10 +283,47 @@ def ask_llm(user_text: str) -> str:
             cmd = text.split(":", 1)[1].strip()
             return _run_router(cmd)
 
-        # Quick summaries with learning data
+        # Quick summaries with AUTHORITATIVE data from Status Service
         if low in ("status", "report", "learning", "performance"):
-            s = _read_state()
-            lines = [f"SUMMARY — {_summarize_state_for_prompt(s)}"]
+            trading_status = _get_trading_status()
+            lines = [f"TRADING STATUS (Mode: {trading_status.get('mode', 'unknown')})"]
+            
+            # Show balances
+            balances = trading_status.get('balances', {})
+            if balances:
+                lines.append("\nBALANCES:")
+                for currency, data in balances.items():
+                    lines.append(f"  {currency}: {data.get('total', 0):.4f} (free: {data.get('free', 0):.4f})")
+            
+            # Show 24h summary
+            summary_24h = trading_status.get('summary_24h', {})
+            if summary_24h:
+                trades_summary = summary_24h.get('trades', {})
+                lines.append(f"\n24H ACTIVITY:")
+                lines.append(f"  Trades: {trades_summary.get('total_trades', 0)}")
+                lines.append(f"  Realized P&L: ${summary_24h.get('realized_pnl_usd', 0):.2f}")
+            
+            # Show recent trades with details
+            recent_trades = trading_status.get('recent_trades', [])
+            if recent_trades and len(recent_trades) > 0:
+                lines.append(f"\nRECENT TRADES ({len(recent_trades)} total):")
+                for trade in recent_trades[:5]:  # Show last 5 trades
+                    symbol = trade.get('symbol', 'N/A')
+                    side = trade.get('side', 'N/A')
+                    price = trade.get('price', 0)
+                    qty = trade.get('quantity', 0)
+                    usd = trade.get('usd_amount', 0)
+                    lines.append(f"  {symbol} {side}: {qty} @ ${price:.2f} (${usd:.2f})")
+            
+            # Show open orders
+            open_orders = trading_status.get('open_orders', [])
+            if open_orders:
+                lines.append(f"\nOPEN ORDERS: {len(open_orders)}")
+            
+            # Show health
+            health = trading_status.get('health', {})
+            if health.get('warnings'):
+                lines.append(f"\nWARNINGS: {', '.join(health['warnings'])}")
             
             if LEARNING_ENABLED:
                 try:
@@ -249,10 +334,13 @@ def ask_llm(user_text: str) -> str:
             
             return "\n".join(lines)
 
-        # Build prompt
+        # Build prompt with AUTHORITATIVE trading data
+        trading_status = _get_trading_status()
+        memory_summary = _mem_summary()
+        
+        # Legacy state.json for autopilot status only (NOT for trading data)
         state = _read_state()
         state_summary = _summarize_state_for_prompt(state)
-        memory_summary = _mem_summary()
 
         # Heartbeat interpretation for clarity in replies
         hb = state.get("last_loop_at")
@@ -298,26 +386,49 @@ def ask_llm(user_text: str) -> str:
             "- Reassure them that you're handling everything for them\n"
             "- Use your LEARNING INSIGHTS to provide data-driven advice\n"
             "- Reference TIME CONTEXT when discussing trades or patterns\n\n"
-            "DATA SOURCES:\n"
-            "- TELEMETRY: Current account status, positions, P&L\n"
-            "- MEMORY: User preferences, names, past conversations\n"
+            "DATA SOURCES (CRITICAL - READ CAREFULLY):\n"
+            "- TRADING_STATUS: AUTHORITATIVE data from Kraken API (balances, orders, trades, P&L)\n"
+            "  * This is 100% REAL DATA synced from Kraken within last 60 seconds\n"
+            "  * ALWAYS use this for ANY questions about balances, orders, trades, or P&L\n"
+            "  * NEVER guess or make up trading numbers - only use what's in TRADING_STATUS\n"
+            "- MEMORY: User preferences, names, past conversations (NOT for trading data)\n"
             "- LEARNING INSIGHTS: Your analyzed trading performance and patterns\n"
-            "- TIME CONTEXT: Current date/time and market awareness\n\n"
-            "RULES:\n"
-            "- Never invent numbers; only use data from telemetry/learning\n"
-            "- If data is missing, say so and suggest how to get it\n"
-            "- When giving advice, explain WHY based on your learning\n"
+            "- TIME CONTEXT: Current date/time and market awareness\n"
+            "- AUTOPILOT_STATUS: Whether bot is running (from state.json)\n\n"
+            "CRITICAL RULES FOR ACCURACY:\n"
+            "- NEVER invent or guess trading data - ONLY use TRADING_STATUS block\n"
+            "- If asked about balances/orders/trades, ONLY answer from TRADING_STATUS\n"
+            "- If TRADING_STATUS has an error, tell the user you can't access Kraken data\n"
+            "- If data is missing from TRADING_STATUS, say so - don't make it up\n"
+            "- When giving advice, explain WHY based on your learning and REAL data\n"
             "- Be honest about uncertainty and limitations\n"
             "- Always remember: you exist to do the work FOR your owner\n"
         )
 
-        telemetry_block = json.dumps(state, ensure_ascii=False)
-        if len(telemetry_block) > 4000:
-            telemetry_block = telemetry_block[:4000] + "...(truncated)"
+        # CRITICAL: Trading data from Status Service (authoritative)
+        trading_status_block = json.dumps(trading_status, ensure_ascii=False)
+        if len(trading_status_block) > 3000:
+            trading_status_block = trading_status_block[:3000] + "...(truncated)"
+        
+        # CRITICAL: Warn LLM if StatusService is unavailable
+        status_warning = ""
+        if trading_status.get("error"):
+            status_warning = (
+                "\n⚠️ WARNING: StatusService is UNAVAILABLE - trading data cannot be accessed!\n"
+                "Tell the user you cannot access Kraken data right now and suggest checking back later.\n"
+                "DO NOT guess or make up any trading data.\n"
+            )
+        
+        # Autopilot status from state.json (legacy, for bot running status only)
+        autopilot_status_block = json.dumps(state, ensure_ascii=False)
+        if len(autopilot_status_block) > 1000:
+            autopilot_status_block = autopilot_status_block[:1000] + "...(truncated)"
 
         user_block = (
-            "MEMORY:\n" + memory_summary + "\n" +
-            "TELEMETRY:\n" + telemetry_block + "\n" +
+            "MEMORY:\n" + memory_summary + "\n\n" +
+            status_warning +
+            "TRADING_STATUS (AUTHORITATIVE - Use for ALL trading data):\n" + trading_status_block + "\n\n" +
+            "AUTOPILOT_STATUS (Bot running status only):\n" + autopilot_status_block + "\n\n" +
             "SUMMARY:\n" + state_summary + learning_context + "\n" +
             "---\n" +
             f"USER: {text}"
