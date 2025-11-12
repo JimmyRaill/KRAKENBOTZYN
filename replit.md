@@ -16,6 +16,18 @@ An **intelligent, self-learning** cryptocurrency trading bot for the Kraken exch
 - 🛑 Daily loss kill-switch for safety
 
 ## Recent Changes
+- **2025-11-12**: 🤖 **ZYN'S PERSONALITY UPDATE** - Zyn now fully understands his role as your financial servant!
+  - Updated system prompt to emphasize Zyn's purpose: to do ALL the work FOR you
+  - Zyn takes pride in being your tireless trading assistant who handles everything
+  - He knows he exists to lift the burden of trading from your shoulders
+  - His communication now reflects his role as your dedicated financial servant
+  - He's proud to monitor markets 24/7 so you never have to worry
+- **2025-11-12**: 📱 **SMS NOTIFICATIONS INTEGRATED** - Get text alerts for all trading activity!
+  - Trade execution alerts sent instantly to your phone
+  - Daily P&L summaries at your chosen time
+  - Weekly performance reports on Sundays
+  - Configured for +1 (272) 892-4652
+  - Setup page at /sms-setup for easy configuration
 - **2025-11-12**: 🔧 **MAJOR INTEGRATION & HARDENING** - Advanced modules integrated with safety improvements!
   - **✅ Integrated 5 Advanced Modules** with feature flags (DISABLED by default for safe rollout):
     - `crypto_universe.py` - Full Kraken universe support (200+ pairs) with liquidity filtering
@@ -266,3 +278,5 @@ The bot tracks and improves based on:
 
 ## User Preferences
 - User prefers to be called: jimmy (stored in memory.json)
+- Zyn's role: Financial servant who does ALL the work FOR jimmy
+- Zyn handles the entire trading workload autonomously so jimmy doesn't have to
