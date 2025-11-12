@@ -515,36 +515,50 @@ def get_closed_orders(since: Optional[float] = None, until: Optional[float] = No
 
 
 def get_trades(since: Optional[float] = None, until: Optional[float] = None, limit: int = 100) -> List[Dict[str, Any]]:
-    """Get trades from telemetry DB within time window."""
-    # Note: trades are logged by autopilot to telemetry_db.trades table
-    with get_db() as conn:
-        cursor = conn.cursor()
+    """
+    Get trades DIRECTLY from Kraken API.
+    CRITICAL: Returns REAL trade data, not telemetry logging.
+    """
+    try:
+        ex = get_exchange()
         
-        query = "SELECT * FROM trades WHERE 1=1"
-        params: List[Any] = []
+        # Convert to milliseconds for Kraken API
+        since_ms = int(since * 1000) if since else None
         
-        if since:
-            query += " AND timestamp >= ?"
-            params.append(since)
+        # Fetch from Kraken
+        trades = ex.fetch_my_trades(since=since_ms, limit=limit)
+        
+        # Convert to our format
+        result = []
+        for t in trades:
+            result.append({
+                'trade_id': t.get('id', ''),
+                'timestamp': t.get('timestamp', 0) / 1000,  # Convert ms to seconds
+                'datetime': t.get('datetime', ''),
+                'symbol': t.get('symbol', ''),
+                'side': t.get('side', ''),
+                'price': t.get('price', 0),
+                'quantity': t.get('amount', 0),
+                'usd_amount': t.get('cost', 0),
+                'fee': t.get('fee', {}).get('cost', 0),
+                'order_id': t.get('order', '')
+            })
+        
+        # Apply until filter if specified
         if until:
-            query += " AND timestamp <= ?"
-            params.append(until)
+            result = [t for t in result if t['timestamp'] <= until]
         
-        query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
-        
-        cursor.execute(query, params)
-        return [dict(row) for row in cursor.fetchall()]
+        return result
+    except Exception as e:
+        logger.error(f"[STATUS-SERVICE] Failed to fetch trades from Kraken: {e}")
+        return []
 
 
 def get_activity_summary(window: Literal["24h", "7d", "30d"] = "24h") -> Dict[str, Any]:
     """
     Get activity summary for time window.
-    CRITICAL: Computes from DB rows, NOT from cached prompts or LLM memory.
-    Auto-syncs if data is stale.
+    CRITICAL: Fetches DIRECTLY from Kraken API for accurate data.
     """
-    auto_sync_if_needed()
-    
     # Calculate time window
     now = time.time()
     window_map = {
@@ -552,28 +566,53 @@ def get_activity_summary(window: Literal["24h", "7d", "30d"] = "24h") -> Dict[st
         "7d": 7 * 24 * 60 * 60,
         "30d": 30 * 24 * 60 * 60
     }
-    since = now - window_map.get(window, 24 * 60 * 60)
+    since_timestamp = now - window_map.get(window, 24 * 60 * 60)
+    since_ms = int(since_timestamp * 1000)  # Kraken uses milliseconds
     
     mode = get_mode()
     
+    # CRITICAL: Fetch REAL trades from Kraken API
+    try:
+        ex = get_exchange()
+        all_trades = ex.fetch_my_trades(since=since_ms, limit=1000)
+        
+        # Calculate stats from REAL Kraken data
+        total_trades = len(all_trades)
+        buys = [t for t in all_trades if t.get('side') == 'buy']
+        sells = [t for t in all_trades if t.get('side') == 'sell']
+        
+        buy_prices = [t.get('price', 0) for t in buys if t.get('price')]
+        sell_prices = [t.get('price', 0) for t in sells if t.get('price')]
+        
+        avg_buy_price = sum(buy_prices) / len(buy_prices) if buy_prices else 0
+        avg_sell_price = sum(sell_prices) / len(sell_prices) if sell_prices else 0
+        
+        total_bought_usd = sum(t.get('cost', 0) for t in buys)
+        total_sold_usd = sum(t.get('cost', 0) for t in sells)
+        
+        trade_stats = {
+            'total_trades': total_trades,
+            'buys': len(buys),
+            'sells': len(sells),
+            'avg_buy_price': avg_buy_price,
+            'avg_sell_price': avg_sell_price,
+            'total_bought_usd': total_bought_usd,
+            'total_sold_usd': total_sold_usd
+        }
+    except Exception as e:
+        logger.error(f"[STATUS-SERVICE] Failed to fetch trades from Kraken: {e}")
+        trade_stats = {
+            'total_trades': 0,
+            'buys': 0,
+            'sells': 0,
+            'avg_buy_price': 0,
+            'avg_sell_price': 0,
+            'total_bought_usd': 0,
+            'total_sold_usd': 0
+        }
+    
     with get_db() as conn:
         cursor = conn.cursor()
-        
-        # Get trade stats
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_trades,
-                SUM(CASE WHEN side = 'buy' THEN 1 ELSE 0 END) as buys,
-                SUM(CASE WHEN side = 'sell' THEN 1 ELSE 0 END) as sells,
-                AVG(CASE WHEN side = 'buy' THEN price ELSE NULL END) as avg_buy_price,
-                AVG(CASE WHEN side = 'sell' THEN price ELSE NULL END) as avg_sell_price,
-                SUM(CASE WHEN side = 'buy' THEN usd_amount ELSE 0 END) as total_bought_usd,
-                SUM(CASE WHEN side = 'sell' THEN usd_amount ELSE 0 END) as total_sold_usd
-            FROM trades
-            WHERE timestamp >= ?
-        """, (since,))
-        trade_row = cursor.fetchone()
-        trade_stats = dict(trade_row) if trade_row else {}
         
         # Get order stats
         cursor.execute("""
