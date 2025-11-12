@@ -18,16 +18,16 @@ from loguru import logger
 _trade_cache = {
     'trades': [],
     'fetched_at': 0,
-    'ttl': 30  # Cache for 30 seconds
+    'ttl': 300  # Cache for 5 minutes to avoid rate limits
 }
 
 # Database path
 DB_PATH = Path(__file__).parent / "trading_memory.db"
 
 # Sync timing constants
-SYNC_INTERVAL = 60  # Auto-sync if data older than 60 seconds
-SYNC_WARNING_THRESHOLD = 60  # Warning if sync 60-300s old
-SYNC_ERROR_THRESHOLD = 300  # Error if sync > 300s old
+SYNC_INTERVAL = 300  # Auto-sync if data older than 5 minutes (avoid rate limits)
+SYNC_WARNING_THRESHOLD = 300  # Warning if sync 300-600s old
+SYNC_ERROR_THRESHOLD = 600  # Error if sync > 600s old
 
 
 @contextmanager
