@@ -14,6 +14,13 @@ from contextlib import contextmanager
 from exchange_manager import get_exchange, get_mode_str, get_manager
 from loguru import logger
 
+# Trade cache to avoid re-fetching from Kraken multiple times
+_trade_cache = {
+    'trades': [],
+    'fetched_at': 0,
+    'ttl': 30  # Cache for 30 seconds
+}
+
 # Database path
 DB_PATH = Path(__file__).parent / "trading_memory.db"
 
@@ -554,10 +561,39 @@ def get_trades(since: Optional[float] = None, until: Optional[float] = None, lim
         return []
 
 
+def _get_cached_trades() -> List[Dict[str, Any]]:
+    """
+    Get trades with 30-second cache to avoid hammering Kraken API.
+    Critical optimization: API calls get_activity_summary 3x (24h/7d/30d).
+    """
+    global _trade_cache
+    now = time.time()
+    
+    # Check if cache is still valid
+    if now - _trade_cache['fetched_at'] < _trade_cache['ttl']:
+        logger.debug(f"[STATUS-SERVICE] Using cached trades ({len(_trade_cache['trades'])} trades)")
+        return _trade_cache['trades']
+    
+    # Fetch fresh trades from Kraken
+    try:
+        ex = get_exchange()
+        # Fetch last 30 days with reasonable limit
+        since_30d_ms = int((now - 30 * 24 * 60 * 60) * 1000)
+        all_trades = ex.fetch_my_trades(since=since_30d_ms, limit=100)
+        
+        _trade_cache['trades'] = all_trades
+        _trade_cache['fetched_at'] = now
+        logger.info(f"[STATUS-SERVICE] Fetched {len(all_trades)} trades from Kraken (cached for {_trade_cache['ttl']}s)")
+        return all_trades
+    except Exception as e:
+        logger.error(f"[STATUS-SERVICE] Failed to fetch trades from Kraken: {e}")
+        return []
+
+
 def get_activity_summary(window: Literal["24h", "7d", "30d"] = "24h") -> Dict[str, Any]:
     """
     Get activity summary for time window.
-    CRITICAL: Fetches DIRECTLY from Kraken API for accurate data.
+    CRITICAL: Fetches DIRECTLY from Kraken API for accurate data (with caching).
     """
     # Calculate time window
     now = time.time()
@@ -567,49 +603,38 @@ def get_activity_summary(window: Literal["24h", "7d", "30d"] = "24h") -> Dict[st
         "30d": 30 * 24 * 60 * 60
     }
     since_timestamp = now - window_map.get(window, 24 * 60 * 60)
-    since_ms = int(since_timestamp * 1000)  # Kraken uses milliseconds
     
     mode = get_mode()
     
-    # CRITICAL: Fetch REAL trades from Kraken API
-    try:
-        ex = get_exchange()
-        all_trades = ex.fetch_my_trades(since=since_ms, limit=1000)
-        
-        # Calculate stats from REAL Kraken data
-        total_trades = len(all_trades)
-        buys = [t for t in all_trades if t.get('side') == 'buy']
-        sells = [t for t in all_trades if t.get('side') == 'sell']
-        
-        buy_prices = [t.get('price', 0) for t in buys if t.get('price')]
-        sell_prices = [t.get('price', 0) for t in sells if t.get('price')]
-        
-        avg_buy_price = sum(buy_prices) / len(buy_prices) if buy_prices else 0
-        avg_sell_price = sum(sell_prices) / len(sell_prices) if sell_prices else 0
-        
-        total_bought_usd = sum(t.get('cost', 0) for t in buys)
-        total_sold_usd = sum(t.get('cost', 0) for t in sells)
-        
-        trade_stats = {
-            'total_trades': total_trades,
-            'buys': len(buys),
-            'sells': len(sells),
-            'avg_buy_price': avg_buy_price,
-            'avg_sell_price': avg_sell_price,
-            'total_bought_usd': total_bought_usd,
-            'total_sold_usd': total_sold_usd
-        }
-    except Exception as e:
-        logger.error(f"[STATUS-SERVICE] Failed to fetch trades from Kraken: {e}")
-        trade_stats = {
-            'total_trades': 0,
-            'buys': 0,
-            'sells': 0,
-            'avg_buy_price': 0,
-            'avg_sell_price': 0,
-            'total_bought_usd': 0,
-            'total_sold_usd': 0
-        }
+    # Fetch trades (from cache if available)
+    all_trades = _get_cached_trades()
+    
+    # Filter trades by window
+    window_trades = [t for t in all_trades if t.get('timestamp', 0) >= since_timestamp * 1000]
+    
+    # Calculate stats from REAL Kraken data
+    total_trades = len(window_trades)
+    buys = [t for t in window_trades if t.get('side') == 'buy']
+    sells = [t for t in window_trades if t.get('side') == 'sell']
+    
+    buy_prices = [t.get('price', 0) for t in buys if t.get('price')]
+    sell_prices = [t.get('price', 0) for t in sells if t.get('price')]
+    
+    avg_buy_price = sum(buy_prices) / len(buy_prices) if buy_prices else 0
+    avg_sell_price = sum(sell_prices) / len(sell_prices) if sell_prices else 0
+    
+    total_bought_usd = sum(t.get('cost', 0) for t in buys)
+    total_sold_usd = sum(t.get('cost', 0) for t in sells)
+    
+    trade_stats = {
+        'total_trades': total_trades,
+        'buys': len(buys),
+        'sells': len(sells),
+        'avg_buy_price': avg_buy_price,
+        'avg_sell_price': avg_sell_price,
+        'total_bought_usd': total_bought_usd,
+        'total_sold_usd': total_sold_usd
+    }
     
     with get_db() as conn:
         cursor = conn.cursor()
@@ -623,7 +648,7 @@ def get_activity_summary(window: Literal["24h", "7d", "30d"] = "24h") -> Dict[st
                 SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END) as canceled_orders
             FROM orders
             WHERE mode = ? AND timestamp >= ?
-        """, (mode, since))
+        """, (mode, since_timestamp))
         order_row = cursor.fetchone()
         order_stats = dict(order_row) if order_row else {}
         

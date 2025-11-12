@@ -1329,8 +1329,12 @@ def get_dashboard_data():
                 # For now, count all sells as neutral
                 pass
         
-        # Get performance from actual DB (telemetry tracks decisions/insights)
-        stats = {"decisions": 0, "trades": len(recent_trades), "performance_snapshots": 0}
+        # Get performance from REAL Kraken data via Status Service
+        stats = {
+            "decisions": 0,
+            "trades": summary_7d['trades']['total_trades'],  # REAL trade count from Kraken
+            "performance_snapshots": 0
+        }
         try:
             with get_db() as conn:
                 cursor = conn.cursor()
@@ -1364,10 +1368,17 @@ def get_dashboard_data():
             total_usd = usd_balance
         # TODO: Add crypto balances * current price for accurate total equity
         
+        # Calculate total equity including crypto balances
+        total_equity = total_usd
+        for currency, bal in balances.items():
+            if currency != 'USD' and isinstance(bal, dict):
+                # Add crypto balances (already in USD equivalent from Kraken)
+                total_equity += bal.get('total', 0) * bal.get('usd_price', 0) if bal.get('usd_price') else 0
+        
         return {
             "equity": {
-                "current": total_usd,
-                "day_start": state.get("equity_day_start_usd", total_usd),
+                "current": total_equity,
+                "day_start": state.get("equity_day_start_usd", total_equity),
                 "change": summary_7d.get("realized_pnl_usd", 0),
                 "change_pct": 0
             },
@@ -1375,10 +1386,10 @@ def get_dashboard_data():
             "paused": state.get("paused", False),
             "recent_trades": recent_trades,
             "performance": {
-                "total_trades": len(recent_trades),
+                "total_trades": summary_7d['trades']['total_trades'],  # REAL total from Kraken
                 "wins": wins,
                 "losses": losses,
-                "win_rate": wins / len(recent_trades) if len(recent_trades) > 0 else 0
+                "win_rate": wins / summary_7d['trades']['total_trades'] if summary_7d['trades']['total_trades'] > 0 else 0
             },
             "stats": stats,
             "timestamp": datetime.now().isoformat()
