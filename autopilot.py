@@ -1000,7 +1000,7 @@ def run_forever() -> None:
             symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
     else:
         symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
-    iv = env_int("TRADE_INTERVAL_SEC", 60)
+    iv = env_int("TRADE_INTERVAL_SEC", 300)  # Changed to 5min to avoid Kraken rate limits
     print(f"[AUTOPILOT] running on {symbols} every {iv}s (validate={env_str('KRAKEN_VALIDATE_ONLY','1')})", flush=True)
 
     # initialize day start equity
