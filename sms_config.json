@@ -4,6 +4,5 @@
   "notify_on_trades": true,
   "notify_daily_summary": true,
   "notify_weekly_summary": true,
-  "daily_summary_hour": 15,
-  "last_daily_sent": "2025-11-12T20:51:42.224490"
+  "daily_summary_hour": 15
 }
