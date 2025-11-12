@@ -226,6 +226,15 @@ class ProfitReinvestmentSystem:
         Returns:
             Dict with reinvest_amount, new_position_size, new_equity
         """
+        # Guard against zero or negative equity
+        if current_equity <= 0:
+            return {
+                "reinvest_amount": 0.0,
+                "new_position_size": base_position_size_usd,
+                "new_equity": 0.0,
+                "reinvested": False
+            }
+        
         # Only reinvest if profit exceeds threshold
         if profit_usd < self.min_profit_threshold:
             return {
