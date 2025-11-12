@@ -346,7 +346,8 @@ CONTROL_PANEL = """
         
         <div class="footer">
             <p>
-                Need more details? Check the <a href="/dashboard">full dashboard</a> | 
+                <a href="/dashboard">📊 Full Dashboard</a> | 
+                <a href="/sms-setup">📱 SMS Notifications</a> | 
                 Last updated: <span id="lastUpdate">Never</span>
             </p>
         </div>
@@ -868,6 +869,212 @@ DASHBOARD = """
 class AskIn(BaseModel):
     text: str
     token: Optional[str] = None
+
+@app.get("/sms-setup", response_class=HTMLResponse)
+def sms_setup_page():
+    """SMS notification setup page."""
+    return """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SMS Notifications Setup - Zyn</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            max-width: 600px;
+            width: 100%;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        h1 {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+        p { color: #6b7280; margin-bottom: 30px; }
+        label {
+            display: block;
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+            margin-top: 20px;
+        }
+        input[type="tel"], input[type="number"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+        input:focus { outline: none; border-color: #667eea; }
+        .checkbox-group {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f7fafc;
+            border-radius: 8px;
+        }
+        .checkbox-group label {
+            display: flex;
+            align-items: center;
+            font-weight: 500;
+            margin: 10px 0;
+        }
+        input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+        }
+        button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        button:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4); }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+        }
+        .status.success { background: #d1fae5; color: #065f46; display: block; }
+        .status.error { background: #fee2e2; color: #991b1b; display: block; }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: #667eea;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📱 SMS Notifications Setup</h1>
+        <p>Get text messages on your phone when Zyn makes trades or hits profit/loss targets.</p>
+        
+        <form id="smsForm">
+            <label for="phone">Your Phone Number</label>
+            <input type="tel" id="phone" placeholder="+12345678900" required />
+            <small style="color: #6b7280;">Format: +1 followed by your 10-digit number</small>
+            
+            <div class="checkbox-group">
+                <label><input type="checkbox" id="enabled" /> Enable SMS Notifications</label>
+                <label><input type="checkbox" id="notifyTrades" checked /> Notify on every trade</label>
+                <label><input type="checkbox" id="notifyDaily" checked /> Daily summary (6 PM)</label>
+                <label><input type="checkbox" id="notifyWeekly" checked /> Weekly summary (Sundays)</label>
+            </div>
+            
+            <label for="dailyHour">Daily Summary Time (hour, 0-23)</label>
+            <input type="number" id="dailyHour" value="18" min="0" max="23" />
+            
+            <button type="submit">Save Settings</button>
+        </form>
+        
+        <div class="status" id="status"></div>
+        
+        <a href="/" class="back-link">← Back to Control Panel</a>
+    </div>
+    
+    <script>
+        // Load current settings
+        async function loadSettings() {
+            try {
+                const response = await fetch('/api/sms-config');
+                const config = await response.json();
+                
+                document.getElementById('phone').value = config.your_phone_number || '';
+                document.getElementById('enabled').checked = config.enabled || false;
+                document.getElementById('notifyTrades').checked = config.notify_on_trades !== false;
+                document.getElementById('notifyDaily').checked = config.notify_daily_summary !== false;
+                document.getElementById('notifyWeekly').checked = config.notify_weekly_summary !== false;
+                document.getElementById('dailyHour').value = config.daily_summary_hour || 18;
+            } catch (error) {
+                console.error('Failed to load settings:', error);
+            }
+        }
+        
+        // Save settings
+        document.getElementById('smsForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const config = {
+                enabled: document.getElementById('enabled').checked,
+                your_phone_number: document.getElementById('phone').value.trim(),
+                notify_on_trades: document.getElementById('notifyTrades').checked,
+                notify_daily_summary: document.getElementById('notifyDaily').checked,
+                notify_weekly_summary: document.getElementById('notifyWeekly').checked,
+                daily_summary_hour: parseInt(document.getElementById('dailyHour').value)
+            };
+            
+            try {
+                const response = await fetch('/api/sms-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                
+                const result = await response.json();
+                const statusEl = document.getElementById('status');
+                
+                if (result.status === 'success') {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = '✅ Settings saved! You\\'ll receive notifications on your phone.';
+                } else {
+                    statusEl.className = 'status error';
+                    statusEl.textContent = '❌ Failed to save: ' + result.message;
+                }
+            } catch (error) {
+                const statusEl = document.getElementById('status');
+                statusEl.className = 'status error';
+                statusEl.textContent = '❌ Error: ' + error.message;
+            }
+        });
+        
+        // Load on page load
+        loadSettings();
+    </script>
+</body>
+</html>
+"""
+
+@app.get("/api/sms-config")
+def get_sms_config_api():
+    """Get SMS configuration."""
+    try:
+        from sms_notifications import get_sms_config
+        return get_sms_config()
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/sms-config")
+def save_sms_config_api(config: dict):
+    """Save SMS configuration."""
+    try:
+        from sms_notifications import save_sms_config
+        save_sms_config(config)
+        return {"status": "success", "message": "SMS notifications configured!"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/ask")
 async def ask(a: AskIn):

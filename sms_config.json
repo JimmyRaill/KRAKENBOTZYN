@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "your_phone_number": "",
+  "notify_on_trades": true,
+  "notify_daily_summary": true,
+  "notify_weekly_summary": true,
+  "daily_summary_hour": 18,
+  "weekly_summary_day": "Sunday",
+  "last_daily_sent": null,
+  "last_weekly_sent": null,
+  "quiet_hours_start": 22,
+  "quiet_hours_end": 8
+}

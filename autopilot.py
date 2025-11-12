@@ -18,6 +18,7 @@ TELEMETRY_ENABLED = False
 log_trade = log_decision = log_performance = log_error = None
 try:
     from telemetry_db import log_trade, log_decision, log_performance, log_error
+    from sms_notifications import notify_trade, check_summaries
     from time_context import get_time_info, get_prompt_context
     TELEMETRY_ENABLED = True
 except ImportError:
@@ -626,6 +627,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                     try:
                         log_decision(sym, "buy", why, price, edge_pct, atr, pos_qty, eq_usd, executed=True)
                         log_trade(sym, "buy", "market_buy", approx_qty, price, usd_to_spend, None, why, "autopilot")
+                        notify_trade(sym, "buy", approx_qty, price, why)
                     except Exception as log_err:
                         print(f"[TELEMETRY-ERR] {log_err}")
                 
@@ -765,6 +767,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                     try:
                         log_decision(sym, "sell_all", why, price, edge_pct, atr, pos_qty, eq_now, executed=True)
                         log_trade(sym, "sell", "market_sell", pos_qty, price, None, None, why, "autopilot")
+                        notify_trade(sym, "sell", pos_qty, price, why)
                     except Exception as log_err:
                         print(f"[TELEMETRY-ERR] {log_err}")
                 
@@ -887,6 +890,13 @@ def run_forever() -> None:
         return
 
     ex = mk_ex()
+    
+    # Check for daily/weekly summaries
+    if TELEMETRY_ENABLED and check_summaries:
+        try:
+            check_summaries()
+        except Exception as e:
+            print(f"[SUMMARY-CHECK-ERR] {e}")
     
     # Get trading symbols - either from Crypto Universe Scanner or static list
     if CRYPTO_UNIVERSE_ENABLED and CryptoUniverseScanner:

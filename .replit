@@ -17,6 +17,7 @@ deploymentTarget = "cloudrun"
 
 [agent]
 expertMode = true
+integrations = ["twilio:1.0.0"]
 
 [[ports]]
 localPort = 5000

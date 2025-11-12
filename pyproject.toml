@@ -16,4 +16,6 @@ dependencies = [
     "numpy>=2.3.4",
     "aiohttp>=3.13.2",
     "aiosmtplib>=5.0.0",
+    "twilio>=9.8.6",
+    "requests>=2.32.5",
 ]
