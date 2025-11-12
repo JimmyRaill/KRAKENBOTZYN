@@ -168,6 +168,10 @@ print(
     flush=True,
 )
 
+# Import exchange manager early to show trading mode
+from exchange_manager import get_exchange, get_mode_str, is_paper_mode
+print(f"[BOOT] Trading mode: {get_mode_str().upper()} (paper={is_paper_mode()})", flush=True)
+
 # -------------------------------------------------------------------
 # env helpers (typed)
 # -------------------------------------------------------------------
@@ -190,18 +194,14 @@ def env_float(name: str, default: float) -> float:
         return default
 
 # -------------------------------------------------------------------
-# exchange + alerts
+# exchange + alerts (CENTRALIZED VIA EXCHANGE MANAGER)
 # -------------------------------------------------------------------
 def mk_ex():
-    validate = env_str("KRAKEN_VALIDATE_ONLY", "1") in ("1", "true", "True")
-    cfg = {
-        "apiKey": env_str("KRAKEN_API_KEY", ""),
-        "secret": env_str("KRAKEN_API_SECRET", ""),
-        "options": {"validate": validate},
-    }
-    ex = ccxt.kraken(cfg)  # type: ignore[arg-type]
-    ex.load_markets()
-    return ex
+    """
+    DEPRECATED: Use get_exchange() directly instead.
+    Kept for backward compatibility.
+    """
+    return get_exchange()
 
 def alert(msg: str) -> None:
     url = env_str("ALERT_WEBHOOK_URL", "").strip()
@@ -904,6 +904,14 @@ def run_forever() -> None:
         return
 
     ex = mk_ex()
+    
+    # Send SMS startup test ping if enabled
+    if TELEMETRY_ENABLED and notify_trade:
+        try:
+            from sms_notifications import send_startup_test_ping
+            send_startup_test_ping()
+        except Exception as e:
+            print(f"[SMS-TEST] Failed to send startup ping: {e}")
     
     # Check for daily/weekly summaries
     if TELEMETRY_ENABLED and check_summaries:

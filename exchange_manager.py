@@ -1,0 +1,172 @@
+# exchange_manager.py - Centralized exchange singleton for paper/live mode safety
+
+import os
+from typing import Optional
+import ccxt
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Load environment
+ENV_PATH = Path(__file__).with_name(".env")
+load_dotenv(dotenv_path=str(ENV_PATH), override=True)
+
+
+class ExchangeManager:
+    """
+    Singleton exchange manager that ensures consistent paper/live mode across ALL modules.
+    CRITICAL: This prevents the bug where autopilot.py and commands.py had separate exchange
+    objects with potentially different validate flags.
+    """
+    _instance: Optional['ExchangeManager'] = None
+    _exchange: Optional[ccxt.kraken] = None
+    _validate_mode: bool = True
+    _initialized: bool = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        # Only initialize once
+        if not self._initialized:
+            self._reload_config()
+            self._initialized = True
+    
+    def _reload_config(self):
+        """Reload configuration from environment and reinitialize exchange"""
+        # Reload .env to get latest values
+        load_dotenv(dotenv_path=str(ENV_PATH), override=True)
+        
+        # Read validate mode from environment
+        validate_str = os.getenv("KRAKEN_VALIDATE_ONLY", "1").strip().lower()
+        self._validate_mode = validate_str in ("1", "true", "yes", "on")
+        
+        # Create exchange with validate flag
+        api_key = os.getenv("KRAKEN_API_KEY", "")
+        api_secret = os.getenv("KRAKEN_API_SECRET", "")
+        
+        config = {
+            "apiKey": api_key,
+            "secret": api_secret,
+            "options": {"validate": self._validate_mode}
+        }
+        
+        self._exchange = ccxt.kraken(config)  # type: ignore[arg-type]
+        
+        # Load markets
+        try:
+            self._exchange.load_markets()
+        except Exception as e:
+            print(f"[EXCHANGE-MANAGER] Warning: Failed to load markets: {e}")
+        
+        mode_label = "PAPER TRADING" if self._validate_mode else "LIVE TRADING"
+        print(f"[EXCHANGE-MANAGER] Initialized in {mode_label} mode")
+    
+    def get_exchange(self) -> ccxt.kraken:
+        """Get the exchange instance"""
+        if self._exchange is None:
+            raise RuntimeError("ExchangeManager not initialized")
+        return self._exchange
+    
+    def is_paper_mode(self) -> bool:
+        """Check if in paper trading mode"""
+        return self._validate_mode
+    
+    def is_live_mode(self) -> bool:
+        """Check if in live trading mode"""
+        return not self._validate_mode
+    
+    def get_mode_str(self) -> str:
+        """Get human-readable mode string"""
+        return "paper" if self._validate_mode else "live"
+    
+    def set_mode(self, paper_mode: bool, skip_reload_env: bool = True) -> None:
+        """
+        Change trading mode and reinitialize exchange.
+        WARNING: This should only be called by the mode controller!
+        
+        Args:
+            paper_mode: True for paper trading, False for live
+            skip_reload_env: If True, don't reload .env (caller already updated it)
+        """
+        old_mode = self._validate_mode
+        self._validate_mode = paper_mode
+        
+        # Update environment variable in memory
+        os.environ["KRAKEN_VALIDATE_ONLY"] = "1" if paper_mode else "0"
+        
+        # Create exchange with new validate flag (DON'T reload .env)
+        api_key = os.getenv("KRAKEN_API_KEY", "")
+        api_secret = os.getenv("KRAKEN_API_SECRET", "")
+        
+        config = {
+            "apiKey": api_key,
+            "secret": api_secret,
+            "options": {"validate": self._validate_mode}
+        }
+        
+        self._exchange = ccxt.kraken(config)  # type: ignore[arg-type]
+        
+        # Load markets
+        try:
+            self._exchange.load_markets()
+        except Exception as e:
+            print(f"[EXCHANGE-MANAGER] Warning: Failed to load markets: {e}")
+        
+        mode_str = "PAPER" if paper_mode else "LIVE"
+        old_str = "PAPER" if old_mode else "LIVE"
+        print(f"[EXCHANGE-MANAGER] Mode changed: {old_str} -> {mode_str} (validate={self._validate_mode})")
+    
+    def validate_order_allowed(self, operation: str = "trade") -> tuple[bool, str]:
+        """
+        Validate if an order operation is allowed.
+        Returns (allowed, reason)
+        """
+        if self._validate_mode:
+            return True, f"{operation} allowed (paper mode)"
+        else:
+            return True, f"{operation} allowed (live mode - REAL MONEY)"
+    
+    def reload(self):
+        """Force reload configuration from .env"""
+        self._reload_config()
+
+
+# Global singleton instance
+_manager = ExchangeManager()
+
+
+def get_exchange() -> ccxt.kraken:
+    """Get the global exchange instance"""
+    return _manager.get_exchange()
+
+
+def is_paper_mode() -> bool:
+    """Check if in paper trading mode"""
+    return _manager.is_paper_mode()
+
+
+def is_live_mode() -> bool:
+    """Check if in live trading mode"""
+    return _manager.is_live_mode()
+
+
+def get_mode_str() -> str:
+    """Get current trading mode as string"""
+    return _manager.get_mode_str()
+
+
+def set_trading_mode(paper_mode: bool) -> None:
+    """Set trading mode (paper=True, live=False)"""
+    _manager.set_mode(paper_mode)
+
+
+def reload_exchange_config() -> None:
+    """Reload exchange configuration from .env"""
+    _manager.reload()
+
+
+def get_manager() -> ExchangeManager:
+    """Get the ExchangeManager singleton instance"""
+    return _manager

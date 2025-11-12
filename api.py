@@ -127,11 +127,16 @@ CONTROL_PANEL = """
         
         .status-bar {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr;
             gap: 15px;
             padding: 20px;
             background: #f7fafc;
             border-bottom: 1px solid #e2e8f0;
+        }
+        @media (max-width: 768px) {
+            .status-bar {
+                grid-template-columns: 1fr;
+            }
         }
         .status-card {
             background: white;
@@ -154,6 +159,54 @@ CONTROL_PANEL = """
         }
         .status-value.active { color: #10b981; }
         .status-value.inactive { color: #ef4444; }
+        .status-value.paper { color: #3b82f6; }
+        .status-value.live { color: #ef4444; font-weight: 900; }
+        
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+            margin-top: 10px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #10b981;
+            transition: 0.4s;
+            border-radius: 34px;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: 0.4s;
+            border-radius: 50%;
+        }
+        input:checked + .toggle-slider {
+            background-color: #ef4444;
+        }
+        input:checked + .toggle-slider:before {
+            transform: translateX(26px);
+        }
+        .mode-labels {
+            font-size: 11px;
+            margin-top: 8px;
+            color: #718096;
+        }
         
         .controls {
             padding: 20px;
@@ -312,6 +365,15 @@ CONTROL_PANEL = """
                 <div class="status-label">Portfolio Value</div>
                 <div class="status-value" id="equityValue">$0.00</div>
             </div>
+            <div class="status-card">
+                <div class="status-label">Trading Mode</div>
+                <div class="status-value" id="tradingMode">Loading...</div>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="modeToggle" onclick="toggleTradingMode()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <div class="mode-labels">Paper ⟷ Live</div>
+            </div>
         </div>
         
         <div class="controls">
@@ -414,6 +476,66 @@ CONTROL_PANEL = """
             }
         }
         
+        // Load trading mode
+        async function loadTradingMode() {
+            try {
+                const response = await fetch('/api/trading-mode');
+                const data = await response.json();
+                
+                const modeEl = document.getElementById('tradingMode');
+                const toggleEl = document.getElementById('modeToggle');
+                
+                if (data.is_paper) {
+                    modeEl.textContent = '📝 PAPER';
+                    modeEl.className = 'status-value paper';
+                    toggleEl.checked = false;
+                } else {
+                    modeEl.textContent = '⚠️ LIVE';
+                    modeEl.className = 'status-value live';
+                    toggleEl.checked = true;
+                }
+            } catch (error) {
+                console.error('Failed to load trading mode:', error);
+            }
+        }
+        
+        // Toggle trading mode
+        async function toggleTradingMode() {
+            const toggleEl = document.getElementById('modeToggle');
+            const newMode = toggleEl.checked ? 'live' : 'paper';
+            
+            // Confirm if switching to live mode
+            if (newMode === 'live') {
+                const confirmed = confirm('⚠️ WARNING: You are about to switch to LIVE TRADING mode. Real money will be at risk! Are you sure?');
+                if (!confirmed) {
+                    toggleEl.checked = false;
+                    return;
+                }
+            }
+            
+            try {
+                const response = await fetch('/api/set-trading-mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: newMode })
+                });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    addMessage(data.message, 'system');
+                    loadTradingMode();
+                } else {
+                    addMessage('Failed to change mode: ' + data.message, 'system');
+                    // Revert toggle
+                    toggleEl.checked = !toggleEl.checked;
+                }
+            } catch (error) {
+                addMessage('Error changing trading mode: ' + error.message, 'system');
+                // Revert toggle
+                toggleEl.checked = !toggleEl.checked;
+            }
+        }
+        
         // Send message to Zyn
         async function sendMessage() {
             const input = document.getElementById('chatInput');
@@ -449,9 +571,11 @@ CONTROL_PANEL = """
         
         // Initial load
         updateStatus();
+        loadTradingMode();
         
         // Auto-refresh status every 3 seconds
         setInterval(updateStatus, 3000);
+        setInterval(loadTradingMode, 3000);
     </script>
 </body>
 </html>
@@ -1232,6 +1356,80 @@ def autopilot_status():
         return {"autopilot_running": False, "paused": True, "equity": 0, "symbols": []}
     except Exception as e:
         return {"autopilot_running": False, "paused": True, "equity": 0, "symbols": [], "error": str(e)}
+
+@app.get("/api/trading-mode")
+def get_trading_mode():
+    """Get current trading mode (paper or live)."""
+    try:
+        from exchange_manager import is_paper_mode, get_mode_str
+        return {
+            "mode": get_mode_str(),
+            "is_paper": is_paper_mode(),
+            "is_live": not is_paper_mode(),
+            "validate_only": os.getenv("KRAKEN_VALIDATE_ONLY", "1")
+        }
+    except Exception as e:
+        return {"mode": "unknown", "is_paper": True, "is_live": False, "error": str(e)}
+
+class TradingModeRequest(BaseModel):
+    mode: str
+
+import threading
+_mode_lock = threading.Lock()
+
+@app.post("/api/set-trading-mode")
+def set_trading_mode_endpoint(request: TradingModeRequest):
+    """
+    Set trading mode (paper or live).
+    CRITICAL: Updates .env file FIRST, then runtime exchange manager.
+    Thread-safe with lock to prevent concurrent mode changes.
+    """
+    with _mode_lock:
+        try:
+            mode = request.mode.lower().strip()
+            
+            if mode not in ("paper", "live"):
+                return {"status": "error", "message": f"Invalid mode: {mode}. Must be 'paper' or 'live'."}
+            
+            paper_mode = (mode == "paper")
+            
+            # CRITICAL: Update .env file FIRST before setting mode
+            env_path = Path(__file__).with_name(".env")
+            if env_path.exists():
+                env_content = env_path.read_text(encoding="utf-8")
+                lines = env_content.split("\n")
+                updated = False
+                
+                for i, line in enumerate(lines):
+                    if line.startswith("KRAKEN_VALIDATE_ONLY="):
+                        lines[i] = f"KRAKEN_VALIDATE_ONLY={'1' if paper_mode else '0'}"
+                        updated = True
+                        break
+                
+                if updated:
+                    env_path.write_text("\n".join(lines), encoding="utf-8")
+                else:
+                    return {"status": "error", "message": "KRAKEN_VALIDATE_ONLY not found in .env"}
+            else:
+                return {"status": "error", "message": ".env file not found"}
+            
+            # NOW update exchange manager (after .env is persisted)
+            from exchange_manager import set_trading_mode, get_mode_str
+            set_trading_mode(paper_mode)
+            
+            new_mode = get_mode_str()
+            warning = "" if paper_mode else " ⚠️ REAL MONEY AT RISK! Restart autopilot to apply."
+            
+            return {
+                "status": "success",
+                "message": f"Trading mode set to {new_mode.upper()}{warning}",
+                "mode": new_mode,
+                "is_paper": paper_mode,
+                "is_live": not paper_mode,
+                "note": "Autopilot must be restarted for mode change to take full effect"
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 @app.get("/api/equity_history")
 def get_equity_history(hours: int = 24):

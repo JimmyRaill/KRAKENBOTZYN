@@ -15,10 +15,13 @@ def get_twilio_credentials() -> Tuple[Optional[object], Optional[str]]:
         hostname = os.environ.get('REPLIT_CONNECTORS_HOSTNAME')
         x_replit_token = None
         
-        if os.environ.get('REPL_IDENTITY'):
-            x_replit_token = 'repl ' + os.environ.get('REPL_IDENTITY')
-        elif os.environ.get('WEB_REPL_RENEWAL'):
-            x_replit_token = 'depl ' + os.environ.get('WEB_REPL_RENEWAL')
+        repl_id = os.environ.get('REPL_IDENTITY')
+        web_renewal = os.environ.get('WEB_REPL_RENEWAL')
+        
+        if repl_id:
+            x_replit_token = 'repl ' + repl_id
+        elif web_renewal:
+            x_replit_token = 'depl ' + web_renewal
         
         if not x_replit_token or not hostname:
             return None, None
@@ -135,16 +138,40 @@ def send_sms(message: str, force: bool = False) -> bool:
         return False
     
     try:
-        message_obj = client.messages.create(
+        message_obj = client.messages.create(  # type: ignore[union-attr]
             body=message,
             from_=from_number,
             to=your_phone
         )
-        print(f"[SMS-SENT] To {your_phone}, SID: {message_obj.sid}")
+        print(f"[SMS-SENT] To {your_phone}, SID: {message_obj.sid}")  # type: ignore[union-attr]
         return True
     except Exception as e:
         print(f"[SMS-ERROR] {e}")
         return False
+
+def send_startup_test_ping() -> bool:
+    """
+    Send a test SMS when bot starts up to verify Twilio integration.
+    Returns True if test successful.
+    """
+    config = get_sms_config()
+    
+    if not config.get("enabled"):
+        print("[SMS-TEST] SMS notifications disabled")
+        return False
+    
+    message = "🤖 Zyn Trading Bot Started!\n"
+    message += f"Time: {datetime.now().strftime('%I:%M %p')}\n"
+    message += "SMS notifications are working ✅"
+    
+    result = send_sms(message, force=True)  # Force send even during quiet hours
+    
+    if result:
+        print("[SMS-TEST] ✅ Startup test ping sent successfully!")
+    else:
+        print("[SMS-TEST] ❌ Failed to send startup test ping")
+    
+    return result
 
 def notify_trade(symbol: str, side: str, quantity: float, price: float, reason: str):
     """Send SMS notification when Zyn makes a trade."""

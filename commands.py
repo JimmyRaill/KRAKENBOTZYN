@@ -1,10 +1,11 @@
-# commands.py — clean, strict router for Kraken via ccxt
+# commands.py — clean, strict router for Kraken via ccxt (CENTRALIZED EXCHANGE)
 import os
 import re
 from typing import Optional
 
 import ccxt
 from dotenv import load_dotenv
+from exchange_manager import get_exchange, get_mode_str, is_paper_mode
 
 # Load .env from project root
 load_dotenv(dotenv_path=".env", override=True)
@@ -25,17 +26,11 @@ HELP = (
     "  help\n"
 )
 
-# ----------------- ccxt bootstrap -----------------
+# ----------------- ccxt bootstrap (CENTRALIZED) -----------------
 
 def _ex():
-    validate = os.getenv("KRAKEN_VALIDATE_ONLY", "1").lower() in ("1", "true", "yes", "on")
-    ex = ccxt.kraken({
-        "apiKey": os.getenv("KRAKEN_API_KEY", ""),
-        "secret": os.getenv("KRAKEN_API_SECRET", ""),
-        "options": {"validate": validate},
-    })
-    ex.load_markets()
-    return ex
+    """Get the centralized exchange instance - ensures paper/live mode consistency"""
+    return get_exchange()
 
 # ----------------- helpers -----------------
 
