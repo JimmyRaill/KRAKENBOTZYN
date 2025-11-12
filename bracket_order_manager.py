@@ -179,36 +179,45 @@ class BracketOrderManager:
             print(f"[BRACKET-ERR] Invalid side: {side}")
             return None
         
-        # Ensure prices are positive
+        # Ensure prices are positive BEFORE rounding
         if stop_price <= 0 or tp_price <= 0:
             print(f"[BRACKET-ERR] Negative price: stop={stop_price}, tp={tp_price}")
+            return None
+        
+        # Round prices for exchange precision
+        stop_price_rounded = round(stop_price, 2)
+        tp_price_rounded = round(tp_price, 2)
+        
+        # CRITICAL: Validate prices again AFTER rounding to prevent zero/negative values
+        if stop_price_rounded <= 0 or tp_price_rounded <= 0:
+            print(f"[BRACKET-ERR] Rounding produced invalid price: stop={stop_price_rounded}, tp={tp_price_rounded}")
             return None
         
         # Calculate position size if equity provided
         if equity and equity > 0:
             # Position sizing based on risk per trade
             risk_amount_usd = equity * (self.config.risk_per_trade_pct / 100.0)
-            quantity = risk_amount_usd / abs(entry_price - stop_price)
+            quantity = risk_amount_usd / abs(entry_price - stop_price_rounded)
         else:
             # Use default quantity (caller must provide)
             quantity = 0.0
         
-        # Calculate risk/reward metrics
-        risk_usd = abs(entry_price - stop_price) * quantity if quantity > 0 else 0
-        reward_usd = abs(tp_price - entry_price) * quantity if quantity > 0 else 0
+        # Calculate risk/reward metrics using ROUNDED prices
+        risk_usd = abs(entry_price - stop_price_rounded) * quantity if quantity > 0 else 0
+        reward_usd = abs(tp_price_rounded - entry_price) * quantity if quantity > 0 else 0
         rr_ratio = reward_usd / risk_usd if risk_usd > 0 else 0
         
-        # Calculate percentage distances
-        stop_distance_pct = abs((entry_price - stop_price) / entry_price) * 100
-        tp_distance_pct = abs((tp_price - entry_price) / entry_price) * 100
+        # Calculate percentage distances using ROUNDED prices
+        stop_distance_pct = abs((entry_price - stop_price_rounded) / entry_price) * 100
+        tp_distance_pct = abs((tp_price_rounded - entry_price) / entry_price) * 100
         
         bracket = BracketOrder(
             symbol=symbol,
             side=side,
             entry_price=entry_price,
             quantity=quantity,
-            stop_price=round(stop_price, 2),
-            take_profit_price=round(tp_price, 2),
+            stop_price=stop_price_rounded,
+            take_profit_price=tp_price_rounded,
             risk_usd=risk_usd,
             reward_usd=reward_usd,
             rr_ratio=rr_ratio,

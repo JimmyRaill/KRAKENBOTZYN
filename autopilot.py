@@ -14,6 +14,12 @@ from dotenv import load_dotenv
 import ccxt
 
 # Bracket order manager - MANDATORY for all trades
+# Type hints for LSP
+get_bracket_manager = None
+BracketOrder = None
+BracketConfig = None
+BRACKET_MANAGER_ENABLED = False
+
 try:
     from bracket_order_manager import get_bracket_manager, BracketOrder, BracketConfig
     BRACKET_MANAGER_ENABLED = True
@@ -407,7 +413,7 @@ def place_brackets(symbol: str, avg_fill: float, qty: float, atr: Optional[float
         return False
     
     # CRITICAL: ALWAYS use bracket manager - never skip brackets
-    if not BRACKET_MANAGER_ENABLED:
+    if not BRACKET_MANAGER_ENABLED or get_bracket_manager is None:
         print(f"🚨 [BRACKET-ERR] {symbol} - Bracket manager not available, CANNOT TRADE SAFELY")
         return False
     
@@ -637,7 +643,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                 
                 # CRITICAL PRE-TRADE VALIDATION: Verify brackets can be placed BEFORE executing entry
                 # This implements "NO NAKED POSITIONS" rule from spec
-                if BRACKET_MANAGER_ENABLED:
+                if BRACKET_MANAGER_ENABLED and get_bracket_manager is not None:
                     try:
                         manager = get_bracket_manager()
                         test_bracket = manager.calculate_bracket_prices(
