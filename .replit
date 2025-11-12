@@ -18,6 +18,10 @@ deploymentTarget = "cloudrun"
 expertMode = true
 
 [[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
 localPort = 8000
 externalPort = 80
 exposeLocalhost = true
@@ -27,8 +31,8 @@ localPort = 8001
 externalPort = 3000
 
 [[ports]]
-localPort = 5000
-externalPort = 80
+localPort = 45427
+externalPort = 3001
 
 [workflows]
 runButton = "Project"
