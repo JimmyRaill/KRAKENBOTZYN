@@ -14,31 +14,82 @@ from dotenv import load_dotenv
 import ccxt
 
 # Self-learning imports
+TELEMETRY_ENABLED = False
+log_trade = log_decision = log_performance = log_error = None
 try:
     from telemetry_db import log_trade, log_decision, log_performance, log_error
     from time_context import get_time_info, get_prompt_context
     TELEMETRY_ENABLED = True
 except ImportError:
-    TELEMETRY_ENABLED = False
     print("[WARNING] Telemetry modules not found - learning features disabled")
 
-# Advanced feature imports
+# Advanced feature imports with individual toggles
+MULTI_STRATEGY_ENABLED = False
+PATTERN_RECOGNITION_ENABLED = False
+TRAILING_STOPS_ENABLED = False
+LOSS_RECOVERY_ENABLED = False
+NOTIFICATIONS_ENABLED = False
+
+detect_market_regime = select_best_strategy = execute_strategy = None
+get_multi_strategy_consensus = MarketRegime = StrategyType = None
+create_trailing_stop = PortfolioMetrics = None
+send_alert_sync = trade_executed_alert = daily_summary_alert = None
+strategy_switch_alert = PatternDetector = None
+LossRecoverySystem = ProfitReinvestmentSystem = None
+
+# Try importing advanced modules with feature flags
 try:
     from strategies import (
         detect_market_regime, select_best_strategy, execute_strategy,
         get_multi_strategy_consensus, MarketRegime, StrategyType
     )
+    # Verify all callables loaded
+    if all([detect_market_regime, select_best_strategy, execute_strategy,
+            get_multi_strategy_consensus, MarketRegime, StrategyType]):
+        MULTI_STRATEGY_ENABLED = os.getenv("ENABLE_MULTI_STRATEGY", "0") == "1"
+        if MULTI_STRATEGY_ENABLED:
+            print("[INIT] ✅ Multi-Strategy System enabled")
+except ImportError as e:
+    print(f"[WARNING] Multi-Strategy not available: {e}")
+
+try:
+    from pattern_recognition import PatternDetector
+    if PatternDetector:
+        PATTERN_RECOGNITION_ENABLED = os.getenv("ENABLE_PATTERN_RECOGNITION", "0") == "1"
+        if PATTERN_RECOGNITION_ENABLED:
+            print("[INIT] ✅ Pattern Recognition enabled")
+except ImportError as e:
+    print(f"[WARNING] Pattern Recognition not available: {e}")
+
+try:
     from risk_manager import create_trailing_stop, PortfolioMetrics
+    if create_trailing_stop and PortfolioMetrics:
+        TRAILING_STOPS_ENABLED = os.getenv("ENABLE_TRAILING_STOPS", "0") == "1"
+        if TRAILING_STOPS_ENABLED:
+            print("[INIT] ✅ Trailing Stop-Loss enabled")
+except ImportError as e:
+    print(f"[WARNING] Trailing Stops not available: {e}")
+
+try:
+    from recovery_system import LossRecoverySystem, ProfitReinvestmentSystem
+    if LossRecoverySystem and ProfitReinvestmentSystem:
+        LOSS_RECOVERY_ENABLED = os.getenv("ENABLE_LOSS_RECOVERY", "0") == "1"
+        if LOSS_RECOVERY_ENABLED:
+            print("[INIT] ✅ Loss Recovery & Profit Reinvestment enabled")
+except ImportError as e:
+    print(f"[WARNING] Recovery System not available: {e}")
+
+try:
     from notifications import (
         send_alert_sync, trade_executed_alert, daily_summary_alert,
         strategy_switch_alert
     )
-    from pattern_recognition import PatternDetector
-    from recovery_system import LossRecoverySystem, ProfitReinvestmentSystem
-    ADVANCED_FEATURES_ENABLED = True
+    if all([send_alert_sync, trade_executed_alert, daily_summary_alert, strategy_switch_alert]):
+        NOTIFICATIONS_ENABLED = os.getenv("ENABLE_NOTIFICATIONS", "0") == "1"
+        if NOTIFICATIONS_ENABLED:
+            print("[INIT] ✅ Notification System enabled")
 except ImportError as e:
-    ADVANCED_FEATURES_ENABLED = False
-    print(f"[WARNING] Advanced features not available: {e}")
+    print(f"[WARNING] Notifications not available: {e}")
 
 # -------------------------------------------------------------------
 # .env + constants
