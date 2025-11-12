@@ -1,0 +1,116 @@
+PROJECT: Zyn – Mandatory Bracket Orders (Stop-Loss + Take-Profit) with Hard Risk Limits
+
+NON-NEGOTIABLE GOAL
+- Every entry order MUST be paired with a protective stop-loss AND a profit-taking order (OCO bracket).
+- If the exchange/API cannot place a genuine OCO, emulate it safely with listeners and immediate child orders.
+- If either child fails to submit, CANCEL the parent and alert. No naked positions—ever.
+
+SCOPE
+- Order Router, Risk Engine, and Strategy layer refactor to enforce brackets.
+- Works for both TRADE_MODE=paper and live. Paper simulator must mirror live behavior.
+
+CONFIG (ENV or YAML)
+- RISK_PER_TRADE=0.25   # % of equity max loss per position
+- MIN_RR=1.5            # minimum reward:risk
+- ATR_LOOKBACK=14
+- ATR_MULT_STOP=2.0     # default stop distance in ATRs (override allowed by strategy if tighter)
+- ATR_MULT_TP=3.0       # default TP distance to satisfy MIN_RR
+- MAX_SLIPPAGE_BPS=10
+- REQUIRE_OCO=true       # if true and exchange OCO is unavailable, use emulation path
+- CANCEL_ON_CHILD_FAIL=true
+
+ORDER CONTRACT (must pass validation before any network call)
+- Required fields on NEW position: {symbol, side, entry_type (limit/market), qty, stop_price, take_profit_price, reduce_only=false}
+- stop_price and take_profit_price must be on the correct side of entry with MIN_RR enforced:
+  • For long: stop_price < entry_price; take_profit_price > entry_price; (entry−stop) > 0; (tp−entry) ≥ MIN_RR*(entry−stop)
+  • For short: inverse conditions.
+- Position sizing derives from RISK_PER_TRADE and stop distance:
+  qty = floor( (equity * RISK_PER_TRADE/100) / (abs(entry−stop) + slippage + fees) )
+  If qty <= 0 → reject order.
+
+WORKFLOW (TRUE OCO SUPPORTED)
+1) Build parent entry with `clientOrderId=parent_<uuid>`.
+2) Build child stop with `clientOrderId=stop_<uuid>`, reduce_only=true.
+3) Build child TP with `clientOrderId=tp_<uuid>`, reduce_only=true.
+4) Submit parent + OCO children atomically if the API supports parent/child OCO in one call.
+5) On partial fills, children must track filled qty; if fill increases, adjust child sizes to match net position.
+6) On full exit via one child, immediately cancel the sibling.
+
+WORKFLOW (OCO EMULATION – when exchange lacks native OCO)
+1) Submit parent entry (pending/new) with `clientOrderId=parent_<uuid>`.
+2) On ANY partial fill event:
+   - If no children exist for the current filled_qty, submit stop AND TP as two reduce-only orders sized to current net position.
+   - Tag them with `ocoGroupId=<uuid>` so the listener can correlate.
+3) Listener loop (websocket + poll fallback):
+   - If stop is filled → cancel TP; if TP is filled → cancel stop.
+   - If net position size changes (additional partial fills or partial exits), adjust remaining child sizes accordingly.
+4) Race-condition protection:
+   - Use idempotent upserts keyed by (symbol, ocoGroupId, side, price_bucket).
+   - If cancel fails or times out, resubmit cancel with backoff; if still unknown, freeze trading on that symbol and alert.
+
+RISK ENGINE (HARD LIMITS)
+- Per-trade max loss capped at RISK_PER_TRADE; sizing must respect this using current equity from status-service.
+- Daily loss limit 1.0% equity → halt new entries for 24h (existing positions managed normally).
+- Weekly 3%, Monthly 5% → halt and require human re-enable.
+- After 2 consecutive losses, half size for the next trade; after 3, pause for 60–90 minutes.
+- Spread/volatility guard: if spread > MAX_SPREAD_BPS or ATR spike > threshold, cut size 50–100% or skip.
+
+STOP/TP LOGIC
+- Initial Stop: ATR_MULT_STOP × ATR or nearest meaningful swing (pick larger distance for safety). Always compute fees/slippage in risk.
+- Take Profit: choose min( ATR_MULT_TP × ATR, price that yields ≥ MIN_RR ). Partial take at +1R (e.g., 50%), trail remainder with ATR stop (optional).
+- Breakeven Rule: once +1R is reached, move stop to entry − fees (for long) or entry + fees (for short).
+- Time Stop: if position drifts without reaching ±0.5R within T bars, cut risk (tighten stop) or exit flat.
+
+VALIDATION GATES (MUST PASS OR BLOCK)
+- Gate A: Mode check (paper/live) + healthcheck (API keys, scopes, clock sync, last sync < 60s).
+- Gate B: Position sizing math (qty > 0), RR ≥ MIN_RR, spread/vol within limits.
+- Gate C: Bracket presence (stop & TP) and direction correctness.
+- Gate D: Dry-run encoding: build wire payloads and verify schema before sending. Reject with detailed error if mismatch.
+
+ERROR HANDLING (NO NAKED RISK)
+- If parent accepted but children rejected → immediately CANCEL parent (or close market if already filled beyond cancel window).
+- If parent partially filled and children submission fails → immediately close the partial with market reduce-only and raise CRITICAL alert.
+- All operations wrapped with retries (max 3, exponential backoff + jitter). Log each attempt with trace_id.
+
+SIMULATOR (PAPER MODE)
+- Must support partial fills, slippage, fees, spread, and OCO emulation.
+- Enforce reduce-only semantics and exact child behavior.
+- Paper and live share the same order router interface so tests apply to both.
+
+STATUS-SERVICE INTEGRATION
+- All orders, stops, TPs, fills, and cancels are persisted (orders, trades tables) with parent/child linkage.
+- ActivitySummary reflects real positions and bracket states (e.g., “2 positions open; 2× OCO healthy”).
+
+TESTS (CI MUST PASS)
+Unit:
+- Sizing math with various equity/ATR/spread combinations.
+- Validation for long/short with correct/incorrect stop/tp sides and MIN_RR edges.
+- OCO builder creates correct payloads; emulation path generates correct paired orders.
+Integration (mock exchange + websocket):
+- True OCO: submit parent+children; partial fill → child resize; child fill → sibling cancel; verify no naked exposure.
+- Emulated OCO: same scenarios with race conditions; prove listener cancels sibling reliably.
+- Failure paths: child reject → parent cancel; network timeout → retries; cancel failure → safety close.
+- Daily loss breach triggers halt.
+E2E:
+- Place 3 paper trades; verify each has stop & TP; force a stop hit; ensure TP cancels; dashboard & chat show accurate status.
+- Try to submit order without stop/tp → system rejects with clear error.
+- Switch to live mock; attempt naked order → blocked with error.
+
+UX/DEV UX
+- UI Order Ticket MUST show computed stop, TP, RR, and position size before submit.
+- “Preview” step: show worst-case loss in USD and % for transparency.
+- Health panel shows bracket integrity: {parentId, stopId, tpId, ocoMode:native|emulated, status:OK/WARNING/ERROR}.
+- Provide CLI: `zyn place --symbol BTC/USD --side buy --qty 0.01 --entry market --rr 2.0` (auto-computes stop/tp via ATR).
+- Provide CLI: `zyn close --all` and `zyn panic --all` (market reduce-only for emergencies).
+
+RUNBOOK (include in repo)
+- What constitutes “native OCO” vs emulated, and how to switch.
+- Known edge cases (fast markets, partial fills, cancel timeouts) and how the system handles them.
+- How to read logs for a given trace_id.
+- Recovery playbook for stuck orders (idempotent cancel/replace procedure).
+
+DEFINITION OF DONE
+- It is IMPOSSIBLE to open or keep a position without BOTH a stop-loss and a take-profit attached (native OCO or emulated).
+- Any failure to maintain the bracket immediately exits risk and alerts me.
+- Paper and live produce identical bracket behavior in tests.
+- Chat & dashboard reflect bracket status from status-service (no LLM memory).
