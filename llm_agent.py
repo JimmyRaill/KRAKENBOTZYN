@@ -48,6 +48,14 @@ def _ensure_client() -> Tuple[Any, Optional[str]]:
     return _client, None
 
 
+# ---------- Self-learning imports ----------
+try:
+    from trade_analyzer import get_learning_summary, get_performance_summary
+    from time_context import get_prompt_context, get_context_summary
+    LEARNING_ENABLED = True
+except ImportError:
+    LEARNING_ENABLED = False
+
 # ---------- Paths ----------
 # Use the same STATE_PATH the autopilot writes (falls back to local state.json)
 STATE_PATH = Path(os.environ.get("STATE_PATH", str(Path(__file__).with_name("state.json"))))
@@ -227,10 +235,19 @@ def ask_llm(user_text: str) -> str:
             cmd = text.split(":", 1)[1].strip()
             return _run_router(cmd)
 
-        # Quick summaries
-        if low in ("status", "report"):
+        # Quick summaries with learning data
+        if low in ("status", "report", "learning", "performance"):
             s = _read_state()
-            return f"SUMMARY — {_summarize_state_for_prompt(s)}"
+            lines = [f"SUMMARY — {_summarize_state_for_prompt(s)}"]
+            
+            if LEARNING_ENABLED:
+                try:
+                    lines.append("\n" + get_learning_summary())
+                    lines.append("\n" + get_context_summary())
+                except Exception:
+                    pass
+            
+            return "\n".join(lines)
 
         # Build prompt
         state = _read_state()
@@ -248,15 +265,40 @@ def ask_llm(user_text: str) -> str:
             fresh = False
         state["__is_running_now"] = bool(running_flag or fresh)
 
+        # Get learning insights if available
+        learning_context = ""
+        if LEARNING_ENABLED:
+            try:
+                learning_context = (
+                    "\n\nLEARNING INSIGHTS:\n" + get_learning_summary() + "\n" +
+                    "\nTIME CONTEXT:\n" + get_context_summary()
+                )
+            except Exception as e:
+                learning_context = f"\n\n(Learning data unavailable: {e})"
+        
         system_prompt = (
-            "You are Zyn, a friendly crypto trading copilot.\n"
-            "- Be brief and concrete.\n"
-            "- Use TELEMETRY/SUMMARY for account/P&L/positions.\n"
-            "- Use MEMORY to keep continuity (names, preferences, goals).\n"
-            "- If __is_running_now is true, assume the autopilot loop is active.\n"
-            "- If data is missing or stale, say so and suggest next steps "
-            "(e.g., 'set AUTONOMOUS=1 and run autopilot.py', or 'run: open').\n"
-            "- Never invent numbers; quote only what is in telemetry.\n"
+            "You are Zyn, an intelligent self-learning crypto trading AI.\n\n"
+            "CORE CAPABILITIES:\n"
+            "- You learn from every trade and improve over time\n"
+            "- You understand time, dates, and market patterns\n"
+            "- You remember conversations and user preferences\n"
+            "- You explain your reasoning clearly and naturally\n\n"
+            "COMMUNICATION STYLE:\n"
+            "- Be conversational, friendly, and helpful\n"
+            "- Explain complex trading concepts in simple terms\n"
+            "- Ask clarifying questions when you're uncertain\n"
+            "- Use your LEARNING INSIGHTS to provide data-driven advice\n"
+            "- Reference TIME CONTEXT when discussing trades or patterns\n\n"
+            "DATA SOURCES:\n"
+            "- TELEMETRY: Current account status, positions, P&L\n"
+            "- MEMORY: User preferences, names, past conversations\n"
+            "- LEARNING INSIGHTS: Your analyzed trading performance and patterns\n"
+            "- TIME CONTEXT: Current date/time and market awareness\n\n"
+            "RULES:\n"
+            "- Never invent numbers; only use data from telemetry/learning\n"
+            "- If data is missing, say so and suggest how to get it\n"
+            "- When giving advice, explain WHY based on your learning\n"
+            "- Be honest about uncertainty and limitations\n"
         )
 
         telemetry_block = json.dumps(state, ensure_ascii=False)
@@ -264,10 +306,10 @@ def ask_llm(user_text: str) -> str:
             telemetry_block = telemetry_block[:4000] + "...(truncated)"
 
         user_block = (
-            "MEMORY:\n" + memory_summary + "\n"
-            "TELEMETRY:\n" + telemetry_block + "\n"
-            "SUMMARY:\n" + state_summary + "\n"
-            "---\n"
+            "MEMORY:\n" + memory_summary + "\n" +
+            "TELEMETRY:\n" + telemetry_block + "\n" +
+            "SUMMARY:\n" + state_summary + learning_context + "\n" +
+            "---\n" +
             f"USER: {text}"
         )
 
@@ -283,7 +325,7 @@ def ask_llm(user_text: str) -> str:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_block},
             ],
-            temperature=0.3,
+            temperature=0.7,
         )
         return resp.choices[0].message.content or "No response."
 

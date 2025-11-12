@@ -69,7 +69,17 @@ class AskIn(BaseModel):
 async def ask(a: AskIn):
     try:
         from llm_agent import ask_llm
+        from telemetry_db import log_conversation
+        
+        # Get response
         out = ask_llm(a.text)
+        
+        # Log conversation for learning
+        try:
+            log_conversation(a.text, out)
+        except Exception:
+            pass
+        
         return {"answer": out}
     except Exception as e:
         import traceback

@@ -26,6 +26,10 @@ exposeLocalhost = true
 localPort = 8001
 externalPort = 3000
 
+[[ports]]
+localPort = 5000
+externalPort = 80
+
 [workflows]
 runButton = "Project"
 
@@ -38,6 +42,10 @@ author = "agent"
 task = "workflow.run"
 args = "autopilot"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "chat"
+
 [[workflows.workflow]]
 name = "autopilot"
 author = "agent"
@@ -48,3 +56,15 @@ args = "python autopilot.py"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow]]
+name = "chat"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "uvicorn api:app --host 0.0.0.0 --port 5000"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"

@@ -13,6 +13,15 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 import ccxt
 
+# Self-learning imports
+try:
+    from telemetry_db import log_trade, log_decision, log_performance, log_error
+    from time_context import get_time_info, get_prompt_context
+    TELEMETRY_ENABLED = True
+except ImportError:
+    TELEMETRY_ENABLED = False
+    print("[WARNING] Telemetry modules not found - learning features disabled")
+
 # -------------------------------------------------------------------
 # .env + constants
 # -------------------------------------------------------------------
@@ -312,6 +321,10 @@ def loop_once(ex, symbols: List[str]) -> None:
             atr = compute_atr(ohlcv, period=14)
             pos_qty, usd_cash = position_qty(ex, sym)
             action, why = decide_action(price, closes, pos_qty)
+            
+            # Calculate edge for logging
+            sma20 = mean(closes[-20:]) if len(closes) >= 20 else None
+            edge_pct = ((price - sma20) / sma20 * 100.0) if (price and sma20) else None
 
             if action == "buy" and price:
                 eq_full: Dict[str, Any] = ex.fetch_balance()
@@ -332,23 +345,61 @@ def loop_once(ex, symbols: List[str]) -> None:
 
                 approx_qty = usd_to_spend / price if price else 0.0
                 print(f"[BUY] {sym} ~${usd_to_spend:.2f} (qty≈{approx_qty:.6f}) @ mkt | {why} | ATR={atr if atr else 0:.4f}")
-                print(run_command(f"buy {usd_to_spend:.2f} usd {sym}"))
+                
+                # Execute trade
+                result = run_command(f"buy {usd_to_spend:.2f} usd {sym}")
+                print(result)
+                
+                # Log decision and trade to learning database
+                if TELEMETRY_ENABLED:
+                    try:
+                        log_decision(sym, "buy", why, price, edge_pct, atr, pos_qty, eq_usd, executed=True)
+                        log_trade(sym, "buy", "market_buy", approx_qty, price, usd_to_spend, None, why, "autopilot")
+                    except Exception as log_err:
+                        print(f"[TELEMETRY-ERR] {log_err}")
+                
                 trade_log.append({"symbol": sym, "action": "buy", "usd": float(f"{usd_to_spend:.2f}")})
                 if atr:
                     place_brackets(sym, price, approx_qty, atr)
 
             elif action == "sell_all" and pos_qty > 0:
                 print(f"[SELL] {sym} all @ mkt | {why}")
-                print(run_command(f"sell all {sym}"))
+                
+                # Execute trade
+                result = run_command(f"sell all {sym}")
+                print(result)
+                
+                # Log decision and trade to learning database
+                if TELEMETRY_ENABLED:
+                    try:
+                        log_decision(sym, "sell_all", why, price, edge_pct, atr, pos_qty, eq_now, executed=True)
+                        log_trade(sym, "sell", "market_sell", pos_qty, price, None, None, why, "autopilot")
+                    except Exception as log_err:
+                        print(f"[TELEMETRY-ERR] {log_err}")
+                
                 alert(f"ℹ️ Exited {sym} (reason: {why})")
                 set_cooldown(sym)
                 trade_log.append({"symbol": sym, "action": "sell_all", "qty": float(f"{pos_qty:.8f}")})
 
             else:
                 print(f"[HOLD] {sym} | {why}")
+                
+                # Log hold decision to learning database
+                if TELEMETRY_ENABLED:
+                    try:
+                        log_decision(sym, "hold", why, price, edge_pct, atr, pos_qty, eq_now, executed=False)
+                    except Exception as log_err:
+                        print(f"[TELEMETRY-ERR] {log_err}")
 
         except Exception as e:
             print(f"[ERR] {sym} -> {e}")
+            
+            # Log error to learning database
+            if TELEMETRY_ENABLED:
+                try:
+                    log_error("trading_loop_error", str(e), sym, {"action": action if 'action' in locals() else "unknown"})
+                except Exception:
+                    pass
 
     # open orders preview
     try:
@@ -396,6 +447,19 @@ def loop_once(ex, symbols: List[str]) -> None:
         "state_path": str(STATE_PATH),
     }
     write_state(state)
+    
+    # Log performance snapshot to learning database
+    if TELEMETRY_ENABLED:
+        try:
+            log_performance(
+                equity_usd=eq_now,
+                equity_change_usd=eq_now - (_DAY_START_EQUITY or eq_now),
+                open_positions=per,
+                symbols_traded=symbols,
+                metadata={"paused": paused(), "validate_mode": env_str("KRAKEN_VALIDATE_ONLY", "1")}
+            )
+        except Exception as log_err:
+            print(f"[PERF-LOG-ERR] {log_err}")
 
     # write diagnostic.json
     try:
