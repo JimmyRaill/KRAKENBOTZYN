@@ -16,17 +16,36 @@ An **intelligent, self-learning** cryptocurrency trading bot for the Kraken exch
 - 🛑 Daily loss kill-switch for safety
 
 ## Recent Changes
-- **2025-11-12**: ✅ **PRODUCTION-READY** - All features integrated and battle-tested!
-  - **Added 5 Advanced Modules** (1,836 lines of professional trading code)
-  - **Multi-Strategy System** (4 strategies with auto-regime detection)
-  - **Advanced Risk Management** (Trailing stops, Sharpe/Sortino/Calmar ratios)
-  - **Pattern Recognition** (Chart patterns: triangles, H&S, double tops/bottoms)
-  - **Notification System** (Telegram/Discord/Email alerts for all events)
-  - **Loss Recovery & Profit Reinvestment** (Auto-adjust after wins/losses)
-  - **Fixed all LSP errors** (8 → 0, clean codebase)
-  - **Fixed critical zero-division bugs** in recovery system
-  - **Created FEATURES.md** (850+ line comprehensive guide)
-  - **Architect-approved** for production use
+- **2025-11-12**: 🔧 **MAJOR INTEGRATION & HARDENING** - Advanced modules integrated with safety improvements!
+  - **✅ Integrated 5 Advanced Modules** with feature flags (DISABLED by default for safe rollout):
+    - `crypto_universe.py` - Full Kraken universe support (200+ pairs) with liquidity filtering
+    - `profit_target.py` - Daily profit targeting and session management
+    - `multi_timeframe.py` - Multi-timeframe confirmation (1h/4h/1d)
+    - `api_watchdog.py` - Self-healing with circuit breaker and auto-restart
+    - `backtest_mode.py` - Historical backtesting without live orders
+  - **✅ ZERO LSP Errors** - Fixed all 8 LSP errors across codebase
+  - **✅ Critical Bug Fixes**:
+    - Fixed `statistics.mean()` crashes on empty lists (risk_manager.py, strategies.py)
+    - Fixed division by zero in recovery system (profit_target.py)
+    - Fixed type safety issues across all new modules
+    - Added comprehensive error guards throughout
+  - **✅ Production-Grade Bracket Protection**:
+    - Pre-trade minimum volume checks (prevents rejected brackets)
+    - Auto-adjustment of position size to meet Kraken minimums
+    - Emergency flatten with 3-retry polling verification (2.1s window)
+    - Global pause (6h) + loop exit on critical safety failures
+    - Comprehensive telemetry logging of all safety events
+  - **⚠️ Known Limitations**:
+    - Emergency flatten uses balance polling (not order status tracking)
+    - 2.1-second verification window may not catch all async fills
+    - Partial fill scenarios need extended monitoring
+    - Advanced edge cases require order-ID reconciliation (future enhancement)
+  - **📊 Feature Flags** (in .env):
+    - `ENABLE_CRYPTO_UNIVERSE=0` - Universe mode (default: OFF)
+    - `ENABLE_PROFIT_TARGET=0` - Profit targeting (default: OFF)
+    - `ENABLE_MULTI_TIMEFRAME=0` - MTF confirmation (default: OFF)
+    - `ENABLE_API_WATCHDOG=0` - Self-healing (default: OFF)
+    - `ENABLE_BACKTEST_MODE=0` - Backtesting (default: OFF)
 - **2025-11-12**: 🧠 **Self-Learning AI** - Base intelligence system
   - Created trading telemetry database (SQLite) to remember all trades and decisions
   - Built TradeAnalyzer service for win/loss analysis and pattern recognition
