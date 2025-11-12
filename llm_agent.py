@@ -177,6 +177,7 @@ def _get_trading_status() -> Dict[str, Any]:
         # Get authoritative data
         summary_24h = get_activity_summary("24h")
         summary_7d = get_activity_summary("7d")
+        summary_30d = get_activity_summary("30d")
         recent_trades = get_trades(limit=20)  # Last 20 trades for details
         
         return {
@@ -187,6 +188,7 @@ def _get_trading_status() -> Dict[str, Any]:
             "last_sync": get_last_sync_time(),
             "summary_24h": summary_24h,
             "summary_7d": summary_7d,
+            "summary_30d": summary_30d,
             "health": healthcheck()
         }
     except Exception as e:
@@ -295,13 +297,28 @@ def ask_llm(user_text: str) -> str:
                 for currency, data in balances.items():
                     lines.append(f"  {currency}: {data.get('total', 0):.4f} (free: {data.get('free', 0):.4f})")
             
-            # Show 24h summary
+            # Show activity summaries for all time windows
             summary_24h = trading_status.get('summary_24h', {})
+            summary_7d = trading_status.get('summary_7d', {})
+            summary_30d = trading_status.get('summary_30d', {})
+            
             if summary_24h:
-                trades_summary = summary_24h.get('trades', {})
+                trades_24h = summary_24h.get('trades', {})
                 lines.append(f"\n24H ACTIVITY:")
-                lines.append(f"  Trades: {trades_summary.get('total_trades', 0)}")
+                lines.append(f"  Trades: {trades_24h.get('total_trades', 0)}")
                 lines.append(f"  Realized P&L: ${summary_24h.get('realized_pnl_usd', 0):.2f}")
+            
+            if summary_7d:
+                trades_7d = summary_7d.get('trades', {})
+                lines.append(f"\n7D ACTIVITY:")
+                lines.append(f"  Trades: {trades_7d.get('total_trades', 0)}")
+                lines.append(f"  Realized P&L: ${summary_7d.get('realized_pnl_usd', 0):.2f}")
+            
+            if summary_30d:
+                trades_30d = summary_30d.get('trades', {})
+                lines.append(f"\n30D ACTIVITY:")
+                lines.append(f"  Trades: {trades_30d.get('total_trades', 0)}")
+                lines.append(f"  Realized P&L: ${summary_30d.get('realized_pnl_usd', 0):.2f}")
             
             # Show recent trades with details
             recent_trades = trading_status.get('recent_trades', [])
@@ -325,12 +342,13 @@ def ask_llm(user_text: str) -> str:
             if health.get('warnings'):
                 lines.append(f"\nWARNINGS: {', '.join(health['warnings'])}")
             
-            if LEARNING_ENABLED:
-                try:
-                    lines.append("\n" + get_learning_summary())
-                    lines.append("\n" + get_context_summary())
-                except Exception:
-                    pass
+            # DISABLED: telemetry has stale data - use Status Service instead
+            # if LEARNING_ENABLED:
+            #     try:
+            #         lines.append("\n" + get_learning_summary())
+            #         lines.append("\n" + get_context_summary())
+            #     except Exception:
+            #         pass
             
             return "\n".join(lines)
 
@@ -354,15 +372,17 @@ def ask_llm(user_text: str) -> str:
         state["__is_running_now"] = bool(running_flag or fresh)
 
         # Get learning insights if available
+        # TEMPORARILY DISABLED: telemetry database has stale data (only 1 trade vs 50 real trades from Kraken)
+        # TODO: Refactor trade_analyzer to use Status Service instead of telemetry_db
         learning_context = ""
-        if LEARNING_ENABLED:
-            try:
-                learning_context = (
-                    "\n\nLEARNING INSIGHTS:\n" + get_learning_summary() + "\n" +
-                    "\nTIME CONTEXT:\n" + get_context_summary()
-                )
-            except Exception as e:
-                learning_context = f"\n\n(Learning data unavailable: {e})"
+        # if LEARNING_ENABLED:
+        #     try:
+        #         learning_context = (
+        #             "\n\nLEARNING INSIGHTS:\n" + get_learning_summary() + "\n" +
+        #             "\nTIME CONTEXT:\n" + get_context_summary()
+        #         )
+        #     except Exception as e:
+        #         learning_context = f"\n\n(Learning data unavailable: {e})"
         
         system_prompt = (
             "You are Zyn, an intelligent self-learning crypto trading AI.\n\n"
@@ -391,8 +411,9 @@ def ask_llm(user_text: str) -> str:
             "  * This is 100% REAL DATA synced from Kraken within last 60 seconds\n"
             "  * ALWAYS use this for ANY questions about balances, orders, trades, or P&L\n"
             "  * NEVER guess or make up trading numbers - only use what's in TRADING_STATUS\n"
+            "  * Trade counts are in: summary_24h.trades.total_trades, summary_7d.trades.total_trades, summary_30d.trades.total_trades\n"
+            "  * P&L data is in: summary_24h.realized_pnl_usd, summary_7d.realized_pnl_usd, summary_30d.realized_pnl_usd\n"
             "- MEMORY: User preferences, names, past conversations (NOT for trading data)\n"
-            "- LEARNING INSIGHTS: Your analyzed trading performance and patterns\n"
             "- TIME CONTEXT: Current date/time and market awareness\n"
             "- AUTOPILOT_STATUS: Whether bot is running (from state.json)\n\n"
             "CRITICAL RULES FOR ACCURACY:\n"
@@ -406,6 +427,22 @@ def ask_llm(user_text: str) -> str:
         )
 
         # CRITICAL: Trading data from Status Service (authoritative)
+        # Build human-readable summary FIRST so LLM sees key numbers immediately
+        trading_summary_text = ""
+        if not trading_status.get("error"):
+            s24 = trading_status.get('summary_24h', {})
+            s7d = trading_status.get('summary_7d', {})
+            s30d = trading_status.get('summary_30d', {})
+            
+            trading_summary_text = (
+                "QUICK REFERENCE (Trade Counts from Kraken API):\n"
+                f"- Past 24 hours: {s24.get('trades', {}).get('total_trades', 0)} trades, P&L: ${s24.get('realized_pnl_usd', 0):.2f}\n"
+                f"- Past 7 days: {s7d.get('trades', {}).get('total_trades', 0)} trades, P&L: ${s7d.get('realized_pnl_usd', 0):.2f}\n"
+                f"- Past 30 days: {s30d.get('trades', {}).get('total_trades', 0)} trades, P&L: ${s30d.get('realized_pnl_usd', 0):.2f}\n"
+                f"- Recent trades available: {len(trading_status.get('recent_trades', []))}\n"
+                f"- Open orders: {len(trading_status.get('open_orders', []))}\n\n"
+            )
+        
         trading_status_block = json.dumps(trading_status, ensure_ascii=False)
         if len(trading_status_block) > 3000:
             trading_status_block = trading_status_block[:3000] + "...(truncated)"
@@ -427,7 +464,8 @@ def ask_llm(user_text: str) -> str:
         user_block = (
             "MEMORY:\n" + memory_summary + "\n\n" +
             status_warning +
-            "TRADING_STATUS (AUTHORITATIVE - Use for ALL trading data):\n" + trading_status_block + "\n\n" +
+            trading_summary_text +
+            "TRADING_STATUS (AUTHORITATIVE - Full JSON data):\n" + trading_status_block + "\n\n" +
             "AUTOPILOT_STATUS (Bot running status only):\n" + autopilot_status_block + "\n\n" +
             "SUMMARY:\n" + state_summary + learning_context + "\n" +
             "---\n" +
