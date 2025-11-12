@@ -660,20 +660,30 @@ def loop_once(ex, symbols: List[str]) -> None:
                             print(f"[EMERGENCY-FLATTEN] {sym} command executed: {emergency_sell}")
                             
                             # CRITICAL: ALWAYS verify by checking actual position (PRIMARY check)
-                            # Don't rely on string heuristics - check the actual balance
-                            time.sleep(0.5)  # Allow settlement
+                            # Poll with retries to handle async settlement
+                            max_retries = 3
+                            retry_delay = 0.7
                             
-                            try:
-                                verify_qty, _ = position_qty(ex, sym)
-                                if verify_qty > 0.001:  # Still have position
-                                    flatten_success = False
-                                    print(f"🚨 [FLATTEN-VERIFY-FAILED] {sym} - Position still exists: {verify_qty}")
-                                else:
-                                    flatten_success = True
-                                    print(f"✅ [FLATTEN-VERIFIED] {sym} - Position confirmed closed (qty: {verify_qty})")
-                            except Exception as verify_err:
-                                print(f"🚨 [FLATTEN-VERIFY-ERR] {sym}: {verify_err} - cannot confirm position closed")
-                                flatten_success = False
+                            for attempt in range(max_retries):
+                                time.sleep(retry_delay)  # Allow settlement
+                                
+                                try:
+                                    verify_qty, _ = position_qty(ex, sym)
+                                    if verify_qty <= 0.001:  # Position closed
+                                        flatten_success = True
+                                        print(f"✅ [FLATTEN-VERIFIED] {sym} - Position confirmed closed (qty: {verify_qty}, attempt {attempt+1}/{max_retries})")
+                                        break
+                                    else:
+                                        print(f"⏳ [FLATTEN-VERIFY-RETRY] {sym} - Position still exists: {verify_qty} (attempt {attempt+1}/{max_retries})")
+                                        if attempt == max_retries - 1:
+                                            # Final attempt failed
+                                            flatten_success = False
+                                            print(f"🚨 [FLATTEN-VERIFY-FAILED] {sym} - Position still exists after {max_retries} attempts: {verify_qty}")
+                                except Exception as verify_err:
+                                    print(f"🚨 [FLATTEN-VERIFY-ERR] {sym} attempt {attempt+1}/{max_retries}: {verify_err}")
+                                    if attempt == max_retries - 1:
+                                        print(f"🚨 [FLATTEN-VERIFY-FAILED] {sym} - Cannot confirm position closed after {max_retries} attempts")
+                                        flatten_success = False
                             
                             # Log critical safety event with verification result
                             if TELEMETRY_ENABLED and log_error:
