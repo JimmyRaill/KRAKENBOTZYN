@@ -433,9 +433,29 @@ def ask_llm(user_text: str) -> str:
             s24 = trading_status.get('summary_24h', {})
             s7d = trading_status.get('summary_7d', {})
             s30d = trading_status.get('summary_30d', {})
+            balances = trading_status.get('balances', {})
+            
+            # Calculate total equity from balances
+            total_equity = 0.0
+            if balances:
+                usd_bal = balances.get('USD', {})
+                if isinstance(usd_bal, dict):
+                    total_equity = usd_bal.get('total', 0)
+                else:
+                    total_equity = usd_bal
+                # Add crypto balances (if any have usd_price)
+                for currency, bal in balances.items():
+                    if currency != 'USD' and isinstance(bal, dict) and bal.get('usd_price'):
+                        total_equity += bal.get('total', 0) * bal.get('usd_price', 0)
+            
+            # Equity change is same as realized P&L (all positions closed)
+            equity_change = s24.get('realized_pnl_usd', 0)
+            equity_change_pct = (equity_change / total_equity * 100) if total_equity > 0 else 0
             
             trading_summary_text = (
-                "QUICK REFERENCE (Trade Counts from Kraken API):\n"
+                "QUICK REFERENCE (Trade Counts & Performance from Kraken API):\n"
+                f"- Current Equity: ${total_equity:.2f}\n"
+                f"- Equity Change Today: ${equity_change:.2f} ({equity_change_pct:+.2f}%)\n\n"
                 f"- Past 24 hours: {s24.get('trades', {}).get('total_trades', 0)} trades, P&L: ${s24.get('realized_pnl_usd', 0):.2f}\n"
                 f"- Past 7 days: {s7d.get('trades', {}).get('total_trades', 0)} trades, P&L: ${s7d.get('realized_pnl_usd', 0):.2f}\n"
                 f"- Past 30 days: {s30d.get('trades', {}).get('total_trades', 0)} trades, P&L: ${s30d.get('realized_pnl_usd', 0):.2f}\n"

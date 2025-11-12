@@ -1375,12 +1375,22 @@ def get_dashboard_data():
                 # Add crypto balances (already in USD equivalent from Kraken)
                 total_equity += bal.get('total', 0) * bal.get('usd_price', 0) if bal.get('usd_price') else 0
         
+        # Calculate equity change
+        equity_change = summary_7d.get("realized_pnl_usd", 0)
+        equity_change_pct = (equity_change / total_equity * 100) if total_equity > 0 else 0
+        
         return {
+            # Top-level fields for frontend compatibility
+            "equity_usd": total_equity,
+            "equity_change_usd": equity_change,
+            "equity_change_pct": equity_change_pct,
+            "total_trades": summary_7d['trades']['total_trades'],
+            # Legacy nested format (kept for compatibility)
             "equity": {
                 "current": total_equity,
                 "day_start": state.get("equity_day_start_usd", total_equity),
-                "change": summary_7d.get("realized_pnl_usd", 0),
-                "change_pct": 0
+                "change": equity_change,
+                "change_pct": equity_change_pct
             },
             "positions": positions,
             "paused": state.get("paused", False),
