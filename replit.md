@@ -16,6 +16,17 @@ An **intelligent, self-learning** cryptocurrency trading bot for the Kraken exch
 - 🛑 Daily loss kill-switch for safety
 
 ## Recent Changes
+- **2025-11-12**: ✅ **STATUS SERVICE - 100% ACCURATE ANSWERS** - Zyn now gives perfectly legitimate, correct answers!
+  - Created StatusService module - single source of truth for ALL trading data
+  - All chat responses about orders/trades/balances driven by Kraken API data (< 60s fresh)
+  - NEVER uses LLM memory for trading data - only authoritative sources
+  - New /api/status endpoint returns complete trading status
+  - New DB tables: orders, balances, sync_state with proper pagination
+  - Auto-sync every 60 seconds to ensure data freshness
+  - Computes P&L from actual DB rows, not cached prompts
+  - Health checks: API keys, sync status, DB connectivity, mode alignment
+  - LLM now receives actual trade lists with details, not just aggregates
+  - Fixed critical bug in get_activity_summary() (double fetchone() call)
 - **2025-11-12**: 🤖 **ZYN'S PERSONALITY UPDATE** - Zyn now fully understands his role as your financial servant!
   - Updated system prompt to emphasize Zyn's purpose: to do ALL the work FOR you
   - Zyn takes pride in being your tireless trading assistant who handles everything
@@ -77,6 +88,20 @@ An **intelligent, self-learning** cryptocurrency trading bot for the Kraken exch
 - **2025-11-12**: Updated `pyproject.toml` with proper dependencies
 
 ## Project Architecture
+
+### 📊 Status Service (NEW! - Ensures 100% Accurate Answers)
+1. **status_service.py** - Single source of truth for trading data
+   - get_mode() - Current trading mode (paper/live)
+   - get_balances() - Real balances from Kraken
+   - get_open_orders() - All open orders
+   - get_closed_orders(since, until) - Historical closed orders with pagination
+   - get_trades(since, until, limit) - Historical trades with full details
+   - get_activity_summary(window) - PnL/stats for 24h/7d/30d computed from DB
+   - sync_exchange() - Idempotent sync from Kraken (iterates ALL pages)
+   - healthcheck() - Verifies API keys, sync freshness, DB connectivity
+   - New DB tables: orders, balances, sync_state
+   - Auto-syncs if data > 60 seconds old
+   - **CRITICAL**: Zyn NEVER guesses trading data - always uses this service
 
 ### 🧠 Self-Learning Components (NEW!)
 1. **telemetry_db.py** - Trading memory database

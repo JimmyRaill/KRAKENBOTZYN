@@ -572,7 +572,8 @@ def get_activity_summary(window: Literal["24h", "7d", "30d"] = "24h") -> Dict[st
             FROM trades
             WHERE timestamp >= ?
         """, (since,))
-        trade_stats = dict(cursor.fetchone()) if cursor.fetchone() else {}
+        trade_row = cursor.fetchone()
+        trade_stats = dict(trade_row) if trade_row else {}
         
         # Get order stats
         cursor.execute("""
@@ -584,7 +585,8 @@ def get_activity_summary(window: Literal["24h", "7d", "30d"] = "24h") -> Dict[st
             FROM orders
             WHERE mode = ? AND timestamp >= ?
         """, (mode, since))
-        order_stats = dict(cursor.fetchone()) if cursor.fetchone() else {}
+        order_row = cursor.fetchone()
+        order_stats = dict(order_row) if order_row else {}
         
         # Get current balances
         balances = get_balances()
