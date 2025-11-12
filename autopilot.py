@@ -379,17 +379,64 @@ def decide_action(price: Optional[float], closes: List[float], pos_qty: float):
         return "sell_all", f"edge {edge_pct:.2f}% < {exit_edge}%"
     return "hold", f"edge {edge_pct:.2f}%"
 
-def place_brackets(symbol: str, avg_fill: float, qty: float, atr: Optional[float]) -> None:
+def place_brackets(symbol: str, avg_fill: float, qty: float, atr: Optional[float], ex) -> bool:
+    """
+    Place bracket orders for a position. Returns True if successful, False if failed.
+    CRITICAL SAFETY: If brackets fail, caller MUST handle the unprotected position.
+    """
     if not (avg_fill and qty and atr):
-        return
+        print(f"[BRACKET-SKIP] {symbol} - missing parameters")
+        return False
+    
     tp_atr = env_float("TAKE_PROFIT_ATR", 1.2)
     sl_atr = env_float("STOP_LOSS_ATR", 0.6)
     tp_px = round(avg_fill + tp_atr * atr, 2)
     sl_px = round(avg_fill - sl_atr * atr, 2)
+    
+    # Check minimum order size BEFORE attempting brackets
+    try:
+        market = ex.market(symbol) or {}
+        limits = market.get("limits") or {}
+        min_amt = float((limits.get("amount") or {}).get("min", 0) or 0)
+        min_cost = float((limits.get("cost") or {}).get("min", 0) or 0)
+        
+        # Check if quantity meets minimums
+        if min_amt > 0 and qty < min_amt:
+            print(f"[BRACKET-SKIP] {symbol} qty {qty:.6f} < min {min_amt:.6f} - position UNPROTECTED")
+            return False
+        
+        if min_cost > 0 and qty * avg_fill < min_cost:
+            print(f"[BRACKET-SKIP] {symbol} cost ${qty * avg_fill:.2f} < min ${min_cost:.2f} - position UNPROTECTED")
+            return False
+    except Exception as e:
+        print(f"[BRACKET-CHECK-ERR] {symbol}: {e}")
+        return False
+    
+    # Attempt to place brackets
     from commands import handle as run_command  # local import
     print(f"[BRACKETS] {symbol} TP={tp_px} SL={sl_px} qty={qty:.6f}")
-    # Use the router's one-shot bracket (TP limit + SL stop-market)
-    print(run_command(f"bracket {symbol} {qty:.6f} tp {tp_px} sl {sl_px}"))
+    
+    try:
+        result = run_command(f"bracket {symbol} {qty:.6f} tp {tp_px} sl {sl_px}")
+        result_str = str(result).lower()
+        
+        # Robust error detection - treat ANY error/warning as failure for safety
+        error_indicators = ["error", "err", "fail", "invalid", "reject", "denied", "insufficient"]
+        if any(indicator in result_str for indicator in error_indicators):
+            print(f"[BRACKET-FAILED] {symbol} - {result}")
+            return False
+        
+        # Also check for success indicators - if missing, assume failure
+        success_indicators = ["ok", "success", "placed", "created"]
+        if not any(indicator in result_str for indicator in success_indicators):
+            print(f"[BRACKET-UNCERTAIN] {symbol} - no success confirmation, treating as failure: {result}")
+            return False
+        
+        print(result)
+        return True
+    except Exception as e:
+        print(f"[BRACKET-ERR] {symbol}: {e}")
+        return False
 
 # -------------------------------------------------------------------
 # diagnostics
@@ -523,6 +570,43 @@ def loop_once(ex, symbols: List[str]) -> None:
                     continue
 
                 approx_qty = usd_to_spend / price if price else 0.0
+                
+                # CRITICAL SAFETY CHECK: Ensure brackets can be placed before trading
+                # If brackets can't meet minimum volume, increase position size or skip trade
+                try:
+                    market = ex.market(sym) or {}
+                    limits = market.get("limits") or {}
+                    min_amt = float((limits.get("amount") or {}).get("min", 0) or 0)
+                    min_cost = float((limits.get("cost") or {}).get("min", 0) or 0)
+                    
+                    # Check if bracket qty will meet minimum
+                    if min_amt > 0 and approx_qty < min_amt:
+                        # Try to increase to minimum
+                        adjusted_qty = min_amt * 1.05  # 5% buffer
+                        adjusted_cost = adjusted_qty * price
+                        
+                        if adjusted_cost <= env_float("MAX_POSITION_USD", 10.0) and adjusted_cost <= usd_cash:
+                            print(f"[ADJUST] {sym} qty {approx_qty:.6f} → {adjusted_qty:.6f} to meet bracket minimum")
+                            approx_qty = adjusted_qty
+                            usd_to_spend = adjusted_cost
+                        else:
+                            print(f"[SKIP] {sym} qty {approx_qty:.6f} < min {min_amt:.6f} and can't increase - SAFETY: no trade without brackets")
+                            continue
+                    
+                    if min_cost > 0 and approx_qty * price < min_cost:
+                        adjusted_cost = min_cost * 1.05
+                        if adjusted_cost <= env_float("MAX_POSITION_USD", 10.0) and adjusted_cost <= usd_cash:
+                            print(f"[ADJUST] {sym} cost ${approx_qty * price:.2f} → ${adjusted_cost:.2f} to meet bracket minimum")
+                            approx_qty = adjusted_cost / price
+                            usd_to_spend = adjusted_cost
+                        else:
+                            print(f"[SKIP] {sym} cost ${approx_qty * price:.2f} < min ${min_cost:.2f} and can't increase - SAFETY: no trade without brackets")
+                            continue
+                except Exception as e:
+                    print(f"[BRACKET-CHECK-ERR] {sym}: {e} - proceeding with caution")
+                
+                # Recalculate final qty after adjustments
+                approx_qty = usd_to_spend / price if price else 0.0
                 print(f"[BUY] {sym} ~${usd_to_spend:.2f} (qty≈{approx_qty:.6f}) @ mkt | {why} | ATR={atr if atr else 0:.4f}")
                 
                 # Execute trade (or simulate if backtest mode)
@@ -554,8 +638,99 @@ def loop_once(ex, symbols: List[str]) -> None:
                         print(f"[TARGET-RECORD-ERR] {e}")
                 
                 trade_log.append({"symbol": sym, "action": "buy", "usd": float(f"{usd_to_spend:.2f}")})
+                
+                # CRITICAL SAFETY: Place brackets and handle failure
+                # If brackets fail, IMMEDIATELY flatten the position
                 if atr:
-                    place_brackets(sym, price, approx_qty, atr)
+                    # Add small delay to prevent nonce issues
+                    time.sleep(0.5)
+                    
+                    brackets_placed = place_brackets(sym, price, approx_qty, atr, ex)
+                    if not brackets_placed:
+                        print(f"🚨 [CRITICAL-SAFETY] {sym} BRACKETS FAILED - FLATTENING POSITION IMMEDIATELY!")
+                        
+                        # IMMEDIATE ACTION: Sell the entire position to prevent unprotected exposure
+                        flatten_success = False
+                        emergency_sell_result = None
+                        
+                        try:
+                            time.sleep(0.3)  # Brief delay before emergency exit
+                            emergency_sell = run_command(f"sell all {sym}")
+                            emergency_sell_result = str(emergency_sell)
+                            print(f"[EMERGENCY-FLATTEN] {sym} command executed: {emergency_sell}")
+                            
+                            # CRITICAL: ALWAYS verify by checking actual position (PRIMARY check)
+                            # Don't rely on string heuristics - check the actual balance
+                            time.sleep(0.5)  # Allow settlement
+                            
+                            try:
+                                verify_qty, _ = position_qty(ex, sym)
+                                if verify_qty > 0.001:  # Still have position
+                                    flatten_success = False
+                                    print(f"🚨 [FLATTEN-VERIFY-FAILED] {sym} - Position still exists: {verify_qty}")
+                                else:
+                                    flatten_success = True
+                                    print(f"✅ [FLATTEN-VERIFIED] {sym} - Position confirmed closed (qty: {verify_qty})")
+                            except Exception as verify_err:
+                                print(f"🚨 [FLATTEN-VERIFY-ERR] {sym}: {verify_err} - cannot confirm position closed")
+                                flatten_success = False
+                            
+                            # Log critical safety event with verification result
+                            if TELEMETRY_ENABLED and log_error:
+                                try:
+                                    log_error("bracket_failure_auto_flatten", 
+                                             f"Brackets failed for {sym}, position {'closed' if flatten_success else 'NOT CLOSED'}", {
+                                        "symbol": sym, "qty": approx_qty, "price": price,
+                                        "flatten_verified_success": flatten_success,
+                                        "emergency_sell_result": str(emergency_sell_result)[:200]
+                                    })
+                                except Exception:
+                                    pass
+                            
+                            # Only mark as safe exit if flatten actually succeeded AND verified
+                            if flatten_success and trade_log and trade_log[-1].get("symbol") == sym:
+                                trade_log[-1]["action"] = "buy_then_emergency_exit"
+                                trade_log[-1]["note"] = "bracket_failure_auto_flattened_and_verified"
+                        except Exception as flatten_err:
+                            flatten_success = False
+                            print(f"🚨🚨🚨 [FLATTEN-EXCEPTION] {sym}: {flatten_err}")
+                            
+                            # RESTORE: Alert and log exception path
+                            alert(f"🚨 FLATTEN EXCEPTION: {sym} - {flatten_err}")
+                            if TELEMETRY_ENABLED and log_error:
+                                try:
+                                    log_error("flatten_exception", f"Exception during emergency flatten of {sym}", {
+                                        "symbol": sym, "exception": str(flatten_err)
+                                    })
+                                except Exception:
+                                    pass
+                        
+                        # CRITICAL: If flatten failed (either via error check or exception), PAUSE TRADING
+                        if not flatten_success:
+                            print(f"🚨🚨🚨 [CRITICAL-SAFETY-FAILURE] {sym} POSITION IS UNPROTECTED!")
+                            print(f"⚠️  BRACKETS FAILED + EMERGENCY FLATTEN FAILED")
+                            print(f"⚠️  PAUSING ALL TRADING FOR SAFETY")
+                            
+                            # EMERGENCY: Trigger global pause to prevent further exposure
+                            global _PAUSED_UNTIL
+                            _PAUSED_UNTIL = time.time() + (6 * 60 * 60)  # Pause for 6 hours
+                            
+                            # Alert operator
+                            alert(f"🚨 CRITICAL SAFETY FAILURE: {sym} position unprotected! Trading paused for 6h. MANUAL INTERVENTION REQUIRED!")
+                            
+                            # Log critical double failure
+                            if TELEMETRY_ENABLED and log_error:
+                                try:
+                                    log_error("critical_double_failure", 
+                                             f"Both brackets AND emergency flatten failed for {sym} - TRADING PAUSED", {
+                                        "symbol": sym, "qty": approx_qty, "price": price,
+                                        "paused_until": _PAUSED_UNTIL
+                                    })
+                                except Exception:
+                                    pass
+                            
+                            # Exit loop immediately to prevent more trades
+                            break
 
             elif action == "sell_all" and pos_qty > 0:
                 print(f"[SELL] {sym} all @ mkt | {why}")
