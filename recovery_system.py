@@ -298,7 +298,7 @@ class PortfolioRebalancer:
     
     def __init__(
         self,
-        target_allocations: Dict[str, float] = None,
+        target_allocations: Optional[Dict[str, float]] = None,
         rebalance_threshold_pct: float = 0.10  # Rebalance if >10% off target
     ):
         # Default equal allocation if not specified
@@ -320,6 +320,10 @@ class PortfolioRebalancer:
         Returns:
             Dict of {symbol: {current_pct, target_pct, action, amount_usd}}
         """
+        # Guard against empty positions
+        if not current_positions or len(current_positions) == 0:
+            return {}
+        
         # Calculate current allocations
         total_invested = sum(current_positions.values())
         current_allocations = {
@@ -330,6 +334,9 @@ class PortfolioRebalancer:
         # If no target allocations set, use equal weight
         if not self.target_allocations:
             num_symbols = len(current_positions)
+            # Guard against zero division
+            if num_symbols == 0:
+                return {}
             self.target_allocations = {
                 symbol: 1.0 / num_symbols
                 for symbol in current_positions.keys()
