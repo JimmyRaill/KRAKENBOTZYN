@@ -378,6 +378,7 @@ def loop_once(ex, symbols: List[str]) -> None:
     # per-symbol logic + trade log
     trade_log: List[Dict[str, Any]] = []
     for sym in symbols:
+        action = "unknown"  # Initialize to avoid unbound variable in error handler
         try:
             if paused():
                 print(f"[PAUSED] global pause active; skip {sym}")
@@ -420,7 +421,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                 print(result)
                 
                 # Log decision and trade to learning database
-                if TELEMETRY_ENABLED:
+                if TELEMETRY_ENABLED and log_decision and log_trade:
                     try:
                         log_decision(sym, "buy", why, price, edge_pct, atr, pos_qty, eq_usd, executed=True)
                         log_trade(sym, "buy", "market_buy", approx_qty, price, usd_to_spend, None, why, "autopilot")
@@ -439,7 +440,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                 print(result)
                 
                 # Log decision and trade to learning database
-                if TELEMETRY_ENABLED:
+                if TELEMETRY_ENABLED and log_decision and log_trade:
                     try:
                         log_decision(sym, "sell_all", why, price, edge_pct, atr, pos_qty, eq_now, executed=True)
                         log_trade(sym, "sell", "market_sell", pos_qty, price, None, None, why, "autopilot")
@@ -454,7 +455,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                 print(f"[HOLD] {sym} | {why}")
                 
                 # Log hold decision to learning database
-                if TELEMETRY_ENABLED:
+                if TELEMETRY_ENABLED and log_decision:
                     try:
                         log_decision(sym, "hold", why, price, edge_pct, atr, pos_qty, eq_now, executed=False)
                     except Exception as log_err:
@@ -464,9 +465,10 @@ def loop_once(ex, symbols: List[str]) -> None:
             print(f"[ERR] {sym} -> {e}")
             
             # Log error to learning database
-            if TELEMETRY_ENABLED:
+            if TELEMETRY_ENABLED and log_error:
                 try:
-                    log_error("trading_loop_error", str(e), sym, {"action": action if 'action' in locals() else "unknown"})
+                    error_action = action if 'action' in dir() else "unknown"
+                    log_error("trading_loop_error", str(e), sym, {"action": error_action})
                 except Exception:
                     pass
 
@@ -518,7 +520,7 @@ def loop_once(ex, symbols: List[str]) -> None:
     write_state(state)
     
     # Log performance snapshot to learning database
-    if TELEMETRY_ENABLED:
+    if TELEMETRY_ENABLED and log_performance:
         try:
             log_performance(
                 equity_usd=eq_now,
