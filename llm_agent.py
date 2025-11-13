@@ -524,6 +524,110 @@ def _execute_trading_command(command: str) -> str:
         return error_msg
 
 
+# ---------- Paper Trade Self-Test ----------
+def _run_paper_trade_test() -> str:
+    """
+    Run a complete paper trading self-test to verify the paper trading system works end-to-end.
+    
+    Test Flow:
+    1. Switch to paper mode
+    2. Execute a small bracket order (0.03 ZEC/USD with SL/TP)
+    3. Query open orders/positions immediately
+    4. Verify the order appears in results
+    5. Return detailed diagnostics
+    """
+    try:
+        from exchange_manager import get_mode_str, is_paper_mode
+        
+        # Ensure we're in paper mode
+        mode = get_mode_str()
+        if mode != "paper":
+            return f"❌ Test blocked: Current mode is {mode.upper()}. Paper trade test only runs in PAPER mode."
+        
+        print("[ZYN-SELF-TEST] Starting paper trade verification test...")
+        
+        # Step 1: Execute a bracket order using percentage helper
+        test_symbol = "ZEC/USD"
+        test_amount = 0.03
+        test_sl_pct = 1.0
+        test_tp_pct = 2.0
+        
+        print(f"[ZYN-SELF-TEST] Step 1: Executing test bracket order: {test_amount} {test_symbol}")
+        bracket_result = _execute_bracket_with_percentages(
+            symbol=test_symbol,
+            amount=test_amount,
+            sl_percent=test_sl_pct,
+            tp_percent=test_tp_pct
+        )
+        
+        # Step 2: Query open orders immediately
+        print("[ZYN-SELF-TEST] Step 2: Querying open orders...")
+        open_result = _execute_trading_command("open")
+        
+        # Step 3: Query balances
+        print("[ZYN-SELF-TEST] Step 3: Querying balances...")
+        bal_result = _execute_trading_command("bal")
+        
+        # Step 4: Analyze results
+        print("[ZYN-SELF-TEST] Step 4: Analyzing results...")
+        
+        # Check if orders appear
+        has_open_orders = "(no open orders)" not in open_result.lower()
+        has_zec_mention = "zec" in open_result.lower()
+        
+        # Build comprehensive test report
+        test_report = (
+            "═══════════════════════════════════════════════\n"
+            "📋 PAPER TRADE SELF-TEST REPORT\n"
+            "═══════════════════════════════════════════════\n\n"
+            f"🔧 Mode: {mode.upper()}\n"
+            f"📦 Test Order: {test_amount} {test_symbol} with {test_sl_pct}% SL, {test_tp_pct}% TP\n\n"
+            "─────────────────────────────────────────────────\n"
+            "STEP 1: Bracket Order Execution\n"
+            "─────────────────────────────────────────────────\n"
+            f"{bracket_result}\n\n"
+            "─────────────────────────────────────────────────\n"
+            "STEP 2: Open Orders Query\n"
+            "─────────────────────────────────────────────────\n"
+            f"{open_result}\n\n"
+            "─────────────────────────────────────────────────\n"
+            "STEP 3: Balance Query\n"
+            "─────────────────────────────────────────────────\n"
+            f"{bal_result}\n\n"
+            "─────────────────────────────────────────────────\n"
+            "VERIFICATION RESULTS\n"
+            "─────────────────────────────────────────────────\n"
+        )
+        
+        if has_open_orders and has_zec_mention:
+            test_report += (
+                "✅ PASS: Paper orders are being tracked correctly!\n"
+                "✅ Order appears in open orders query\n"
+                "✅ Paper trading system is functional\n\n"
+                "🎯 CONCLUSION: The paper trading ledger is working as expected.\n"
+                "   You can now execute paper trades and they will be visible in queries."
+            )
+            print("[ZYN-SELF-TEST] ✅ TEST PASSED")
+        else:
+            test_report += (
+                "❌ FAIL: Paper orders NOT appearing in queries\n"
+                f"   - Has open orders: {has_open_orders}\n"
+                f"   - Has ZEC mention: {has_zec_mention}\n\n"
+                "⚠️ CONCLUSION: Paper trading ledger may not be persisting orders.\n"
+                "   Check paper_orders.json and paper_trading_state.json files."
+            )
+            print("[ZYN-SELF-TEST] ❌ TEST FAILED")
+        
+        test_report += "\n═══════════════════════════════════════════════"
+        
+        return test_report
+    
+    except Exception as e:
+        error_msg = f"❌ SELF-TEST ERROR: {e}"
+        print(f"[ZYN-SELF-TEST-EXCEPTION] {error_msg}")
+        return error_msg
+
+
 # ---------- Public entrypoint ----------
 def ask_llm(user_text: str, session_id: str = "default") -> str:
     """
@@ -1122,6 +1226,17 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
                         "properties": {}
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_paper_trade_test",
+                    "description": "Run a comprehensive paper trading self-test to verify the paper trading system works end-to-end. Use this when the user asks to test the paper trading system, verify orders are being tracked, or wants to run a diagnostic. Executes a small bracket order and verifies it appears in open orders query. Only runs in PAPER mode. Returns detailed test report with PASS/FAIL status.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
             }
         ]
 
@@ -1302,6 +1417,16 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
                     "role": "tool",
                     "name": function_name,
                     "content": result
+                })
+            
+            elif function_name == "run_paper_trade_test":
+                test_result = _run_paper_trade_test()
+                
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": test_result
                 })
         
         # Get final response from LLM after tool execution (60s timeout)
