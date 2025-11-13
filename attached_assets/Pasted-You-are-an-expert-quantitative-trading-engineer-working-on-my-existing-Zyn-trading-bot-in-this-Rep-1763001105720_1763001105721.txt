@@ -1,0 +1,92 @@
+You are an expert quantitative trading engineer working on my existing “Zyn” trading bot in this Replit.
+
+Your job:
+Transform Zyn into a **regime-aware hybrid day-trading system** that:
+- Detects what type of market we’re in (trend, range/chop, breakout, or no-trade),
+- Selects the correct strategy for that regime (trend pullback, breakout, or mean reversion),
+- Trades with strict risk management and full safety,
+- Has REAL paper mode, REAL performance tracking, and NO fake/unimplemented features.
+
+VERY IMPORTANT:
+- DO NOT start from scratch. Upgrade and refactor my existing project.
+- You MUST implement, update, or upgrade EVERY section below. No skipping.
+- Remove ALL references in code or responses to any behavior that is not fully implemented.
+- No TODOs, no “future work”, no vague features. Everything described below must exist in working code after you’re done.
+
+==================================================
+SECTION 0 — CLEANUP & TRUTH
+==================================================
+1. Scan the whole codebase.
+2. Remove or rewrite any place where Zyn claims to:
+   - use RSI, volume, regime filters, chop detection, etc., without an actual implementation.
+   - avoid “news events” or “fundamentals” unless you truly coded data for that.
+3. After your changes, Zyn must ONLY describe capabilities that actually exist in code.
+
+==================================================
+SECTION 1 — CORE DATA & TIMEFRAMES
+==================================================
+1. Use **5-minute candles as the main decision timeframe**.
+2. Use at least one **higher timeframe** for trend context (e.g., 15m or 1h candles).
+3. All decisions must be based on **CLOSED candles** only, never mid-candle data.
+4. On each new 5m candle close:
+   - Fetch the latest 5m OHLC batch,
+   - Update all indicators (SMA/EMA, ATR, RSI, ADX and/or Bollinger Bands, volume if available),
+   - Detect regime,
+   - Decide whether to trade.
+5. Respect Kraken rate limits.
+
+==================================================
+SECTION 2 — REGIME DETECTION (THE BRAIN)
+==================================================
+Implement a deterministic regime engine. At any time, exactly ONE of these regimes must be active:
+
+- TREND_UP
+- TREND_DOWN
+- RANGE (sideways / mean-reversion environment)
+- BREAKOUT_EXPANSION
+- NO_TRADE (garbage conditions)
+
+Use a combination of:
+- Trend via moving averages (e.g. SMA20, SMA50, SMA200 on 5m and/or HTF),
+- ADX or similar trend-strength measure,
+- ATR (volatility),
+- Possibly Bollinger Bands or price vs range bands,
+- Optional: range width vs ATR to detect tight consolidations.
+
+Examples (you can tune numbers, but it must be explicit and coded):
+
+- TREND_UP:
+  - SMA20 > SMA50 on 5m
+  - Higher timeframe (e.g. 15m or 1h) also bullish (price above HTF MA)
+  - ADX > threshold (e.g. 20–25)
+
+- TREND_DOWN:
+  - SMA20 < SMA50
+  - HTF bearish
+  - ADX > threshold
+
+- RANGE:
+  - ADX < threshold (low trend strength)
+  - Price oscillating around MAs
+  - Range width relative to ATR is within certain bounds
+
+- BREAKOUT_EXPANSION:
+  - ATR significantly above recent average (volatility spike)
+  - Price breaks out of recent range highs/lows by a clear margin
+  - Volume (if available) elevated vs baseline
+
+- NO_TRADE:
+  - Volatility too low,
+  - Volume too low,
+  - Or conditions conflicting / not fitting any regime cleanly.
+
+Implement all this logic in clear functions, e.g.:
+- `detect_regime()` returning one of the enum/string values above.
+- `is_trending_market()`, `is_range_market()`, etc., if helpful.
+
+==================================================
+SECTION 3 — STRATEGIES PER REGIME
+==================================================
+You MUST implement all three strategies and gate them by regime.
+
+1) TREND_PULLBACK STRATEGY (_

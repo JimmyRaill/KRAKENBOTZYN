@@ -390,8 +390,6 @@ def _execute_trading_command(command: str) -> str:
             )
             return enhanced_result
         
-        # TODO: Persist to telemetry_db for audit trail
-        
         return result_str
     except Exception as e:
         error_msg = f"[COMMAND-ERR] {e}"
