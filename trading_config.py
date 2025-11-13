@@ -75,12 +75,39 @@ class RiskConfig:
 
 
 @dataclass
+class RegimeConfig:
+    """Market regime detection thresholds"""
+    # ADX thresholds
+    adx_threshold: float = 25.0  # ADX > 25 = trending market
+    min_adx: float = 10.0  # ADX < 10 = dead market (NO_TRADE)
+    
+    # Volatility thresholds
+    min_volatility_pct: float = 0.0008  # 0.08% minimum (NO_TRADE below)
+    atr_spike_multiplier: float = 2.5  # ATR > 2.5x recent avg = spike
+    
+    # Breakout detection
+    breakout_margin_atr: float = 0.5  # Price must break by 0.5 ATR
+    volume_spike_multiplier: float = 1.5  # Volume > 1.5x avg for breakout
+    
+    # Range detection
+    max_range_width_pct: float = 4.0  # Bollinger Band width < 4% for range
+    
+    # Volume thresholds
+    min_volume: float = 0.0  # Absolute minimum volume (0 = disabled)
+    
+    # Bollinger Bands
+    bb_period: int = 20
+    bb_std_dev: float = 2.0
+
+
+@dataclass
 class TradingConfig:
     """Master configuration for trading system"""
     # Sub-configs
     indicators: IndicatorConfig = field(default_factory=IndicatorConfig)
     filters: MarketFilters = field(default_factory=MarketFilters)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    regime: RegimeConfig = field(default_factory=RegimeConfig)
     
     # Trading mode
     paper_mode: bool = False

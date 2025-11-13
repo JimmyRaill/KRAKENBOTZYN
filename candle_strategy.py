@@ -95,6 +95,171 @@ def calculate_atr(ohlcv: List[List[float]], period: int = 14) -> Optional[float]
     return sum(tr_values[-n:]) / max(1, n)
 
 
+def calculate_adx(
+    ohlcv: List[List[float]],
+    period: int = 14
+) -> Optional[float]:
+    """
+    Calculate Average Directional Index (ADX) - trend strength indicator.
+    
+    Args:
+        ohlcv: List of OHLC candles [[timestamp, open, high, low, close, volume], ...]
+        period: Lookback period (default: 14)
+    
+    Returns:
+        ADX value (0-100), or None if insufficient data
+        
+    Interpretation:
+        - ADX > 25: Strong trend (use trend-following strategies)
+        - ADX < 20: Weak/no trend (use mean-reversion or stay out)
+        - ADX < 10: Dead market (NO_TRADE)
+    
+    Method:
+        Uses Wilder's smoothing for TR, +DM, -DM
+        Calculates +DI, -DI, DX, then smoothed ADX
+    """
+    if not ohlcv or len(ohlcv) < period * 2:
+        return None
+    
+    # Step 1: Calculate directional movements and true ranges
+    dm_plus_list = []
+    dm_minus_list = []
+    tr_list = []
+    
+    for i in range(1, len(ohlcv)):
+        curr = ohlcv[i]
+        prev = ohlcv[i-1]
+        
+        high_curr = curr[2]
+        low_curr = curr[3]
+        high_prev = prev[2]
+        low_prev = prev[3]
+        close_prev = prev[4]
+        
+        # Directional movements
+        dm_plus = high_curr - high_prev
+        dm_minus = low_prev - low_curr
+        
+        # Only count if movement is positive and dominant
+        if dm_plus > dm_minus and dm_plus > 0:
+            dm_plus_list.append(dm_plus)
+            dm_minus_list.append(0.0)
+        elif dm_minus > dm_plus and dm_minus > 0:
+            dm_plus_list.append(0.0)
+            dm_minus_list.append(dm_minus)
+        else:
+            dm_plus_list.append(0.0)
+            dm_minus_list.append(0.0)
+        
+        # True range
+        tr = max(
+            high_curr - low_curr,
+            abs(high_curr - close_prev),
+            abs(low_curr - close_prev)
+        )
+        tr_list.append(tr)
+    
+    if len(tr_list) < period:
+        return None
+    
+    # Step 2: Wilder's smoothing
+    def wilder_smooth(values: List[float], period: int) -> List[float]:
+        if len(values) < period:
+            return []
+        smoothed = []
+        current_smooth = sum(values[:period]) / period
+        smoothed.append(current_smooth)
+        for i in range(period, len(values)):
+            current_smooth = current_smooth + (values[i] - current_smooth) / period
+            smoothed.append(current_smooth)
+        return smoothed
+    
+    smoothed_tr = wilder_smooth(tr_list, period)
+    smoothed_dm_plus = wilder_smooth(dm_plus_list, period)
+    smoothed_dm_minus = wilder_smooth(dm_minus_list, period)
+    
+    if not smoothed_tr or len(smoothed_tr) < period:
+        return None
+    
+    # Step 3: Calculate +DI and -DI
+    di_plus_list = []
+    di_minus_list = []
+    for i in range(len(smoothed_tr)):
+        tr = smoothed_tr[i]
+        if tr == 0:
+            di_plus_list.append(0.0)
+            di_minus_list.append(0.0)
+        else:
+            di_plus = (smoothed_dm_plus[i] / tr) * 100
+            di_minus = (smoothed_dm_minus[i] / tr) * 100
+            di_plus_list.append(di_plus)
+            di_minus_list.append(di_minus)
+    
+    # Step 4: Calculate DX
+    dx_list = []
+    for i in range(len(di_plus_list)):
+        di_sum = di_plus_list[i] + di_minus_list[i]
+        if di_sum == 0:
+            dx_list.append(0.0)
+        else:
+            di_diff = abs(di_plus_list[i] - di_minus_list[i])
+            dx = (di_diff / di_sum) * 100
+            dx_list.append(dx)
+    
+    if len(dx_list) < period:
+        return None
+    
+    # Step 5: Smooth DX to get ADX
+    adx_list = wilder_smooth(dx_list, period)
+    if not adx_list:
+        return None
+    return adx_list[-1]
+
+
+def calculate_bollinger_bands(
+    closes: List[float],
+    period: int = 20,
+    std_dev: float = 2.0
+) -> Optional[Tuple[float, float, float]]:
+    """
+    Calculate Bollinger Bands - volatility and range indicator.
+    
+    Args:
+        closes: List of closing prices (most recent last)
+        period: SMA period (default: 20)
+        std_dev: Standard deviation multiplier (default: 2.0)
+    
+    Returns:
+        Tuple of (middle, upper, lower) or None if insufficient data
+        
+    Interpretation:
+        - Tight bands (width < 2% of price): Range market, low volatility
+        - Wide bands: High volatility
+        - Price at upper band: Potentially overbought
+        - Price at lower band: Potentially oversold
+    """
+    if not closes or len(closes) < period:
+        return None
+    
+    # Calculate middle band (SMA)
+    middle = calculate_sma(closes, period)
+    if middle is None:
+        return None
+    
+    # Calculate standard deviation
+    recent_closes = closes[-period:]
+    try:
+        std = statistics.pstdev(recent_closes)
+    except Exception:
+        return None
+    
+    # Calculate bands
+    upper = middle + (std_dev * std)
+    lower = middle - (std_dev * std)
+    
+    return (middle, upper, lower)
+
+
 def detect_sma_crossover(
     current_close: float,
     current_sma: float,
