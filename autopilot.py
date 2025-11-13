@@ -24,6 +24,10 @@ from exchange_manager import get_manager
 # REGIME-AWARE SYSTEM: Strategy orchestrator coordinates regime detection + strategy selection
 from strategy_orchestrator import get_orchestrator
 
+# RISK MANAGEMENT: Portfolio-wide risk controls and daily trade limits
+from risk_manager import calculate_trade_risk, get_max_active_risk, PositionSnapshot
+from trading_limits import can_open_new_trade, record_trade_opened, get_daily_limits
+
 # Bracket order manager - MANDATORY for all trades
 # Type hints for LSP
 get_bracket_manager = None
