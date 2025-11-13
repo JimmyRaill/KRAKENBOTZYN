@@ -246,6 +246,69 @@ def _summarize_state_for_prompt(s: Dict[str, Any]) -> str:
     return " | ".join(parts) if parts else "no-telemetry"
 
 
+# ---------- Market Data Functions ----------
+def _get_market_price(symbol: str) -> str:
+    """
+    Fetch real-time market price for a symbol from Kraken.
+    Returns current bid, ask, and last price.
+    """
+    try:
+        from exchange_manager import get_exchange
+        
+        ex = get_exchange()
+        symbol_upper = symbol.upper().strip()
+        
+        ticker = ex.fetch_ticker(symbol_upper)
+        
+        return json.dumps({
+            "symbol": symbol_upper,
+            "bid": ticker.get("bid"),
+            "ask": ticker.get("ask"),
+            "last": ticker.get("last"),
+            "timestamp": ticker.get("timestamp"),
+            "datetime": ticker.get("datetime")
+        }, indent=2)
+    except Exception as e:
+        return f"[PRICE-ERROR] {e}"
+
+
+def _get_market_info(symbol: str) -> str:
+    """
+    Fetch market trading rules and limits for a symbol from Kraken.
+    Returns minimum order size, price precision, lot size, etc.
+    """
+    try:
+        from exchange_manager import get_exchange
+        
+        ex = get_exchange()
+        symbol_upper = symbol.upper().strip()
+        
+        markets = ex.fetch_markets()
+        market = next((m for m in markets if m["symbol"] == symbol_upper), None)
+        
+        if not market:
+            return f"[MARKET-INFO-ERROR] Symbol {symbol_upper} not found on Kraken"
+        
+        limits = market.get("limits", {})
+        precision = market.get("precision", {})
+        
+        return json.dumps({
+            "symbol": symbol_upper,
+            "active": market.get("active"),
+            "min_amount": limits.get("amount", {}).get("min"),
+            "min_cost": limits.get("cost", {}).get("min"),
+            "price_precision": precision.get("price"),
+            "amount_precision": precision.get("amount"),
+            "maker_fee": market.get("maker"),
+            "taker_fee": market.get("taker"),
+            "contract_size": market.get("contractSize"),
+            "spot": market.get("spot"),
+            "info": market.get("info")
+        }, indent=2)
+    except Exception as e:
+        return f"[MARKET-INFO-ERROR] {e}"
+
+
 # ---------- Trading Command Execution ----------
 def _execute_trading_command(command: str) -> str:
     """
@@ -548,8 +611,42 @@ def ask_llm(user_text: str) -> str:
 
         assert client is not None  # for type checkers
 
-        # Define trading command tool
+        # Define tools available to Zyn
         tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_market_price",
+                    "description": "Fetch real-time market price for a symbol from Kraken. Use this when the user asks about current prices, market data, or wants to know what a crypto is trading at RIGHT NOW.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {
+                                "type": "string",
+                                "description": "The trading pair symbol (e.g., 'BTC/USD', 'ETH/USD', 'ZEC/USD')"
+                            }
+                        },
+                        "required": ["symbol"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_market_info",
+                    "description": "Fetch trading rules and limits for a symbol from Kraken. Use this when the user asks about minimum order amounts, lot sizes, trading limits, or market specifications.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {
+                                "type": "string",
+                                "description": "The trading pair symbol (e.g., 'BTC/USD', 'ETH/USD', 'ZEC/USD')"
+                            }
+                        },
+                        "required": ["symbol"]
+                    }
+                }
+            },
             {
                 "type": "function",
                 "function": {
@@ -597,11 +694,32 @@ def ask_llm(user_text: str) -> str:
             function_name = tool_call.function.name
             function_args = json.loads(tool_call.function.arguments)
             
-            if function_name == "execute_trading_command":
+            if function_name == "get_market_price":
+                symbol = function_args.get("symbol", "")
+                result = _get_market_price(symbol)
+                
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": result
+                })
+            
+            elif function_name == "get_market_info":
+                symbol = function_args.get("symbol", "")
+                result = _get_market_info(symbol)
+                
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": result
+                })
+            
+            elif function_name == "execute_trading_command":
                 command = function_args.get("command", "")
                 result = _execute_trading_command(command)
                 
-                # Add tool response to messages
                 messages.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
