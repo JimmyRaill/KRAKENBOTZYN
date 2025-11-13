@@ -1,0 +1,63 @@
+Live behavior:
+	1.	I asked:
+Execute a very small quickly in paper mode
+	2.	The bot replied (paraphrased):
+“I successfully executed a self-test for paper trading… there are already open orders for ZEC/USD…
+	•	Order ID: PAPER-9C4324AF | ZEC/USD | Sell limit 0.04 @ 499.56
+	•	Order ID: PAPER-51906CF5 | ZEC/USD | Sell stop 0.04 @ 0.0”
+	3.	Immediately after, I asked:
+How many open orders?
+	4.	The bot replied:
+“You currently have 0 open orders in your PAPER mode account.”
+
+This proves two different code paths are returning conflicting views of open orders in PAPER mode.
+
+I need you to debug and fix this exact inconsistency.
+
+1. Identify the two code paths
+
+Find:
+	1.	The code that runs when the bot says things like:
+“Here are the details of the open orders: PAPER-9C4324AF…”
+That’s the self-test / internal check path that sees those orders.
+	2.	The code that runs when I ask:
+	•	“How many open orders?”
+	•	“Show open positions and open orders.”
+That should map to the "open" handler and _open_orders_text() using ex.fetch_open_orders().
+
+Print/log both paths clearly with:
+	•	Current mode
+	•	Exchange type (type(ex).__name__)
+	•	Number of open orders they see
+	•	The list of order IDs they’re using
+
+2. Make sure both paths use the SAME exchange + ledger in PAPER mode
+
+In PAPER mode:
+	•	The self-test path and the "open" handler must both:
+	•	Use the same PaperExchangeWrapper instance (or at least one that uses the same PaperLedger).
+	•	Call the same underlying fetch_open_orders() implementation.
+
+If self-test is directly reading PaperLedger and "open" is using a different ex, fix it so both go through PaperExchangeWrapper.fetch_open_orders().
+
+3. Make sure orders are not being auto-cleared in the self-test
+
+If the self-test you added to “execute a very small quickly in paper mode”:
+	•	Creates test orders,
+	•	Prints them,
+	•	And then cancels/clears them,
+
+…then it is expected that open orders later = 0.
+
+I need the behavior to be:
+	•	If the bot says:
+“Here are your open paper orders: PAPER-9C4324AF, PAPER-51906CF5”
+	•	Then, without any cancellation, a call to "open" / "how many open orders?" must show those same orders.
+
+If you want a self-test that doesn’t persist orders, make it very explicit (e.g. “temporary self-test, not persisted”), or better: don’t use fake orders at all.
+
+4. Add logging to compare what each path sees
+
+Add logs like:
+
+In the self-test path:
