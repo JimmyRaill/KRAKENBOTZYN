@@ -308,28 +308,71 @@ def handle(text: str) -> str:
             # Determine direction from TP/SL relative to current price
             is_long = tp_p > current_price
             
+            # STRICT VALIDATION: Ensure TP/SL are on correct sides with tolerance
+            # Use tick size for precision (assume $0.01 minimum separation)
+            min_sep = max(current_price * 0.001, 0.01)  # 0.1% or $0.01 minimum
+            
             if is_long:
-                # LONG: Market buy entry + limit sell TP + stop sell SL
-                entry_order = ex.create_market_buy_order(sym, float(amt_p))
-                entry_id = str(entry_order.get("id") or entry_order.get("orderId") or "<no-id>")
-                tp_order = ex.create_limit_sell_order(sym, float(amt_p), float(tp_p))
-                sl_order = _create_stop_market(ex, sym, "sell", float(amt_p), float(sl_p))
-                side_str = "LONG"
+                # LONG: TP must be above, SL must be below
+                if tp_p <= current_price + min_sep:
+                    return f"[BRACKET-ERR] LONG TP must be above market (TP=${tp_p:.2f}, market=${current_price:.2f})"
+                if sl_p >= current_price - min_sep:
+                    return f"[BRACKET-ERR] LONG SL must be below market (SL=${sl_p:.2f}, market=${current_price:.2f})"
             else:
-                # SHORT: Market sell entry + limit buy TP + stop buy SL  
-                entry_order = ex.create_market_sell_order(sym, float(amt_p))
-                entry_id = str(entry_order.get("id") or entry_order.get("orderId") or "<no-id>")
-                tp_order = ex.create_limit_buy_order(sym, float(amt_p), float(tp_p))
-                sl_order = _create_stop_market(ex, sym, "buy", float(amt_p), float(sl_p))
-                side_str = "SHORT"
+                # SHORT: TP must be below, SL must be above
+                if tp_p >= current_price - min_sep:
+                    return f"[BRACKET-ERR] SHORT TP must be below market (TP=${tp_p:.2f}, market=${current_price:.2f})"
+                if sl_p <= current_price + min_sep:
+                    return f"[BRACKET-ERR] SHORT SL must be above market (SL=${sl_p:.2f}, market=${current_price:.2f})"
             
-            tid = str(tp_order.get("id") or tp_order.get("orderId") or "<no-id>")
-            sid = str(sl_order.get("id") or sl_order.get("orderId") or "<no-id>")
+            # Execute bracket with rollback protection
+            entry_order = None
+            tp_order = None
+            sl_order = None
             
-            return (f"BRACKET OK {side_str} {sym} amt={amt_p}\n"
-                   f"  Entry: {side_str} @ market, id={entry_id}\n"
-                   f"  TP: {tp_p} id={tid}\n"
-                   f"  SL: {sl_p} id={sid}")
+            try:
+                if is_long:
+                    # LONG: Market buy entry
+                    entry_order = ex.create_market_buy_order(sym, float(amt_p))
+                    entry_id = str(entry_order.get("id") or entry_order.get("orderId") or "<no-id>")
+                    side_str = "LONG"
+                    
+                    # Create protective orders
+                    try:
+                        tp_order = ex.create_limit_sell_order(sym, float(amt_p), float(tp_p))
+                        sl_order = _create_stop_market(ex, sym, "sell", float(amt_p), float(sl_p))
+                    except Exception as protect_err:
+                        # ROLLBACK: Close position if protective orders fail
+                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed, closing position: {protect_err}")
+                        ex.create_market_sell_order(sym, float(amt_p))
+                        return f"[BRACKET-ERR] Entry executed but TP/SL failed - position closed for safety: {protect_err}"
+                else:
+                    # SHORT: Market sell entry
+                    entry_order = ex.create_market_sell_order(sym, float(amt_p))
+                    entry_id = str(entry_order.get("id") or entry_order.get("orderId") or "<no-id>")
+                    side_str = "SHORT"
+                    
+                    # Create protective orders
+                    try:
+                        tp_order = ex.create_limit_buy_order(sym, float(amt_p), float(tp_p))
+                        sl_order = _create_stop_market(ex, sym, "buy", float(amt_p), float(sl_p))
+                    except Exception as protect_err:
+                        # ROLLBACK: Close position if protective orders fail
+                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed, closing position: {protect_err}")
+                        ex.create_market_buy_order(sym, float(amt_p))
+                        return f"[BRACKET-ERR] Entry executed but TP/SL failed - position closed for safety: {protect_err}"
+                
+                tid = str(tp_order.get("id") or tp_order.get("orderId") or "<no-id>")
+                sid = str(sl_order.get("id") or sl_order.get("orderId") or "<no-id>")
+                
+                return (f"BRACKET OK {side_str} {sym} amt={amt_p}\n"
+                       f"  Entry: {side_str} @ market, id={entry_id}\n"
+                       f"  TP: {tp_p} id={tid}\n"
+                       f"  SL: {sl_p} id={sid}")
+            
+            except Exception as entry_err:
+                # Entry itself failed - no rollback needed
+                return f"[BRACKET-ERR] Entry order failed: {entry_err}"
         except Exception as e:
             return f"[BRACKET-ERR] {e}"
 
