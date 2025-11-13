@@ -1,0 +1,24 @@
+{
+  "PAPER-1EB44532": {
+    "order_id": "PAPER-1EB44532",
+    "symbol": "ZEC/USD",
+    "order_type": "limit",
+    "side": "sell",
+    "amount": 0.03,
+    "price": 500.0,
+    "stop_price": null,
+    "status": "open",
+    "timestamp": 1763061278.4750538
+  },
+  "PAPER-DE4E5ABE": {
+    "order_id": "PAPER-DE4E5ABE",
+    "symbol": "ZEC/USD",
+    "order_type": "stop",
+    "side": "sell",
+    "amount": 0.03,
+    "price": null,
+    "stop_price": 480.0,
+    "status": "open",
+    "timestamp": 1763061278.4778173
+  }
+}
