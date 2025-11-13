@@ -371,13 +371,28 @@ def _execute_trading_command(command: str) -> str:
         
         # Execute command
         result = handle(command)
+        result_str = str(result)
         
         # Log command execution
-        print(f"[ZYN-COMMAND] Mode={mode} | Command: {command} | Result: {result}")
+        print(f"[ZYN-COMMAND] Mode={mode} | Command: {command} | Result: {result_str}")
+        
+        # ENHANCED: Check for insufficient funds errors and provide helpful guidance
+        # This helps the LLM understand WHY the order failed and prevents suggesting naked positions
+        if ("INSUFFICIENT_FUNDS" in result_str or 
+            "volume minimum not met" in result_str.lower() or 
+            "minimum not met" in result_str.lower()):
+            enhanced_result = (
+                f"{result_str}\n\n"
+                "⚠️ Your balance is below the minimum required for bracket orders on this symbol. "
+                "Bracket orders need sufficient funds for: entry order + stop-loss + take-profit. "
+                "I CANNOT execute naked positions - that would violate safety requirements. "
+                "Please wait until your balance increases, or try a different symbol with lower minimums."
+            )
+            return enhanced_result
         
         # TODO: Persist to telemetry_db for audit trail
         
-        return result
+        return result_str
     except Exception as e:
         error_msg = f"[COMMAND-ERR] {e}"
         print(f"[ZYN-COMMAND-FAIL] {error_msg}")

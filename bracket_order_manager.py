@@ -227,6 +227,66 @@ class BracketOrderManager:
         
         return bracket
     
+    def calculate_minimum_balance_for_symbol(
+        self,
+        symbol: str,
+        exchange,
+        entry_price: Optional[float] = None
+    ) -> Tuple[float, str]:
+        """
+        Calculate the minimum balance required to place a bracket order for a symbol.
+        
+        Args:
+            symbol: Trading symbol (e.g., "BTC/USD")
+            exchange: CCXT exchange instance
+            entry_price: Optional entry price to use instead of ticker price
+        
+        Returns:
+            (min_balance_usd, description)
+        """
+        try:
+            market = exchange.market(symbol) or {}
+            limits = market.get("limits") or {}
+            min_amt = float((limits.get("amount") or {}).get("min", 0) or 0)
+            min_cost = float((limits.get("cost") or {}).get("min", 0) or 0)
+            
+            if min_amt <= 0 and min_cost <= 0:
+                return 0, f"No minimum found for {symbol}"
+            
+            # Get current price with fallback
+            current_price = entry_price if entry_price and entry_price > 0 else None
+            if not current_price:
+                ticker = exchange.fetch_ticker(symbol)
+                current_price = ticker.get("last") or ticker.get("close") or ticker.get("bid") or 0
+            
+            if current_price <= 0:
+                return 0, f"Cannot fetch price for {symbol}"
+            
+            # Calculate minimum balance based on whichever is larger
+            min_balance_from_amt = min_amt * current_price if min_amt > 0 else 0
+            min_balance_from_cost = min_cost if min_cost > 0 else 0
+            
+            # Determine which constraint is binding
+            if min_balance_from_cost > min_balance_from_amt:
+                # min_cost is binding - calculate actual required amount
+                required_amount = min_cost / current_price
+                min_balance = min_balance_from_cost
+                binding_constraint = f"min cost ${min_cost:.2f} requires {required_amount:.6f} {symbol.split('/')[0]}"
+            else:
+                # min_amount is binding
+                required_amount = min_amt
+                min_balance = min_balance_from_amt
+                binding_constraint = f"min amount {min_amt:.6f} {symbol.split('/')[0]}"
+            
+            # Add 10% buffer for safety
+            min_balance_with_buffer = min_balance * 1.10
+            
+            desc = f"{symbol} minimum: {binding_constraint} = ${min_balance_with_buffer:.2f} (current price: ${current_price:.2f})"
+            return min_balance_with_buffer, desc
+            
+        except Exception as e:
+            return 0, f"Error calculating minimum for {symbol}: {e}"
+    
     def validate_bracket_can_be_placed(
         self,
         bracket: BracketOrder,
@@ -265,17 +325,29 @@ class BracketOrderManager:
             if min_amt > 0 and qty < min_amt:
                 if allow_adjust:
                     adjusted_qty = min_amt * 1.05  # 5% buffer
-                    return True, f"Adjusted qty from {qty:.6f} to {adjusted_qty:.6f}", adjusted_qty
+                    adjusted_cost = adjusted_qty * bracket.entry_price
+                    
+                    # CRITICAL: Calculate minimum balance needed and include in error
+                    min_balance, desc = self.calculate_minimum_balance_for_symbol(bracket.symbol, exchange, bracket.entry_price)
+                    return True, f"Adjusted qty from {qty:.6f} to {adjusted_qty:.6f} (cost: ${adjusted_cost:.2f}). {desc}", adjusted_qty
                 else:
-                    return False, f"Qty {qty:.6f} below minimum {min_amt:.6f}", None
+                    # CRITICAL: Include minimum balance requirement in error
+                    min_balance, desc = self.calculate_minimum_balance_for_symbol(bracket.symbol, exchange, bracket.entry_price)
+                    return False, f"INSUFFICIENT_FUNDS: Qty {qty:.6f} below minimum {min_amt:.6f}. Required: {desc}", None
             
             # Check minimum cost
             if min_cost > 0 and cost < min_cost:
                 if allow_adjust:
                     adjusted_qty = (min_cost * 1.05) / bracket.entry_price
-                    return True, f"Adjusted qty from {qty:.6f} to {adjusted_qty:.6f} for min cost", adjusted_qty
+                    adjusted_cost = adjusted_qty * bracket.entry_price
+                    
+                    # CRITICAL: Calculate minimum balance needed
+                    min_balance, desc = self.calculate_minimum_balance_for_symbol(bracket.symbol, exchange, bracket.entry_price)
+                    return True, f"Adjusted qty from {qty:.6f} to {adjusted_qty:.6f} for min cost (${adjusted_cost:.2f}). {desc}", adjusted_qty
                 else:
-                    return False, f"Cost ${cost:.2f} below minimum ${min_cost:.2f}", None
+                    # CRITICAL: Include minimum balance requirement in error
+                    min_balance, desc = self.calculate_minimum_balance_for_symbol(bracket.symbol, exchange, bracket.entry_price)
+                    return False, f"INSUFFICIENT_FUNDS: Cost ${cost:.2f} below minimum ${min_cost:.2f}. Required: {desc}", None
             
             return True, "OK", None
             
