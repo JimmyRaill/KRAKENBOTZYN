@@ -65,6 +65,26 @@ except ImportError:
     def get_prompt_context() -> str:  # type: ignore
         return "(prompt context not available)"
 
+# ---------- Evaluation Log imports (Transparency Layer) ----------
+try:
+    from evaluation_log import (
+        get_last_evaluations, 
+        get_today_summary, 
+        explain_why_no_trades_today,
+        get_heartbeat_status
+    )
+    EVAL_LOG_ENABLED = True
+except ImportError:
+    EVAL_LOG_ENABLED = False
+    def get_last_evaluations(limit: int = 20, symbol: Optional[str] = None) -> List[Dict[str, Any]]:  # type: ignore
+        return []
+    def get_today_summary(symbol: Optional[str] = None) -> Dict[str, Any]:  # type: ignore
+        return {}
+    def explain_why_no_trades_today(symbol: Optional[str] = None) -> str:  # type: ignore
+        return "Evaluation log not available"
+    def get_heartbeat_status() -> Dict[str, Any]:  # type: ignore
+        return {}
+
 # ---------- Paths ----------
 # Use the same STATE_PATH the autopilot writes (falls back to local state.json)
 STATE_PATH = Path(os.environ.get("STATE_PATH", str(Path(__file__).with_name("state.json"))))
@@ -766,6 +786,70 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
                         "required": ["command"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "show_last_evaluations",
+                    "description": "Show the most recent evaluation decisions with indicators. Use this when the user asks what you've been evaluating, what signals you're seeing, or to show recent decision history. Returns timestamped evaluations with RSI, ATR, volume, decision, and reason.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": "Number of recent evaluations to show (default: 20)",
+                                "default": 20
+                            },
+                            "symbol": {
+                                "type": "string",
+                                "description": "Filter by symbol (e.g., 'BTC/USD'), or omit for all symbols"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "show_today_summary",
+                    "description": "Show summary of today's evaluations with decision counts and NO_TRADE reason breakdown. Use this when the user asks 'why no trades today' or 'what have you been doing all day'. Returns total evaluations, BUY/SELL/NO_TRADE/ERROR counts, and grouped reasons for NO_TRADE decisions.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {
+                                "type": "string",
+                                "description": "Filter by symbol (e.g., 'BTC/USD'), or omit for all symbols"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "explain_why_no_trades",
+                    "description": "Generate a data-backed explanation for why no trades occurred today. Use this when the user asks WHY you haven't traded. Returns human-readable explanation with counts and specific reasons from evaluation logs. ALWAYS use this when user asks about lack of trades instead of generic responses.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {
+                                "type": "string",
+                                "description": "Filter by symbol (e.g., 'BTC/USD'), or omit for all symbols"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_heartbeat",
+                    "description": "Check if the evaluation loop is running properly. Use this when the user asks if you're working, if the scheduler is stuck, or to verify the 5-minute loop is active. Returns status, last evaluation time, and staleness warning if loop hasn't run in > 10 minutes.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
             }
         ]
 
@@ -834,6 +918,89 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
             elif function_name == "execute_trading_command":
                 command = function_args.get("command", "")
                 result = _execute_trading_command(command)
+                
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": result
+                })
+            
+            elif function_name == "show_last_evaluations":
+                limit = function_args.get("limit", 20)
+                symbol = function_args.get("symbol")
+                evaluations = get_last_evaluations(limit=limit, symbol=symbol)
+                
+                if not evaluations:
+                    result = "No evaluations found in the log."
+                else:
+                    result = f"Last {len(evaluations)} evaluations:\n\n"
+                    for eval_data in evaluations:
+                        ts = eval_data.get('timestamp_utc', 'N/A')[:19]  # Trim milliseconds
+                        sym = eval_data.get('symbol', 'N/A')
+                        decision = eval_data.get('decision', 'N/A')
+                        reason = eval_data.get('reason', 'N/A')
+                        regime = eval_data.get('regime', 'N/A')
+                        rsi = eval_data.get('rsi')
+                        atr = eval_data.get('atr')
+                        result += f"[{ts}] {sym}: {decision} - {reason}\n"
+                        if regime:
+                            result += f"  Regime: {regime}, RSI: {rsi:.1f if rsi else 'N/A'}, ATR: {atr:.2f if atr else 'N/A'}\n"
+                
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": result
+                })
+            
+            elif function_name == "show_today_summary":
+                symbol = function_args.get("symbol")
+                summary = get_today_summary(symbol=symbol)
+                
+                result = f"Today's Evaluation Summary ({summary.get('date', 'N/A')}):\n\n"
+                result += f"Total evaluations: {summary.get('total_evaluations', 0)}\n\n"
+                
+                decision_counts = summary.get('decision_counts', {})
+                if decision_counts:
+                    result += "Decision breakdown:\n"
+                    for decision, count in decision_counts.items():
+                        result += f"  {decision}: {count}\n"
+                
+                no_trade_reasons = summary.get('no_trade_reasons', [])
+                if no_trade_reasons:
+                    result += "\nNO_TRADE reasons:\n"
+                    for reason, count in no_trade_reasons[:10]:  # Top 10
+                        result += f"  {count}x: {reason}\n"
+                
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": result
+                })
+            
+            elif function_name == "explain_why_no_trades":
+                symbol = function_args.get("symbol")
+                explanation = explain_why_no_trades_today(symbol=symbol)
+                
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": explanation
+                })
+            
+            elif function_name == "check_heartbeat":
+                heartbeat = get_heartbeat_status()
+                
+                status = heartbeat.get('status', 'unknown')
+                message = heartbeat.get('message', 'No status available')
+                
+                result = f"Heartbeat Status: {status.upper()}\n\n{message}"
+                
+                if heartbeat.get('is_stale'):
+                    result += "\n\n⚠️ PROBLEM: The 5-minute evaluation loop is not running properly!"
                 
                 messages.append({
                     "tool_call_id": tool_call.id,
