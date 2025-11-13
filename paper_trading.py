@@ -12,7 +12,7 @@ Designed to be plugged into exchange_manager as an adapter.
 """
 
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
@@ -399,10 +399,10 @@ class PaperTradingSimulator:
         # CONSERVATIVE: For longs, always favor SL in both-breach scenario
         # (system only supports long positions in spot trading)
         if position.side == 'long':
-            if sl_breached:
+            if sl_breached and position.stop_loss is not None:
                 self.close_position(symbol, position.stop_loss, reason="stop_loss", is_maker=True)
                 return 'stop_loss'
-            elif tp_breached:
+            elif tp_breached and position.take_profit is not None:
                 self.close_position(symbol, position.take_profit, reason="take_profit", is_maker=True)
                 return 'take_profit'
         

@@ -1,0 +1,127 @@
+You are an expert quantitative trading engineer working on my existing “Zyn” trading bot in this Replit.
+
+Your job now is a SMALL but CRITICAL correctness pass. You MUST fix and concretely implement ALL of the following:
+
+================================================
+1) FIX risk_for_trade FORMULA (LONG vs SHORT)
+================================================
+Right now the risk formula is wrong/ambiguous.
+
+Implement a correct, explicit function, for example:
+
+- Function name (use this or something very close): 
+  calculate_trade_risk(position)
+
+- It MUST:
+  - Take a position object/record that includes: side ("long"/"short"), entry_price, stop_loss, position_size.
+  - Return the risk in account currency (e.g., USD).
+
+Use this logic:
+
+- For LONG positions:
+  risk_per_unit = entry_price - stop_loss
+  risk_for_trade = risk_per_unit * position_size
+
+- For SHORT positions:
+  risk_per_unit = stop_loss - entry_price
+  risk_for_trade = risk_per_unit * position_size
+
+- If risk_per_unit <= 0 (bad SL placement), the function must:
+  - log an error,
+  - treat the trade as INVALID for new entries.
+
+Make sure this function is actually used wherever you calculate per-trade risk and sum active risk, NOT just defined.
+
+=========================================
+2) MAX ACTIVE RISK MUST USE THAT FUNCTION
+=========================================
+Implement or confirm a concrete function, e.g.:
+
+- get_max_active_risk()
+
+This function MUST:
+
+- Iterate over all open positions (internal state).
+- For each position, call calculate_trade_risk(position).
+- Sum all risk_for_trade values to get total_active_risk.
+- Compare total_active_risk vs (equity * max_active_risk_pct).
+
+If adding a new trade would push total_active_risk above the threshold:
+
+- DO NOT open the new trade.
+- Log that the max active risk was exceeded.
+
+No “would typically” — this must be real, executable code.
+
+=========================================
+3) DAILY TRADE LIMITS MUST BE GLOBAL (NO BYPASS)
+=========================================
+Right now behavior around paper/live and daily limits is inconsistent.
+
+Fix it to follow this rule:
+
+- There is ONE daily trade limit per symbol or overall (depending on your current design), and it applies ACROSS BOTH modes (paper and live) for the current trading day.
+
+Concretely:
+
+- Maintain a daily counter of trades for the current calendar day:
+  - Example fields: date, total_trades_today, trades_by_symbol.
+- This counter MUST increase for BOTH paper and live trades.
+- If max_trades_per_day is reached:
+  - NO more trades may be opened in EITHER mode until the next day.
+- Do NOT reset this counter just because mode changes.
+
+If you want separate analytics per mode, keep them in stats, but the LIMIT itself must be global.
+
+Make sure:
+
+- This logic is implemented in a real function, e.g.:
+  - can_open_new_trade(symbol) -> bool
+- And that this function is called before every new entry, regardless of mode.
+
+=========================================
+4) USE REAL FUNCTION NAMES & FIELDS (NO “WOULD/MAY”)
+=========================================
+Update the code so that Zyn can answer questions concretely about:
+
+- The name and location of:
+  - calculate_trade_risk()
+  - get_max_active_risk() (or equivalent)
+  - simulate_fill() (or equivalent paper-mode fill function)
+  - print_performance_summary()
+
+- The fields stored for each trade log entry:
+  For example, make sure each trade record includes at least:
+    - trade_id
+    - symbol
+    - side
+    - mode ("paper"/"live")
+    - strategy (TREND/BREAKOUT/RANGE/etc.)
+    - entry_price
+    - exit_price
+    - position_size
+    - stop_loss
+    - take_profit
+    - pnl
+    - initial_risk
+    - r_multiple
+    - open_timestamp
+    - close_timestamp
+
+You MUST ensure these fields are actually present in the trade log structure that performance functions use.
+
+No more “fields may include” or “this would typically be” — the implementation should match what Zyn describes.
+
+=========================================
+FINAL SUMMARY (REQUIRED)
+=========================================
+When you’re done, provide a short summary that includes:
+
+- The exact function name and file where you implemented:
+  - calculate_trade_risk()
+  - the max active risk aggregation and check
+  - the daily trade limit enforcement
+- How the daily trade limit behaves across paper and live.
+- The exact fields now stored in each trade log entry.
+
+All of this must be REAL, wired code — not theoretical design.

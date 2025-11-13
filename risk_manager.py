@@ -1,10 +1,117 @@
 # risk_manager.py - Advanced risk management and metrics
 from __future__ import annotations
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Protocol
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import math
+
+
+class PositionSnapshot(Protocol):
+    """Protocol for position-like objects that can calculate risk."""
+    side: str  # 'long' or 'short'
+    entry_price: float
+    stop_loss: Optional[float]
+    quantity: float  # position_size
+
+
+def calculate_trade_risk(position: PositionSnapshot) -> float:
+    """
+    Calculate risk for a trade in account currency (USD).
+    
+    CRITICAL CORRECTNESS:
+    - For LONG positions: risk_per_unit = entry_price - stop_loss
+    - For SHORT positions: risk_per_unit = stop_loss - entry_price
+    - Invalid if risk_per_unit <= 0 (bad SL placement)
+    
+    Args:
+        position: Position object with side, entry_price, stop_loss, quantity
+        
+    Returns:
+        Risk amount in USD
+        
+    Raises:
+        ValueError: If stop_loss is missing or invalid
+    """
+    if position.stop_loss is None:
+        raise ValueError(f"calculate_trade_risk: position missing stop_loss (side={position.side})")
+    
+    # Calculate risk per unit based on position side
+    if position.side == 'long':
+        risk_per_unit = position.entry_price - position.stop_loss
+    elif position.side == 'short':
+        risk_per_unit = position.stop_loss - position.entry_price
+    else:
+        raise ValueError(f"calculate_trade_risk: invalid side='{position.side}', must be 'long' or 'short'")
+    
+    # Validate SL placement
+    if risk_per_unit <= 0:
+        import sys
+        print(f"[RISK-ERROR] Invalid stop-loss placement for {position.side} position:", file=sys.stderr)
+        print(f"  Entry: ${position.entry_price:.2f}, SL: ${position.stop_loss:.2f}", file=sys.stderr)
+        print(f"  Risk per unit: ${risk_per_unit:.4f} (MUST BE POSITIVE)", file=sys.stderr)
+        raise ValueError(
+            f"Invalid SL: {position.side} position entry=${position.entry_price} "
+            f"stop=${position.stop_loss} results in risk_per_unit={risk_per_unit:.4f} (must be > 0)"
+        )
+    
+    # Calculate total risk
+    risk_for_trade = risk_per_unit * position.quantity
+    return risk_for_trade
+
+
+def get_max_active_risk(
+    open_positions: List[PositionSnapshot],
+    equity: float,
+    max_active_risk_pct: float = 0.02
+) -> Dict[str, Any]:
+    """
+    Calculate total active risk across all open positions and check threshold.
+    
+    Args:
+        open_positions: List of open position objects
+        equity: Current account equity in USD
+        max_active_risk_pct: Maximum allowed risk as % of equity (default 0.02 = 2%)
+        
+    Returns:
+        Dict with:
+            - total_active_risk: Sum of all position risks in USD
+            - max_allowed_risk: Maximum allowed risk in USD
+            - risk_pct: Current risk as % of equity
+            - within_limits: bool - whether risk is under threshold
+            - position_risks: List of individual position risks
+    """
+    position_risks = []
+    total_active_risk = 0.0
+    
+    for pos in open_positions:
+        try:
+            risk = calculate_trade_risk(pos)
+            position_risks.append({
+                'side': pos.side,
+                'entry_price': pos.entry_price,
+                'stop_loss': pos.stop_loss,
+                'quantity': pos.quantity,
+                'risk_usd': risk
+            })
+            total_active_risk += risk
+        except ValueError as e:
+            # Log but continue for other positions
+            print(f"[RISK-CALC-ERR] Skipping position: {e}")
+            continue
+    
+    max_allowed_risk = equity * max_active_risk_pct
+    risk_pct = (total_active_risk / equity) * 100 if equity > 0 else 0.0
+    within_limits = total_active_risk <= max_allowed_risk
+    
+    return {
+        'total_active_risk': total_active_risk,
+        'max_allowed_risk': max_allowed_risk,
+        'risk_pct': risk_pct,
+        'within_limits': within_limits,
+        'position_risks': position_risks,
+        'num_positions': len(open_positions)
+    }
 
 
 @dataclass

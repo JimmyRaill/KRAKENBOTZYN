@@ -57,6 +57,7 @@ def init_db() -> None:
         """)
         
         # Migration: Add new columns if they don't exist (SQLite safe)
+        # Batch 1: Previously added columns (Nov 12-13, 2025)
         try:
             cursor.execute("ALTER TABLE trades ADD COLUMN mode TEXT DEFAULT 'live'")
         except Exception:
@@ -71,6 +72,57 @@ def init_db() -> None:
             cursor.execute("ALTER TABLE trades ADD COLUMN take_profit REAL")
         except Exception:
             pass  # Column already exists
+        
+        # Batch 2: Complete trade lifecycle fields (Nov 13, 2025)
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN trade_id TEXT")  # Optional external trade ID
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN strategy TEXT")  # Regime/strategy used
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN entry_price REAL")  # Explicit entry price
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN exit_price REAL")  # Exit price (for closed trades)
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN position_size REAL")  # Position size (quantity)
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN initial_risk REAL")  # Risk at entry (USD)
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN r_multiple REAL")  # P&L / initial_risk
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN open_timestamp REAL")  # Trade open time
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN close_timestamp REAL")  # Trade close time
+        except Exception:
+            pass
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN pnl REAL")  # Realized P&L
+        except Exception:
+            pass
         
         # Decisions table - all trading decisions (including holds)
         cursor.execute("""
@@ -170,7 +222,18 @@ def log_trade(
     metadata: Optional[Dict[str, Any]] = None,
     mode: str = "live",
     stop_loss: Optional[float] = None,
-    take_profit: Optional[float] = None
+    take_profit: Optional[float] = None,
+    # New lifecycle fields
+    trade_id: Optional[str] = None,
+    strategy: Optional[str] = None,
+    entry_price: Optional[float] = None,
+    exit_price: Optional[float] = None,
+    position_size: Optional[float] = None,
+    initial_risk: Optional[float] = None,
+    r_multiple: Optional[float] = None,
+    open_timestamp: Optional[float] = None,
+    close_timestamp: Optional[float] = None,
+    pnl: Optional[float] = None
 ) -> Optional[int]:
     """
     Log an executed trade.
@@ -201,8 +264,10 @@ def log_trade(
         cursor.execute("""
             INSERT INTO trades (
                 timestamp, date, symbol, side, action, quantity, price,
-                usd_amount, order_id, reason, source, metadata, mode, stop_loss, take_profit
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                usd_amount, order_id, reason, source, metadata, mode, stop_loss, take_profit,
+                trade_id, strategy, entry_price, exit_price, position_size,
+                initial_risk, r_multiple, open_timestamp, close_timestamp, pnl
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             now,
             dt.strftime("%Y-%m-%d"),
@@ -218,7 +283,18 @@ def log_trade(
             json.dumps(metadata) if metadata else None,
             mode,
             stop_loss,
-            take_profit
+            take_profit,
+            # New lifecycle fields
+            trade_id,
+            strategy,
+            entry_price,
+            exit_price,
+            position_size,
+            initial_risk,
+            r_multiple,
+            open_timestamp,
+            close_timestamp,
+            pnl
         ))
         return cursor.lastrowid
 
