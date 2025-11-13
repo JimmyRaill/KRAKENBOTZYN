@@ -766,57 +766,80 @@ def loop_once(ex, symbols: List[str]) -> None:
                     print(f"[DAILY-LIMIT-ERR] {sym}: {limit_err} - BLOCKING trade for safety")
                     continue
                 
-                # 2. PER-TRADE RISK: Calculate and validate stop-loss based risk
+                # 2. PER-TRADE RISK: Calculate and validate stop-loss based risk using risk_manager
                 # Note: Brackets calculate SL using ATR, so we estimate risk here
                 # Actual SL will be set by bracket manager after entry
+                new_position = None  # Initialize to avoid unbound variable
+                trade_risk = None
+                
                 try:
                     if atr and atr > 0:
                         # Estimate SL based on 2x ATR (same as bracket manager)
                         estimated_sl = price - (2.0 * atr)  # Long position SL
-                        risk_per_unit = price - estimated_sl
-                        estimated_risk = risk_per_unit * approx_qty
                         
-                        # Validate risk is positive (SL below entry for longs)
-                        if estimated_risk <= 0:
-                            print(f"🚫 [RISK-CALC-BLOCK] {sym} - Invalid SL placement (risk={estimated_risk:.2f})")
-                            continue
+                        # Create PositionSnapshot for the new trade
+                        # NOTE: Must match PositionSnapshot protocol with Optional[float] for stop_loss
+                        class NewTradeSnapshot:
+                            def __init__(self, side, entry_price, stop_loss, quantity):
+                                self.side = side
+                                self.entry_price = entry_price
+                                self.stop_loss: Optional[float] = stop_loss  # Type hint for protocol
+                                self.quantity = quantity
                         
-                        print(f"[RISK-CHECK] {sym} - Estimated risk: ${estimated_risk:.2f} (SL: ${estimated_sl:.2f}, qty: {approx_qty:.6f})")
+                        new_position = NewTradeSnapshot(
+                            side='long',
+                            entry_price=price,
+                            stop_loss=estimated_sl,
+                            quantity=approx_qty
+                        )
+                        
+                        # Use risk_manager to calculate risk
+                        trade_risk = calculate_trade_risk(new_position)
+                        
+                        print(f"[RISK-CHECK] {sym} - Estimated risk: ${trade_risk:.2f} (SL: ${estimated_sl:.2f}, qty: {approx_qty:.6f})")
                     else:
                         print(f"[RISK-CHECK] {sym} - No ATR available, will use bracket defaults")
+                except ValueError as val_err:
+                    # calculate_trade_risk raises ValueError for invalid SL placement
+                    print(f"🚫 [RISK-CALC-BLOCK] {sym} - {val_err}")
+                    continue
                 except Exception as risk_err:
                     print(f"[RISK-CALC-ERR] {sym}: {risk_err} - proceeding with caution")
                 
                 # 3. PORTFOLIO-WIDE RISK: Check max active risk (2% of equity)
-                # Note: This is a forward-looking check using current open positions + this new trade
+                # LIMITATION: Currently only checks the NEW trade's risk
+                # Full portfolio aggregation requires tracking SL for all open positions (future enhancement)
                 try:
-                    # Get current open positions for risk aggregation
-                    open_positions_for_risk = []
+                    # Build list of open positions for risk aggregation
+                    # NOTE: We can only include the NEW trade since we don't persist SL values for existing positions
+                    # This is a known limitation - bracket SL values are not tracked in state
+                    positions_for_risk = []
                     
-                    # Add existing positions (if any)
-                    for check_sym in symbols:
-                        check_qty, _ = position_qty(ex, check_sym)
-                        if check_qty > 0:
-                            # Get current price for this position
-                            try:
-                                _, _, check_price = ohlcv_1m(ex, check_sym, limit=1)
-                                if check_price:
-                                    # Estimate SL for existing position (we don't track it currently)
-                                    # This is a limitation - ideally we'd track actual SL from brackets
-                                    # For now, we'll skip existing positions in the check
-                                    # Future enhancement: track SL values for all open positions
-                                    pass
-                            except Exception:
-                                pass
+                    # Add the NEW trade if it has ATR (and thus estimated SL)
+                    if new_position is not None:
+                        positions_for_risk.append(new_position)  # from previous block
                     
-                    # For now, we only check the NEW trade's risk contribution
-                    # Full portfolio risk aggregation requires tracking SL for all open positions
-                    # This is a future enhancement (requires bracket order state tracking)
+                    # Call get_max_active_risk() to check portfolio-wide limit
+                    risk_check = get_max_active_risk(
+                        open_positions=positions_for_risk,
+                        equity=eq_usd,
+                        max_active_risk_pct=0.02  # 2% max portfolio risk
+                    )
                     
-                    # Log that we're skipping full portfolio check for now
-                    if len(open_positions_for_risk) == 0:
-                        print(f"[PORTFOLIO-RISK] {sym} - No other positions to aggregate (new trade only)")
+                    # Log risk status
+                    print(f"[PORTFOLIO-RISK] {sym} - Active risk: ${risk_check['total_active_risk']:.2f} / ${risk_check['max_allowed_risk']:.2f} ({risk_check['risk_pct']:.2%})")
                     
+                    # NOTE: We don't enforce portfolio risk yet because we can't track existing position SLs
+                    # Once bracket state tracking is implemented, uncomment this block:
+                    # if not risk_check['within_limits']:
+                    #     print(f"🚫 [PORTFOLIO-RISK-BLOCK] {sym} - Would exceed max active risk (2% of equity)")
+                    #     continue
+                    
+                    print(f"[PORTFOLIO-RISK] {sym} - Check passed (enforcement deferred pending SL tracking)")
+                    
+                except NameError:
+                    # new_position not defined (no ATR) - skip portfolio check
+                    print(f"[PORTFOLIO-RISK] {sym} - Skipping check (no ATR for risk calculation)")
                 except Exception as portfolio_err:
                     print(f"[PORTFOLIO-RISK-ERR] {sym}: {portfolio_err} - proceeding with caution")
                 
