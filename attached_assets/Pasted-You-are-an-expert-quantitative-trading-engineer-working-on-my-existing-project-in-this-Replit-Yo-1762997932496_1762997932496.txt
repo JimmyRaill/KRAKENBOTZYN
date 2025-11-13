@@ -1,0 +1,76 @@
+You are an expert quantitative trading engineer working on my existing project in this Replit.
+
+Your job: 
+Turn my bot “Zyn” into an extremely disciplined, extremely profitable day-trading AI servant. He must trade with strict rules, strong risk management, clear logic, and NEVER lie or pretend to have abilities he doesn’t have.
+
+GENERAL INSTRUCTIONS
+- Do NOT start a brand new project. Work inside my existing codebase and improve / refactor it.
+- First, scan and understand ALL current files and how Zyn currently trades.
+- Then redesign and fix everything so it matches the requirements below.
+- Safety and correctness come BEFORE aggressiveness. I want high performance, but with strict risk control.
+
+MY GOAL FOR ZYN
+- High-performance day trader.
+- Nearly “perfect” in logic: no randomness, no vague rules.
+- Always uses stop-loss AND take-profit on live trades.
+- Cannot accidentally trade live when in paper mode.
+- Can clearly explain what he’s doing in technical terms.
+
+1) REMOVE BULLSHIT / HALLUCINATED CAPABILITIES
+- Remove or rewrite any code or responses where Zyn claims to:
+  - use “news”, “sentiment”, “fundamentals”, etc., unless you actually implement real data pipelines.
+  - “weigh indicators based on historical performance” unless you implement real backtesting and weighting.
+- Make sure Zyn only ever describes REAL things that exist in the code.
+- No vague language like “I analyze trends” without an explicit strategy behind it.
+
+2) DEFINE EXPLICIT ENTRY / EXIT LOGIC
+Create a clear, rule-based trading strategy Zyn follows 100%:
+
+- Implement functions like:
+  - should_open_long()
+  - should_open_short()
+- Each function must:
+  - Use specific indicators (for example: EMA cross + RSI filter + ATR volatility filter).
+  - Use clearly defined timeframes (e.g. 5m, 15m, 1h).
+  - Use explicit numeric thresholds (e.g. RSI < 30, EMA50 > EMA200, etc.).
+- No “soft” logic. These functions must be deterministic: return True only when ALL criteria are met.
+
+3) STOP-LOSS AND TAKE-PROFIT – MANDATORY BRACKET ORDERS
+- Zyn must NEVER open a live trade without BOTH:
+  - a stop-loss, and
+  - a take-profit.
+- Implement a fixed, transparent system such as:
+  - Stop-loss distance based on either:
+    - a fixed % of price (e.g. 1–2%), OR
+    - ATR-based (e.g. 1.5 × ATR(14)).
+  - Take-profit based on a risk/reward multiple:
+    - e.g. TP = entry + 2 × stop_distance for longs (and mirrored for shorts).
+- Enforce correct price sides so:
+  - SL is always on the losing side.
+  - TP is always on the winning side.
+- Use appropriate order types supported by the exchange (e.g. stop-loss market + take-profit limit).
+
+4) POSITION SIZING AND RISK MANAGEMENT
+- Implement proper risk-based position sizing:
+  - Use a config variable like `risk_per_trade` (e.g. 0.5% to 1% of account equity).
+  - Position size = (equity * risk_per_trade) / stop_loss_distance.
+- Add global risk controls:
+  - Max risk active at once (e.g. no more than 2–3% of equity across all open trades).
+  - Max number of trades per hour / per day.
+  - Cooldown between trades per symbol to prevent overtrading.
+- Put all these risk and size parameters in a single config area/file at the top so I can tune them.
+
+5) PAPER MODE VS LIVE MODE – HARD LOCKS
+- Fix the issue where Zyn traded live even when he was supposed to be in paper mode.
+- Introduce a single clear mode flag, e.g.:
+  - `mode = "paper"` or `mode = "live"`.
+- Before sending ANY order:
+  - Check this flag.
+  - If `mode == "paper"`, route the trade through a paper-trading simulator (no real API call).
+  - If `mode == "live"`, send the real order.
+- Log the mode on startup and before every trade so it’s obvious what mode he’s in.
+- Design it so it’s easy later to wire a one-click UI toggle for mode.
+
+6) STATE MANAGEMENT AND ORDER TRACKING
+- Implement a clean state system that tracks:
+  - all open positions (symbol, direction, size, entry price, SL, TP, timestam
