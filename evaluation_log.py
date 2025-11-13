@@ -42,7 +42,10 @@ def init_evaluation_log_db():
             adx REAL,
             bb_position REAL,
             sma20 REAL,
-            sma50 REAL
+            sma50 REAL,
+            candle_timestamp TEXT,
+            current_position_qty REAL DEFAULT 0,
+            current_position_value REAL DEFAULT 0
         )
     """)
     
@@ -89,14 +92,17 @@ def log_evaluation(
     adx: Optional[float] = None,
     bb_position: Optional[float] = None,
     sma20: Optional[float] = None,
-    sma50: Optional[float] = None
+    sma50: Optional[float] = None,
+    candle_timestamp: Optional[str] = None,
+    current_position_qty: float = 0.0,
+    current_position_value: float = 0.0
 ):
     """
     Log a single evaluation to the database.
     
     Args:
         symbol: Trading pair (e.g., "BTC/USD")
-        decision: "BUY", "SELL", "NO_TRADE", "SKIP", "ERROR"
+        decision: "BUY", "SELL_ALL", "HOLD", "LONG", "NO_TRADE", "SKIP", "ERROR"
         reason: Short explanation (e.g., "RSI out of range")
         trading_mode: "PAPER" or "LIVE"
         price: Current price
@@ -110,6 +116,9 @@ def log_evaluation(
         bb_position: Bollinger Band position (0-1)
         sma20: SMA20 value
         sma50: SMA50 value
+        candle_timestamp: Candle timestamp for scheduler verification
+        current_position_qty: Current open position quantity
+        current_position_value: Current open position value in USD
     """
     try:
         conn = _get_connection()
@@ -121,12 +130,14 @@ def log_evaluation(
             INSERT INTO evaluations (
                 timestamp_utc, symbol, price, rsi, atr, volume,
                 decision, reason, position_size, error_message, trading_mode,
-                regime, adx, bb_position, sma20, sma50
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                regime, adx, bb_position, sma20, sma50,
+                candle_timestamp, current_position_qty, current_position_value
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp_utc, symbol, price, rsi, atr, volume,
             decision, reason, position_size, error_message, trading_mode,
-            regime, adx, bb_position, sma20, sma50
+            regime, adx, bb_position, sma20, sma50,
+            candle_timestamp, current_position_qty, current_position_value
         ))
         
         cursor.execute("""

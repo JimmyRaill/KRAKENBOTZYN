@@ -55,6 +55,9 @@ try:
 except ImportError:
     print("[WARNING] Telemetry modules not found - learning features disabled")
 
+# EVALUATION LOGGING - Full transparency layer
+from evaluation_log import log_evaluation
+
 # Advanced feature imports with individual toggles
 MULTI_STRATEGY_ENABLED = False
 PATTERN_RECOGNITION_ENABLED = False
@@ -601,12 +604,25 @@ def loop_once(ex, symbols: List[str]) -> None:
     trade_log: List[Dict[str, Any]] = []
     for sym in symbols:
         action = "unknown"  # Initialize to avoid unbound variable in error handler
+        trading_mode = get_mode_str()  # Get trading mode for logging
         try:
             if paused():
                 print(f"[PAUSED] global pause active; skip {sym}")
+                log_evaluation(
+                    symbol=sym,
+                    decision="SKIP",
+                    reason="Global pause active",
+                    trading_mode=trading_mode
+                )
                 continue
             if cooldown_active(sym):
                 print(f"[COOLDOWN] {sym} — skipping")
+                log_evaluation(
+                    symbol=sym,
+                    decision="SKIP",
+                    reason="Cooldown active",
+                    trading_mode=trading_mode
+                )
                 continue
 
             # NEW: Fetch 5-minute OHLC candles for closed-candle strategy
@@ -615,12 +631,25 @@ def loop_once(ex, symbols: List[str]) -> None:
                 ohlcv = manager.fetch_ohlc(sym, timeframe='5m', limit=100)
             except Exception as fetch_err:
                 print(f"[OHLC-ERR] {sym} - Failed to fetch 5m candles: {fetch_err}")
+                log_evaluation(
+                    symbol=sym,
+                    decision="ERROR",
+                    reason=f"Failed to fetch OHLC data: {str(fetch_err)[:100]}",
+                    trading_mode=trading_mode,
+                    error_message=str(fetch_err)
+                )
                 continue
             
             # Validate candle data (need at least 20 for SMA20)
-            is_valid, reason = validate_candle_data(ohlcv, min_candles=20)
+            is_valid, validation_reason = validate_candle_data(ohlcv, min_candles=20)
             if not is_valid:
-                print(f"[SKIP] {sym} - {reason}")
+                print(f"[SKIP] {sym} - {validation_reason}")
+                log_evaluation(
+                    symbol=sym,
+                    decision="SKIP",
+                    reason=f"Candle validation failed: {validation_reason}",
+                    trading_mode=trading_mode
+                )
                 continue
             
             # Get candle tracking from state
@@ -631,6 +660,12 @@ def loop_once(ex, symbols: List[str]) -> None:
             latest_ts = get_latest_candle_timestamp(ohlcv)
             if latest_ts is None:
                 print(f"[SKIP] {sym} - Cannot get candle timestamp")
+                log_evaluation(
+                    symbol=sym,
+                    decision="SKIP",
+                    reason="Cannot get candle timestamp",
+                    trading_mode=trading_mode
+                )
                 continue
             
             new_candle = is_new_candle_closed(last_known_ts, latest_ts, timeframe_seconds=300)
@@ -640,9 +675,19 @@ def loop_once(ex, symbols: List[str]) -> None:
             current_close = closes[-1]
             pos_qty, usd_cash = position_qty(ex, sym)
             
-            # If no new candle closed, skip signal evaluation
+            # If no new candle closed, skip signal evaluation BUT STILL LOG
             if not new_candle:
                 print(f"[WAIT] {sym} - No new 5m candle closed yet (last={last_known_ts}, latest={latest_ts})")
+                log_evaluation(
+                    symbol=sym,
+                    decision="SKIP",
+                    reason="Waiting for new 5-minute candle to close",
+                    trading_mode=trading_mode,
+                    price=current_close,
+                    candle_timestamp=str(latest_ts) if latest_ts else None,
+                    current_position_qty=pos_qty,
+                    current_position_value=pos_qty * current_close if pos_qty and current_close else 0
+                )
                 continue
             
             # NEW CANDLE CLOSED - Calculate ALL indicators for regime detection
@@ -652,6 +697,13 @@ def loop_once(ex, symbols: List[str]) -> None:
             atr = calculate_atr(ohlcv, period=14)
             adx = calculate_adx(ohlcv, period=14)
             bb_result = calculate_bollinger_bands(closes, period=20, std_dev=2.0)
+            
+            # Calculate BB position (0-1 where price is within the bands)
+            bb_position = None
+            if bb_result and len(bb_result) == 3:
+                bb_middle, bb_upper, bb_lower = bb_result
+                if bb_upper and bb_lower and bb_upper != bb_lower:
+                    bb_position = (current_close - bb_lower) / (bb_upper - bb_lower)
             
             # Calculate volume percentile
             volumes = [candle[5] for candle in ohlcv if len(candle) > 5]
@@ -703,15 +755,47 @@ def loop_once(ex, symbols: List[str]) -> None:
                 elif trade_signal.dominant_trend:
                     print(f"[HTF] {sym} - Dominant {trade_signal.dominant_trend} trend (not fully aligned)")
                 
+                # Log the signal decision with full indicator context
+                log_evaluation(
+                    symbol=sym,
+                    decision=action.upper(),  # 'long' -> 'LONG', 'hold' -> 'HOLD'
+                    reason=why,
+                    trading_mode=trading_mode,
+                    price=price,
+                    rsi=rsi,
+                    atr=atr,
+                    volume=volume_percentile if volume_percentile else None,
+                    regime=regime.value if regime else None,
+                    adx=adx,
+                    bb_position=bb_position,
+                    sma20=current_sma20,
+                    sma50=current_sma50,
+                    candle_timestamp=str(latest_ts) if latest_ts else None,
+                    current_position_qty=pos_qty,
+                    current_position_value=pos_qty * price if pos_qty and price else 0
+                )
+                
             except Exception as e:
                 print(f"[ORCHESTRATOR-ERR] {sym}: {e}")
                 import traceback
                 traceback.print_exc()
-                # Fallback to hold on orchestrator error
+                # Fallback to hold on orchestrator error and LOG the error
                 action = "hold"
                 why = f"Orchestrator error: {e}"
                 price = current_close
                 regime = None
+                
+                log_evaluation(
+                    symbol=sym,
+                    decision="ERROR",
+                    reason=f"Orchestrator error: {str(e)[:100]}",
+                    trading_mode=trading_mode,
+                    price=price,
+                    error_message=str(e),
+                    candle_timestamp=str(latest_ts) if latest_ts else None,
+                    current_position_qty=pos_qty,
+                    current_position_value=pos_qty * price if pos_qty and price else 0
+                )
             
             # CRITICAL: Exit positions in bearish regimes
             # TREND_DOWN regime with open position → Force exit
@@ -761,9 +845,32 @@ def loop_once(ex, symbols: List[str]) -> None:
                     allowed, limit_reason = can_open_new_trade(sym, mode_str)
                     if not allowed:
                         print(f"🚫 [DAILY-LIMIT-BLOCK] {sym} - {limit_reason}")
+                        log_evaluation(
+                            symbol=sym,
+                            decision="NO_TRADE",
+                            reason=f"Daily limit reached: {limit_reason}",
+                            trading_mode=trading_mode,
+                            price=price,
+                            rsi=rsi,
+                            atr=atr,
+                            regime=regime.value if regime else None,
+                            adx=adx,
+                            sma20=current_sma20,
+                            sma50=current_sma50,
+                            candle_timestamp=str(latest_ts) if latest_ts else None,
+                            current_position_qty=pos_qty,
+                            current_position_value=pos_qty * price if pos_qty and price else 0
+                        )
                         continue
                 except Exception as limit_err:
                     print(f"[DAILY-LIMIT-ERR] {sym}: {limit_err} - BLOCKING trade for safety")
+                    log_evaluation(
+                        symbol=sym,
+                        decision="ERROR",
+                        reason=f"Daily limit check error: {str(limit_err)[:100]}",
+                        trading_mode=trading_mode,
+                        error_message=str(limit_err)
+                    )
                     continue
                 
                 # 2. PER-TRADE RISK: Calculate and validate stop-loss based risk using risk_manager
@@ -802,9 +909,32 @@ def loop_once(ex, symbols: List[str]) -> None:
                 except ValueError as val_err:
                     # calculate_trade_risk raises ValueError for invalid SL placement
                     print(f"🚫 [RISK-CALC-BLOCK] {sym} - {val_err}")
+                    log_evaluation(
+                        symbol=sym,
+                        decision="NO_TRADE",
+                        reason=f"Risk validation failed: {str(val_err)[:100]}",
+                        trading_mode=trading_mode,
+                        price=price,
+                        rsi=rsi,
+                        atr=atr,
+                        regime=regime.value if regime else None,
+                        adx=adx,
+                        sma20=current_sma20,
+                        sma50=current_sma50,
+                        candle_timestamp=str(latest_ts) if latest_ts else None,
+                        current_position_qty=pos_qty,
+                        current_position_value=pos_qty * price if pos_qty and price else 0
+                    )
                     continue
                 except Exception as risk_err:
                     print(f"[RISK-CALC-ERR] {sym}: {risk_err} - proceeding with caution")
+                    log_evaluation(
+                        symbol=sym,
+                        decision="ERROR",
+                        reason=f"Risk calculation error: {str(risk_err)[:100]}",
+                        trading_mode=trading_mode,
+                        error_message=str(risk_err)
+                    )
                 
                 # 3. PORTFOLIO-WIDE RISK: Check max active risk (2% of equity)
                 # LIMITATION: Currently only checks the NEW trade's risk
