@@ -354,19 +354,102 @@ def _get_market_info(symbol: str) -> str:
         return f"[MARKET-INFO-ERROR] {e}"
 
 
+# ---------- Bracket Order Helper (Percentage-based) ----------
+def _execute_bracket_with_percentages(symbol: str, amount: float, sl_percent: float, tp_percent: float) -> str:
+    """
+    AUTOMATED helper for bracket orders with percentage-based SL/TP.
+    This function handles ALL the conversion work automatically so the LLM doesn't have to.
+    
+    Args:
+        symbol: Trading pair (e.g., 'ZEC/USD', 'BTC/USD')
+        amount: Quantity to trade (e.g., 0.03)
+        sl_percent: Stop-loss percentage BELOW entry (e.g., 1 for 1% below)
+        tp_percent: Take-profit percentage ABOVE entry (e.g., 2 for 2% above)
+    
+    Returns:
+        Result message from bracket order execution
+    
+    Example:
+        _execute_bracket_with_percentages('ZEC/USD', 0.03, 1, 2)
+        → Fetches price $485.50
+        → Calculates SL = $480.65 (1% below), TP = $495.21 (2% above)
+        → Executes: bracket zec/usd 0.03 tp 495.21 sl 480.65
+    """
+    try:
+        from exchange_manager import get_exchange
+        
+        # Validate inputs
+        if not symbol or not isinstance(symbol, str):
+            return "[BRACKET-ERR] Invalid symbol"
+        if amount <= 0:
+            return "[BRACKET-ERR] Amount must be positive"
+        if sl_percent <= 0 or tp_percent <= 0:
+            return "[BRACKET-ERR] SL and TP percentages must be positive"
+        if sl_percent >= 100 or tp_percent >= 100:
+            return "[BRACKET-ERR] SL/TP percentages must be less than 100%"
+        
+        # Fetch current market price
+        ex = get_exchange()
+        symbol_upper = symbol.upper().strip()
+        ticker = ex.fetch_ticker(symbol_upper)
+        
+        current_price = ticker.get("last") or ticker.get("ask") or ticker.get("bid")
+        if not current_price or current_price <= 0:
+            return f"[BRACKET-ERR] Could not get valid price for {symbol_upper}"
+        
+        # Calculate absolute SL/TP prices
+        sl_price = current_price * (1 - sl_percent / 100)
+        tp_price = current_price * (1 + tp_percent / 100)
+        
+        # Format prices using symbol-specific precision (CRITICAL for low-priced assets)
+        tp_price_str = ex.price_to_precision(symbol_upper, tp_price)
+        sl_price_str = ex.price_to_precision(symbol_upper, sl_price)
+        amount_str = ex.amount_to_precision(symbol_upper, amount)
+        
+        # Format command with properly-rounded prices
+        bracket_cmd = f"bracket {symbol_upper.lower()} {amount_str} tp {tp_price_str} sl {sl_price_str}"
+        
+        # Log the conversion
+        print(f"[ZYN-BRACKET-AUTO] Symbol={symbol_upper} | Price=${current_price:.2f} | "
+              f"SL={sl_percent}% → ${sl_price:.2f} | TP={tp_percent}% → ${tp_price:.2f}")
+        
+        # Execute the bracket command
+        result = _execute_trading_command(bracket_cmd)
+        
+        # Enhance result with conversion details (using proper precision)
+        conversion_info = (
+            f"\n📊 Conversion details:\n"
+            f"- Entry price: {ex.price_to_precision(symbol_upper, current_price)}\n"
+            f"- Stop-loss: {sl_price_str} ({sl_percent}% below entry)\n"
+            f"- Take-profit: {tp_price_str} ({tp_percent}% above entry)\n"
+            f"- Amount: {amount_str}"
+        )
+        
+        return result + conversion_info
+        
+    except Exception as e:
+        error_msg = f"[BRACKET-AUTO-ERR] {e}"
+        print(f"[ZYN-BRACKET-AUTO-FAIL] {error_msg}")
+        return error_msg
+
+
 # ---------- Trading Command Execution ----------
 def _execute_trading_command(command: str) -> str:
     """
     Execute a trading command via commands.handle().
     SAFETY: Blocks naked market orders in live mode - brackets required.
+    VALIDATION: Detects invalid command syntax and provides helpful error messages.
     Logs execution for safety and telemetry.
     """
     try:
-        from commands import handle
+        from commands import handle, HELP
         from exchange_manager import get_mode_str, is_paper_mode
         
         mode = get_mode_str()
         cmd_lower = command.lower().strip()
+        
+        # Log the exact command being attempted
+        print(f"[ZYN-COMMAND-ATTEMPT] Mode={mode} | Raw command: '{command}'")
         
         # CRITICAL SAFETY: Block naked market orders in live mode
         if not is_paper_mode():
@@ -393,8 +476,32 @@ def _execute_trading_command(command: str) -> str:
         result = handle(command)
         result_str = str(result)
         
-        # Log command execution
-        print(f"[ZYN-COMMAND] Mode={mode} | Command: {command} | Result: {result_str}")
+        # VALIDATION: Detect when command parsing failed (HELP text returned)
+        if result_str == HELP or result_str.startswith("Commands:"):
+            error_msg = (
+                f"❌ COMMAND PARSING FAILED: '{command}' does not match any supported command format.\n\n"
+                "🔍 DEBUG INFO:\n"
+                f"- Command received: '{command}'\n"
+                f"- Trading mode: {mode}\n\n"
+                "📋 REQUIRED COMMAND FORMATS:\n\n"
+                "For bracket orders:\n"
+                "  bracket <symbol> <amount> tp <price> sl <price>\n"
+                "  Example: bracket zec/usd 0.03 tp 490.50 sl 480.25\n\n"
+                "For read-only:\n"
+                "  bal                  → Show balances\n"
+                "  open                 → Show all open orders\n"
+                "  open btc/usd         → Show orders for symbol\n"
+                "  price btc/usd        → Get current price\n\n"
+                "⚠️ IMPORTANT: If user gave percentages (e.g., '1% SL'), you MUST:\n"
+                "1. Call get_market_price(symbol) first\n"
+                "2. Calculate absolute prices: SL = price * 0.99, TP = price * 1.02\n"
+                "3. Use calculated prices in bracket command\n"
+            )
+            print(f"[ZYN-PARSE-FAIL] Invalid command syntax: '{command}'")
+            return error_msg
+        
+        # Log successful command execution
+        print(f"[ZYN-COMMAND-OK] Mode={mode} | Command: {command} | Result: {result_str[:100]}")
         
         # ENHANCED: Check for insufficient funds errors and provide helpful guidance
         # This helps the LLM understand WHY the order failed and prevents suggesting naked positions
@@ -413,7 +520,7 @@ def _execute_trading_command(command: str) -> str:
         return result_str
     except Exception as e:
         error_msg = f"[COMMAND-ERR] {e}"
-        print(f"[ZYN-COMMAND-FAIL] {error_msg}")
+        print(f"[ZYN-COMMAND-EXCEPTION] Command: '{command}' | Error: {e}")
         return error_msg
 
 
@@ -853,14 +960,99 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
             {
                 "type": "function",
                 "function": {
+                    "name": "execute_bracket_with_percentages",
+                    "description": (
+                        "🎯 AUTOMATED bracket order with percentage-based SL/TP. USE THIS for natural language commands!\n\n"
+                        "This function handles ALL the work automatically:\n"
+                        "1. Fetches current market price\n"
+                        "2. Calculates absolute SL/TP from percentages\n"
+                        "3. Executes bracket order with proper syntax\n\n"
+                        "WHEN TO USE THIS:\n"
+                        "✅ User says: 'Buy 0.03 ZEC/USD with 1% SL and 2% TP'\n"
+                        "✅ User says: 'Paper buy 0.1 BTC/USD, stop-loss 2% below, take-profit 3% above'\n"
+                        "✅ User says: 'Enter ETH/USD 0.5 with 1.5% stop and 2.5% target'\n\n"
+                        "SIMPLY CALL:\n"
+                        "execute_bracket_with_percentages(\n"
+                        "  symbol='ZEC/USD',\n"
+                        "  amount=0.03,\n"
+                        "  sl_percent=1,   # 1% BELOW entry\n"
+                        "  tp_percent=2    # 2% ABOVE entry\n"
+                        ")\n\n"
+                        "The function does the rest automatically and returns detailed results."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {
+                                "type": "string",
+                                "description": "Trading pair (e.g., 'BTC/USD', 'ETH/USD', 'ZEC/USD')"
+                            },
+                            "amount": {
+                                "type": "number",
+                                "description": "Quantity to trade (e.g., 0.03, 0.1, 0.5)"
+                            },
+                            "sl_percent": {
+                                "type": "number",
+                                "description": "Stop-loss percentage BELOW entry price (e.g., 1 for 1% below, 2.5 for 2.5% below)"
+                            },
+                            "tp_percent": {
+                                "type": "number",
+                                "description": "Take-profit percentage ABOVE entry price (e.g., 2 for 2% above, 3.5 for 3.5% above)"
+                            }
+                        },
+                        "required": ["symbol", "amount", "sl_percent", "tp_percent"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "execute_trading_command",
-                    "description": "Execute a trading command on Kraken. Use this when the user asks you to buy, sell, cancel orders, check balances, view open orders, or execute any trading action. IMPORTANT: You MUST use bracket orders (with take-profit and stop-loss) for all real money trades.",
+                    "description": (
+                        "Execute a trading command on Kraken with EXACT SYNTAX REQUIRED.\n\n"
+                        "🚨 CRITICAL: You MUST convert natural language to the exact command formats below. "
+                        "Do NOT pass natural language strings - they will FAIL.\n\n"
+                        "═══ SUPPORTED COMMAND FORMATS (USE THESE EXACTLY) ═══\n\n"
+                        "READ-ONLY COMMANDS:\n"
+                        "- 'bal' → Show balances\n"
+                        "- 'open' → Show all open orders\n"
+                        "- 'open btc/usd' → Show open orders for specific symbol\n"
+                        "- 'price btc/usd' → Get current price\n\n"
+                        "BRACKET ORDER (REQUIRED FOR ALL TRADES):\n"
+                        "Format: bracket <symbol> <amount> tp <price> sl <price>\n"
+                        "Example: bracket zec/usd 0.03 tp 490.50 sl 480.25\n"
+                        "⚠️ All prices MUST be ABSOLUTE NUMBERS (not percentages)\n\n"
+                        "MARKET ORDERS (Paper mode only):\n"
+                        "- 'buy 10 usd btc/usd' → Buy $10 worth\n"
+                        "- 'sell all zec/usd' → Sell entire position\n\n"
+                        "ORDER MANAGEMENT:\n"
+                        "- 'cancel ORDER_ID' → Cancel specific order\n"
+                        "- 'cancel ORDER_ID btc/usd' → Cancel with symbol\n\n"
+                        "═══ PERCENTAGE CONVERSION WORKFLOW ═══\n\n"
+                        "When user says '1% SL' or '2% TP', you MUST:\n"
+                        "1. Call get_market_price(symbol) to fetch current price\n"
+                        "2. Calculate absolute SL/TP prices:\n"
+                        "   - SL = current_price * (1 - sl_percent/100)\n"
+                        "   - TP = current_price * (1 + tp_percent/100)\n"
+                        "3. Format bracket command with calculated prices\n\n"
+                        "Example workflow for 'Buy 0.03 ZEC/USD with 1% SL and 2% TP':\n"
+                        "1. get_market_price('ZEC/USD') → returns $485.50\n"
+                        "2. Calculate: SL = 485.50 * 0.99 = 480.65, TP = 485.50 * 1.02 = 495.21\n"
+                        "3. execute_trading_command('bracket zec/usd 0.03 tp 495.21 sl 480.65')\n\n"
+                        "═══ COMMON MISTAKES (AVOID THESE) ═══\n\n"
+                        "❌ WRONG: 'Paper buy 0.03 ZEC/USD with 1% SL and 2% TP'\n"
+                        "✅ RIGHT: First get price, then 'bracket zec/usd 0.03 tp 495.21 sl 480.65'\n\n"
+                        "❌ WRONG: 'bracket zec/usd 0.03 tp 2% sl 1%'\n"
+                        "✅ RIGHT: Convert percentages to absolute prices first\n\n"
+                        "❌ WRONG: 'buy zec/usd with stop loss'\n"
+                        "✅ RIGHT: Use bracket command with exact prices\n"
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "command": {
                                 "type": "string",
-                                "description": "The trading command to execute. Examples: 'buy 10 usd btc/usd', 'sell all zec/usd', 'cancel ORDER123', 'open', 'bal', 'price btc/usd', 'bracket btc/usd 0.001 tp 95000 sl 90000'"
+                                "description": "The EXACT command string matching one of the formats above. NEVER pass natural language - convert it to canonical syntax first."
                             }
                         },
                         "required": ["command"]
@@ -987,6 +1179,20 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
             elif function_name == "get_market_info":
                 symbol = function_args.get("symbol", "")
                 result = _get_market_info(symbol)
+                
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": result
+                })
+            
+            elif function_name == "execute_bracket_with_percentages":
+                symbol = function_args.get("symbol", "")
+                amount = function_args.get("amount", 0)
+                sl_percent = function_args.get("sl_percent", 0)
+                tp_percent = function_args.get("tp_percent", 0)
+                result = _execute_bracket_with_percentages(symbol, amount, sl_percent, tp_percent)
                 
                 messages.append({
                     "tool_call_id": tool_call.id,
