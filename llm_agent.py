@@ -246,6 +246,56 @@ def _summarize_state_for_prompt(s: Dict[str, Any]) -> str:
     return " | ".join(parts) if parts else "no-telemetry"
 
 
+# ---------- Trading Command Execution ----------
+def _execute_trading_command(command: str) -> str:
+    """
+    Execute a trading command via commands.handle().
+    SAFETY: Blocks naked market orders in live mode - brackets required.
+    Logs execution for safety and telemetry.
+    """
+    try:
+        from commands import handle
+        from exchange_manager import get_mode_str, is_paper_mode
+        
+        mode = get_mode_str()
+        cmd_lower = command.lower().strip()
+        
+        # CRITICAL SAFETY: Block naked market orders in live mode
+        if not is_paper_mode():
+            # Allow: bal, price, open, cancel (read-only or close actions)
+            safe_readonly = any(cmd_lower.startswith(x) for x in ["bal", "price", "open"])
+            safe_cancel = cmd_lower.startswith("cancel")
+            
+            # Dangerous: naked buy/sell without brackets
+            naked_buy = cmd_lower.startswith("buy ") and "bracket" not in cmd_lower
+            naked_sell = cmd_lower.startswith("sell ") and "bracket" not in cmd_lower
+            naked_limit = cmd_lower.startswith("limit ") and "bracket" not in cmd_lower
+            
+            if naked_buy or naked_sell or naked_limit:
+                error_msg = (
+                    "🚨 LIVE TRADING SAFETY BLOCK: Naked positions not allowed in live mode.\n"
+                    "You MUST use bracket orders (with take-profit and stop-loss) for all trades.\n"
+                    "Example: bracket btc/usd 0.001 tp 95000 sl 90000\n"
+                    "For emergencies only, use: sell all <symbol>"
+                )
+                print(f"[ZYN-SAFETY-BLOCK] {mode} | Blocked: {command}")
+                return error_msg
+        
+        # Execute command
+        result = handle(command)
+        
+        # Log command execution
+        print(f"[ZYN-COMMAND] Mode={mode} | Command: {command} | Result: {result}")
+        
+        # TODO: Persist to telemetry_db for audit trail
+        
+        return result
+    except Exception as e:
+        error_msg = f"[COMMAND-ERR] {e}"
+        print(f"[ZYN-COMMAND-FAIL] {error_msg}")
+        return error_msg
+
+
 # ---------- Public entrypoint ----------
 def ask_llm(user_text: str) -> str:
     """
@@ -498,15 +548,78 @@ def ask_llm(user_text: str) -> str:
 
         assert client is not None  # for type checkers
 
+        # Define trading command tool
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_trading_command",
+                    "description": "Execute a trading command on Kraken. Use this when the user asks you to buy, sell, cancel orders, check balances, view open orders, or execute any trading action. IMPORTANT: You MUST use bracket orders (with take-profit and stop-loss) for all real money trades.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The trading command to execute. Examples: 'buy 10 usd btc/usd', 'sell all zec/usd', 'cancel ORDER123', 'open', 'bal', 'price btc/usd', 'bracket btc/usd 0.001 tp 95000 sl 90000'"
+                            }
+                        },
+                        "required": ["command"]
+                    }
+                }
+            }
+        ]
+
+        # Initial API call with tools (60s timeout to avoid shell timeouts)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_block},
+        ]
+        
         resp = client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_block},
-            ],
+            messages=messages,
+            tools=tools,
             temperature=0.7,
+            timeout=60.0,  # 60s timeout to prevent long hangs
         )
-        return resp.choices[0].message.content or "No response."
+        
+        # Check if LLM wants to call a tool
+        assistant_message = resp.choices[0].message
+        
+        # If no tool call, return the text response
+        if not assistant_message.tool_calls:
+            return assistant_message.content or "No response."
+        
+        # Handle tool calls
+        messages.append(assistant_message)
+        
+        for tool_call in assistant_message.tool_calls:
+            function_name = tool_call.function.name
+            function_args = json.loads(tool_call.function.arguments)
+            
+            if function_name == "execute_trading_command":
+                command = function_args.get("command", "")
+                result = _execute_trading_command(command)
+                
+                # Add tool response to messages
+                messages.append({
+                    "tool_call_id": tool_call.id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": result
+                })
+        
+        # Get final response from LLM after tool execution (60s timeout)
+        final_resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=0.7,
+            timeout=60.0,
+        )
+        
+        # CRITICAL FIX: Return the actual message content
+        final_message = final_resp.choices[0].message
+        return final_message.content or "Command executed (no response from assistant)."
 
     except Exception as e:
         return "[Backend Error] " + "".join(

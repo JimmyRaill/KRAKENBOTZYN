@@ -435,7 +435,7 @@ def get_last_sync_time() -> Optional[float]:
 
 
 def should_sync() -> bool:
-    """Check if sync is needed (data older than 60 seconds)."""
+    """Check if sync is needed (data older than SYNC_INTERVAL seconds)."""
     last_sync = get_last_sync_time()
     if last_sync is None:
         return True
