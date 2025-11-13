@@ -77,20 +77,20 @@ class RiskConfig:
 @dataclass
 class RegimeConfig:
     """Market regime detection thresholds"""
-    # ADX thresholds
-    adx_threshold: float = 25.0  # ADX > 25 = trending market
-    min_adx: float = 10.0  # ADX < 10 = dead market (NO_TRADE)
+    # ADX thresholds (AGGRESSIVE: lowered for more trading opportunities)
+    adx_threshold: float = 18.0  # ADX > 18 = trending market (was 25)
+    min_adx: float = 8.0  # ADX < 8 = dead market (was 10)
     
-    # Volatility thresholds
-    min_volatility_pct: float = 0.0008  # 0.08% minimum (NO_TRADE below)
+    # Volatility thresholds (AGGRESSIVE: lowered to trade quieter markets)
+    min_volatility_pct: float = 0.0005  # 0.05% minimum (was 0.08%)
     atr_spike_multiplier: float = 2.5  # ATR > 2.5x recent avg = spike
     
     # Breakout detection
     breakout_margin_atr: float = 0.5  # Price must break by 0.5 ATR
     volume_spike_multiplier: float = 1.5  # Volume > 1.5x avg for breakout
     
-    # Range detection
-    max_range_width_pct: float = 4.0  # Bollinger Band width < 4% for range
+    # Range detection (AGGRESSIVE: wider bands = more range opportunities)
+    max_range_width_pct: float = 5.0  # Bollinger Band width < 5% for range (was 4%)
     
     # Volume thresholds
     min_volume: float = 0.0  # Absolute minimum volume (0 = disabled)
