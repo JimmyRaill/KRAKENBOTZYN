@@ -25,7 +25,7 @@ _trade_cache = {
 DB_PATH = Path(__file__).parent / "trading_memory.db"
 
 # Sync timing constants
-SYNC_INTERVAL = 300  # Auto-sync if data older than 5 minutes (avoid rate limits)
+SYNC_INTERVAL = 60  # Auto-sync if data older than 60 seconds (balanced freshness + rate limits)
 SYNC_WARNING_THRESHOLD = 300  # Warning if sync 300-600s old
 SYNC_ERROR_THRESHOLD = 600  # Error if sync > 600s old
 

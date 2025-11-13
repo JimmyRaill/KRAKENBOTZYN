@@ -15,14 +15,14 @@ An intelligent, self-learning cryptocurrency trading bot for the Kraken exchange
 - Dashboard for displaying accurate trading status, open positions, balances, and P&L, driven directly by Kraken data.
 
 ### Technical Implementations
-- **Status Service (`status_service.py`)**: A centralized module serving as the single source of truth for all trading data (modes, balances, orders, trades, activity summaries). **CRITICAL FIXES (Nov 12-13, 2025)**: (1) Now fetches trade history DIRECTLY from Kraken API instead of telemetry database, with 300-second caching. (2) Auto-syncs with Kraken every 300 seconds (5 minutes) for balances/orders to prevent rate limiting (99.8% under Kraken's API limits). Dashboard shows 100% accurate trade counts and P&L from real Kraken data.
+- **Status Service (`status_service.py`)**: A centralized module serving as the single source of truth for all trading data (modes, balances, orders, trades, activity summaries). **CRITICAL FIXES (Nov 12-13, 2025)**: (1) Now fetches trade history DIRECTLY from Kraken API instead of telemetry database, with 60-second caching. (2) Auto-syncs with Kraken every 60 seconds for balances/orders - optimized for fresh data while staying 99% under Kraken's API limits. Dashboard shows 100% accurate trade counts and P&L from real Kraken data.
 - **Self-Learning Components**:
     - **Telemetry Database (`telemetry_db.py`)**: An SQLite database (`trading_memory.db`) storing all trades, decisions, performance, insights, errors, and conversations for persistent learning.
     - **Trade Analyzer (`trade_analyzer.py`)**: An intelligence engine that calculates win rates, profit factors, and identifies successful strategies and market patterns.
     - **Time Context (`time_context.py`)**: Provides temporal intelligence, including current date/time awareness, market hours, and time-based feature extraction for pattern recognition.
     - **LLM Agent (`llm_agent.py`)**: Integrates OpenAI GPT-4o with function calling for command execution. Upgraded to: (1) learn from trading history, (2) provide time-aware responses, (3) explain decisions, (4) support natural language conversation with memory, and (5) **execute trading commands** (buy, sell, cancel, brackets) via natural language requests.
 - **Trading Components**:
-    - **Autopilot (`autopilot.py`)**: The autonomous trading loop that logs all decisions, executed trades, and performance. It implements an SMA20 strategy with ATR-based risk management, automatic bracket orders, and a daily loss kill-switch. **Runs every 300 seconds (5 minutes)** to avoid Kraken API rate limits.
+    - **Autopilot (`autopilot.py`)**: The autonomous trading loop that logs all decisions, executed trades, and performance. It implements an SMA20 strategy with ATR-based risk management, automatic bracket orders, and a daily loss kill-switch. **Runs every 60 seconds** for fresh market data while staying 99% under Kraken API rate limits.
     - **Commands (`commands.py`)**: Handles manual trading commands for order placement and management.
     - **Run (`run.py`)**: Provides an interactive shell for direct command execution.
 - **Advanced Modules (Feature-flagged)**:
