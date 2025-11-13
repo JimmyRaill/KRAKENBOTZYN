@@ -1016,16 +1016,25 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
                 else:
                     result = f"Last {len(evaluations)} evaluations:\n\n"
                     for eval_data in evaluations:
-                        ts = eval_data.get('timestamp_utc', 'N/A')[:19]  # Trim milliseconds
-                        sym = eval_data.get('symbol', 'N/A')
-                        decision = eval_data.get('decision', 'N/A')
-                        reason = eval_data.get('reason', 'N/A')
-                        regime = eval_data.get('regime', 'N/A')
-                        rsi = eval_data.get('rsi')
-                        atr = eval_data.get('atr')
-                        result += f"[{ts}] {sym}: {decision} - {reason}\n"
-                        if regime:
-                            result += f"  Regime: {regime}, RSI: {rsi:.1f if rsi else 'N/A'}, ATR: {atr:.2f if atr else 'N/A'}\n"
+                        try:
+                            ts = eval_data.get('timestamp_utc', 'N/A')[:19]  # Trim milliseconds
+                            sym = eval_data.get('symbol', 'N/A')
+                            decision = eval_data.get('decision', 'N/A')
+                            reason = eval_data.get('reason', 'N/A')
+                            regime = eval_data.get('regime', 'N/A')
+                            rsi = eval_data.get('rsi')
+                            atr = eval_data.get('atr')
+                            
+                            result += f"[{ts}] {sym}: {decision} - {reason}\n"
+                            
+                            if regime:
+                                # Safely format RSI and ATR values BEFORE f-string
+                                rsi_str = "N/A" if rsi is None else f"{rsi:.1f}"
+                                atr_str = "N/A" if atr is None else f"{atr:.2f}"
+                                result += f"  Regime: {regime}, RSI: {rsi_str}, ATR: {atr_str}\n"
+                        except Exception as e:
+                            # Logging errors should NEVER crash trade execution
+                            result += f"  [Logging Error: {e}]\n"
                 
                 messages.append({
                     "tool_call_id": tool_call.id,
