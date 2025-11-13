@@ -122,12 +122,15 @@ def get_mode() -> str:
     return mode
 
 
-def _fetch_balances_from_kraken() -> Dict[str, Any]:
-    """Fetch balances from Kraken API."""
+def _fetch_balances_from_source() -> Dict[str, Dict[str, Any]]:
+    """
+    Fetch balances from the correct source based on mode.
+    CRITICAL: Uses account_state.py to ensure LIVE/PAPER isolation.
+    Returns: {currency: {free, used, total, usd_value, last_updated}}
+    """
     try:
-        ex = get_exchange()
-        balance = ex.fetch_balance()
-        return balance
+        from account_state import get_balances
+        return get_balances()
     except Exception as e:
         logger.error(f"[STATUS-SERVICE] Failed to fetch balances: {e}")
         raise
@@ -285,33 +288,29 @@ def sync_exchange() -> Dict[str, Any]:
         
         # 1. Sync balances
         try:
-            balance_data = _fetch_balances_from_kraken()
+            balances = _fetch_balances_from_source()
             
             # Clear old balances for this mode
             cursor.execute("DELETE FROM balances WHERE mode = ?", (mode,))
             
-            # Insert new balances
-            for currency, amounts in balance_data.get('total', {}).items():
-                if amounts > 0:  # Only store non-zero balances
-                    free = balance_data.get('free', {}).get(currency, 0)
-                    used = balance_data.get('used', {}).get(currency, 0)
-                    total = amounts
-                    
-                    cursor.execute("""
-                        INSERT INTO balances (
-                            timestamp, datetime_utc, currency, free, used, total, mode, synced_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        now,
-                        now_utc.isoformat(),
-                        currency,
-                        free,
-                        used,
-                        total,
-                        mode,
-                        now
-                    ))
-                    stats['balances_synced'] += 1
+            # Insert new balances (account_state returns normalized format)
+            for currency, bal in balances.items():
+                cursor.execute("""
+                    INSERT INTO balances (
+                        timestamp, datetime_utc, currency, free, used, total, usd_value, mode, synced_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    now,
+                    now_utc.isoformat(),
+                    currency,
+                    bal.get('free', 0),
+                    bal.get('used', 0),
+                    bal.get('total', 0),
+                    bal.get('usd_value'),
+                    mode,
+                    now
+                ))
+                stats['balances_synced'] += 1
             
             logger.info(f"[STATUS-SERVICE] Synced {stats['balances_synced']} balances")
         except Exception as e:
@@ -319,90 +318,96 @@ def sync_exchange() -> Dict[str, Any]:
             stats['errors'].append(error_msg)
             logger.error(f"[STATUS-SERVICE] {error_msg}")
         
-        # 2. Sync open orders
-        try:
-            open_orders = _fetch_open_orders_from_kraken()
-            
-            for order in open_orders:
-                order_id = order.get('id', '')
-                if not order_id:
-                    continue
+        # 2. Sync open orders (LIVE mode only - skip in PAPER)
+        if mode == "live":
+            try:
+                open_orders = _fetch_open_orders_from_kraken()
                 
-                # Upsert order
-                cursor.execute("""
-                    INSERT OR REPLACE INTO orders (
-                        order_id, timestamp, datetime_utc, symbol, type, side,
-                        price, amount, filled, remaining, cost, fee, status,
-                        source, mode, raw_data, synced_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    order_id,
-                    order.get('timestamp', now * 1000) / 1000,
-                    datetime.fromtimestamp(order.get('timestamp', now * 1000) / 1000, tz=timezone.utc).isoformat(),
-                    order.get('symbol', ''),
-                    order.get('type', ''),
-                    order.get('side', ''),
-                    order.get('price'),
-                    order.get('amount'),
-                    order.get('filled', 0),
-                    order.get('remaining'),
-                    order.get('cost'),
-                    order.get('fee', {}).get('cost') if order.get('fee') else None,
-                    order.get('status', 'unknown'),
-                    'kraken',
-                    mode,
-                    json.dumps(order),
-                    now
-                ))
-                stats['orders_synced'] += 1
-            
-            logger.info(f"[STATUS-SERVICE] Synced {stats['orders_synced']} open orders")
-        except Exception as e:
-            error_msg = f"Open orders sync failed: {str(e)}"
-            stats['errors'].append(error_msg)
-            logger.error(f"[STATUS-SERVICE] {error_msg}")
+                for order in open_orders:
+                    order_id = order.get('id', '')
+                    if not order_id:
+                        continue
+                    
+                    # Upsert order
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO orders (
+                            order_id, timestamp, datetime_utc, symbol, type, side,
+                            price, amount, filled, remaining, cost, fee, status,
+                            source, mode, raw_data, synced_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        order_id,
+                        order.get('timestamp', now * 1000) / 1000,
+                        datetime.fromtimestamp(order.get('timestamp', now * 1000) / 1000, tz=timezone.utc).isoformat(),
+                        order.get('symbol', ''),
+                        order.get('type', ''),
+                        order.get('side', ''),
+                        order.get('price'),
+                        order.get('amount'),
+                        order.get('filled', 0),
+                        order.get('remaining'),
+                        order.get('cost'),
+                        order.get('fee', {}).get('cost') if order.get('fee') else None,
+                        order.get('status', 'unknown'),
+                        'kraken',
+                        mode,
+                        json.dumps(order),
+                        now
+                    ))
+                    stats['orders_synced'] += 1
+                
+                logger.info(f"[STATUS-SERVICE] Synced {stats['orders_synced']} open orders")
+            except Exception as e:
+                error_msg = f"Open orders sync failed: {str(e)}"
+                stats['errors'].append(error_msg)
+                logger.error(f"[STATUS-SERVICE] {error_msg}")
+        else:
+            logger.debug(f"[STATUS-SERVICE] Skipping open orders sync (mode={mode})")
         
-        # 3. Sync recent closed orders (last 7 days)
-        try:
-            since_ms = int((now - 7 * 24 * 60 * 60) * 1000)
-            closed_orders = _fetch_closed_orders_from_kraken(since=since_ms)
-            
-            for order in closed_orders:
-                order_id = order.get('id', '')
-                if not order_id:
-                    continue
+        # 3. Sync recent closed orders (LIVE mode only - skip in PAPER)
+        if mode == "live":
+            try:
+                since_ms = int((now - 7 * 24 * 60 * 60) * 1000)
+                closed_orders = _fetch_closed_orders_from_kraken(since=since_ms)
                 
-                cursor.execute("""
-                    INSERT OR REPLACE INTO orders (
-                        order_id, timestamp, datetime_utc, symbol, type, side,
-                        price, amount, filled, remaining, cost, fee, status,
-                        source, mode, raw_data, synced_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    order_id,
-                    order.get('timestamp', now * 1000) / 1000,
-                    datetime.fromtimestamp(order.get('timestamp', now * 1000) / 1000, tz=timezone.utc).isoformat(),
-                    order.get('symbol', ''),
-                    order.get('type', ''),
-                    order.get('side', ''),
-                    order.get('price'),
-                    order.get('amount'),
-                    order.get('filled', 0),
-                    order.get('remaining'),
-                    order.get('cost'),
-                    order.get('fee', {}).get('cost') if order.get('fee') else None,
-                    order.get('status', 'unknown'),
-                    'kraken',
-                    mode,
-                    json.dumps(order),
-                    now
-                ))
-            
-            logger.info(f"[STATUS-SERVICE] Synced {len(closed_orders)} closed orders")
-        except Exception as e:
-            error_msg = f"Closed orders sync failed: {str(e)}"
-            stats['errors'].append(error_msg)
-            logger.error(f"[STATUS-SERVICE] {error_msg}")
+                for order in closed_orders:
+                    order_id = order.get('id', '')
+                    if not order_id:
+                        continue
+                    
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO orders (
+                            order_id, timestamp, datetime_utc, symbol, type, side,
+                            price, amount, filled, remaining, cost, fee, status,
+                            source, mode, raw_data, synced_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        order_id,
+                        order.get('timestamp', now * 1000) / 1000,
+                        datetime.fromtimestamp(order.get('timestamp', now * 1000) / 1000, tz=timezone.utc).isoformat(),
+                        order.get('symbol', ''),
+                        order.get('type', ''),
+                        order.get('side', ''),
+                        order.get('price'),
+                        order.get('amount'),
+                        order.get('filled', 0),
+                        order.get('remaining'),
+                        order.get('cost'),
+                        order.get('fee', {}).get('cost') if order.get('fee') else None,
+                        order.get('status', 'unknown'),
+                        'kraken',
+                        mode,
+                        json.dumps(order),
+                        now
+                    ))
+                
+                logger.info(f"[STATUS-SERVICE] Synced {len(closed_orders)} closed orders")
+            except Exception as e:
+                error_msg = f"Closed orders sync failed: {str(e)}"
+                stats['errors'].append(error_msg)
+                logger.error(f"[STATUS-SERVICE] {error_msg}")
+        else:
+            logger.debug(f"[STATUS-SERVICE] Skipping closed orders sync (mode={mode})")
         
         # 4. Update sync state
         cursor.execute("""
@@ -523,32 +528,35 @@ def get_closed_orders(since: Optional[float] = None, until: Optional[float] = No
 
 def get_trades(since: Optional[float] = None, until: Optional[float] = None, limit: int = 100) -> List[Dict[str, Any]]:
     """
-    Get trades DIRECTLY from Kraken API.
-    CRITICAL: Returns REAL trade data, not telemetry logging.
+    Get trades from the correct source based on mode.
+    CRITICAL: Uses account_state.py to ensure LIVE/PAPER isolation.
+    - LIVE mode: Fetches from Kraken API
+    - PAPER mode: Fetches from paper ledger
     """
     try:
-        ex = get_exchange()
+        from account_state import get_trade_history
         
-        # Convert to milliseconds for Kraken API
-        since_ms = int(since * 1000) if since else None
+        # Fetch from mode-aware source
+        trades = get_trade_history(since=since, limit=limit)
         
-        # Fetch from Kraken
-        trades = ex.fetch_my_trades(since=since_ms, limit=limit)
+        # Apply until filter if specified
+        if until:
+            trades = [t for t in trades if t.get('timestamp', 0) <= until]
         
-        # Convert to our format
+        # Normalize format for backward compatibility
         result = []
         for t in trades:
             result.append({
-                'trade_id': t.get('id', ''),
-                'timestamp': t.get('timestamp', 0) / 1000,  # Convert ms to seconds
-                'datetime': t.get('datetime', ''),
+                'trade_id': t.get('trade_id', ''),
+                'timestamp': t.get('timestamp', 0),
+                'datetime': t.get('datetime_utc', ''),
                 'symbol': t.get('symbol', ''),
                 'side': t.get('side', ''),
                 'price': t.get('price', 0),
-                'quantity': t.get('amount', 0),
+                'quantity': t.get('quantity', 0),
                 'usd_amount': t.get('cost', 0),
-                'fee': t.get('fee', {}).get('cost', 0),
-                'order_id': t.get('order', '')
+                'fee': t.get('fee', 0),
+                'order_id': t.get('order_id', '')
             })
         
         # Apply until filter if specified
@@ -563,12 +571,42 @@ def get_trades(since: Optional[float] = None, until: Optional[float] = None, lim
 
 def _get_cached_trades() -> List[Dict[str, Any]]:
     """
-    Get trades with 30-second cache to avoid hammering Kraken API.
-    Critical optimization: API calls get_activity_summary 3x (24h/7d/30d).
+    Get trades with mode awareness to prevent LIVE/PAPER contamination.
+    CRITICAL: In PAPER mode, returns paper ledger trades. In LIVE mode, fetches from Kraken.
     """
     global _trade_cache
     now = time.time()
+    mode = get_mode()
     
+    # PAPER MODE: Use paper ledger, NOT Kraken
+    if mode == "paper":
+        try:
+            from account_state import get_trade_history
+            paper_trades = get_trade_history(limit=100)
+            
+            # Convert to ccxt format for compatibility
+            result = []
+            for t in paper_trades:
+                result.append({
+                    'id': t.get('trade_id', ''),
+                    'order': t.get('order_id', ''),
+                    'timestamp': t.get('timestamp', 0) * 1000,  # Convert to ms
+                    'datetime': t.get('datetime_utc', ''),
+                    'symbol': t.get('symbol', ''),
+                    'side': t.get('side', ''),
+                    'price': t.get('price', 0),
+                    'amount': t.get('quantity', 0),
+                    'cost': t.get('cost', 0),
+                    'fee': {'cost': t.get('fee', 0), 'currency': t.get('fee_currency', 'USD')}
+                })
+            
+            logger.debug(f"[STATUS-SERVICE] Using paper ledger trades ({len(result)} trades)")
+            return result
+        except Exception as e:
+            logger.error(f"[STATUS-SERVICE] Failed to fetch paper trades: {e}")
+            return []
+    
+    # LIVE MODE: Use Kraken API with caching
     # Check if cache is still valid
     if now - _trade_cache['fetched_at'] < _trade_cache['ttl']:
         logger.debug(f"[STATUS-SERVICE] Using cached trades ({len(_trade_cache['trades'])} trades)")

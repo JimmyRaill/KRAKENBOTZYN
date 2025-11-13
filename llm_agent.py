@@ -466,10 +466,72 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
             cmd = text.split(":", 1)[1].strip()
             return _run_router(cmd)
 
-        # Quick summaries with AUTHORITATIVE data from Status Service
-        if low in ("status", "report", "learning", "performance"):
+        # FULL STATUS REPORT - Direct from account_state (mode-aware)
+        if low in ("status", "report", "learning", "performance", "full status"):
+            try:
+                from account_state import get_portfolio_snapshot, get_trade_history, get_trading_mode
+                
+                mode = get_trading_mode()
+                snapshot = get_portfolio_snapshot()
+                recent_trades = get_trade_history(limit=5)
+                
+                lines = [
+                    "═══════════════════════════════════════════════════════",
+                    f"FULL STATUS REPORT - {mode.upper()} MODE",
+                    "═══════════════════════════════════════════════════════",
+                    f"Data Source: {snapshot.get('data_source', 'Unknown')}",
+                    f"Timestamp: {snapshot.get('datetime_utc', 'N/A')}",
+                    "",
+                    f"💰 TOTAL EQUITY: ${snapshot.get('total_equity_usd', 0):.2f} USD"
+                ]
+                
+                # Show balances
+                balances = snapshot.get('balances', {})
+                if balances:
+                    lines.append("\n📊 BALANCES:")
+                    for currency, bal in sorted(balances.items(), key=lambda x: x[1].get('usd_value', 0), reverse=True):
+                        total = bal.get('total', 0)
+                        free = bal.get('free', 0)
+                        usd_value = bal.get('usd_value', 0)
+                        if total > 0:
+                            lines.append(f"  {currency}: {total:.6f} (free: {free:.6f}) = ${usd_value:.2f}")
+                
+                # Show recent trades
+                if recent_trades:
+                    lines.append(f"\n📈 LAST {len(recent_trades)} TRADES:")
+                    for trade in recent_trades:
+                        trade_id = trade.get('trade_id', 'N/A')[:12]
+                        symbol = trade.get('symbol', 'N/A')
+                        side = trade.get('side', 'N/A').upper()
+                        price = trade.get('price', 0)
+                        qty = trade.get('quantity', 0)
+                        dt = trade.get('datetime_utc', '')[:19]
+                        lines.append(f"  [{dt}] {symbol} {side}: {qty:.6f} @ ${price:.2f} (ID: {trade_id})")
+                else:
+                    lines.append(f"\n📈 TRADES: No trades recorded in {mode.upper()} mode")
+                
+                # Show mode info
+                if mode == 'paper':
+                    starting = snapshot.get('starting_balance', 0)
+                    pnl = snapshot.get('total_equity_usd', 0) - starting
+                    pnl_pct = (pnl / starting * 100) if starting > 0 else 0
+                    lines.append(f"\n🧪 PAPER TRADING:")
+                    lines.append(f"  Starting Balance: ${starting:.2f}")
+                    lines.append(f"  P&L: ${pnl:+.2f} ({pnl_pct:+.2f}%)")
+                else:
+                    lines.append(f"\n🔴 LIVE TRADING: This is REAL MONEY on Kraken")
+                
+                lines.append("═══════════════════════════════════════════════════════")
+                
+                return "\n".join(lines)
+            
+            except Exception as e:
+                return f"❌ Failed to get status: {e}\n\nPlease check if the account state system is working properly."
+        
+        # Legacy quick status using Status Service
+        if low in ("quick", "q"):
             trading_status = _get_trading_status()
-            lines = [f"TRADING STATUS (Mode: {trading_status.get('mode', 'unknown')})"]
+            lines = [f"QUICK STATUS (Mode: {trading_status.get('mode', 'unknown')})"]
             
             # Show balances
             balances = trading_status.get('balances', {})
@@ -650,16 +712,34 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
             "   'I don't have that capability yet. Currently I only use [actual capability].'\n"
             "5. Be conversational but PRECISE - no vague marketing speak\n\n"
             "═══════════════════════════════════════════════════════\n"
-            "DATA SOURCES (CRITICAL):\n"
+            "DATA SOURCES (CRITICAL - ZERO HALLUCINATIONS ALLOWED):\n"
             "═══════════════════════════════════════════════════════\n"
-            "- TRADING_STATUS: Live data from Kraken API (synced every 60s)\n"
-            "  * Balances, orders, trades, P&L - THIS IS YOUR ONLY SOURCE OF TRUTH\n"
-            "  * NEVER guess trading numbers - ONLY use what's in TRADING_STATUS\n"
-            "- MEMORY: User preferences, past conversations\n"
-            "- AUTOPILOT_STATUS: Bot running/paused state\n"
-            "- Tools: get_market_price(), get_market_info(), execute_trading_command()\n\n"
-            "If TRADING_STATUS has errors, tell the user you can't access Kraken data.\n"
-            "If data is missing, SAY SO - don't make it up.\n"
+            "- TRADING_STATUS: Live data from account_state.py (mode-aware)\n"
+            "  * In LIVE mode: Data from Kraken API\n"
+            "  * In PAPER mode: Data from internal paper ledger\n"
+            "  * Balances, equity, orders, trades, P&L - THIS IS YOUR ONLY SOURCE OF TRUTH\n\n"
+            "🚨 CRITICAL RULES FOR TRADE REPORTING 🚨\n"
+            "1. NEVER claim trades exist unless they appear in TRADING_STATUS\n"
+            "2. NEVER report trade prices, quantities, or timestamps from memory\n"
+            "3. NEVER say 'I executed X trades today' unless get_trade_history() returned them\n"
+            "4. ALWAYS check recent_trades array in TRADING_STATUS before claiming ANY trades\n"
+            "5. If recent_trades is EMPTY or shows 0 trades, you MUST say:\n"
+            "   'I have not executed any trades in [LIVE/PAPER] mode based on the account data.'\n"
+            "6. When user asks 'what trades did you make?':\n"
+            "   - First check recent_trades in TRADING_STATUS\n"
+            "   - If empty: Say 'No trades in account history'\n"
+            "   - If present: List them with actual trade_id, symbol, price, quantity, timestamp\n"
+            "7. NEVER invent example trades to explain your strategy - use ONLY actual data\n"
+            "8. If TRADING_STATUS has errors, tell user you can't access data - don't guess\n\n"
+            "AVAILABLE TOOLS:\n"
+            "- get_market_price(): Fetch current price\n"
+            "- get_market_info(): Get trading limits\n"
+            "- execute_trading_command(): Execute orders\n"
+            "- show_last_evaluations(): Debug why no trades\n"
+            "- show_today_summary(): Decision counts\n"
+            "- explain_why_no_trades(): Data-backed explanation\n"
+            "- check_heartbeat(): Scheduler health\n\n"
+            "If data is missing or API fails, SAY SO - NEVER fabricate data.\n"
         )
 
         # CRITICAL: Trading data from Status Service (authoritative)

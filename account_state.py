@@ -284,19 +284,18 @@ class PaperLedger:
 _paper_ledger = PaperLedger()
 
 
-def get_portfolio_snapshot() -> Dict[str, Any]:
+def get_balances() -> Dict[str, Dict[str, Any]]:
     """
-    Get complete portfolio snapshot from the correct source based on mode.
+    Get balances from the correct source based on mode.
+    Returns normalized format: {currency: {free, used, total, usd_value, last_updated}}
     
-    Returns:
-        - mode: "live" or "paper"
-        - total_equity_usd: Total portfolio value in USD
-        - balances: Dict of {currency: {free, used, total, usd_value}}
-        - timestamp: When snapshot was taken
-        - data_source: "Kraken API" or "Paper Ledger"
+    CRITICAL:
+    - LIVE mode: Fetches from Kraken API
+    - PAPER mode: Fetches from paper ledger
     """
     mode = get_mode_str()
     now = time.time()
+    now_iso = datetime.now(tz=timezone.utc).isoformat()
     
     if mode == "live":
         # LIVE MODE: Fetch from Kraken API
@@ -304,10 +303,7 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
             ex = get_exchange()
             balances_raw = ex.fetch_balance()
             
-            # Get current prices for crypto holdings
             balances = {}
-            total_equity = 0.0
-            
             for currency, balance in balances_raw.items():
                 if currency in ('free', 'used', 'total', 'info'):
                     continue
@@ -323,7 +319,6 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
                 if currency == 'USD':
                     usd_value = total
                 else:
-                    # Try to get price
                     try:
                         symbol = f"{currency}/USD"
                         ticker = ex.fetch_ticker(symbol)
@@ -336,31 +331,19 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
                     'free': free,
                     'used': used,
                     'total': total,
-                    'usd_value': usd_value
+                    'usd_value': usd_value,
+                    'last_updated': now_iso
                 }
-                total_equity += usd_value
             
-            return {
-                'mode': 'live',
-                'total_equity_usd': total_equity,
-                'balances': balances,
-                'timestamp': now,
-                'datetime_utc': datetime.now(tz=timezone.utc).isoformat(),
-                'data_source': 'Kraken API'
-            }
+            return balances
         
         except Exception as e:
-            logger.error(f"[ACCOUNT-STATE] Failed to fetch live portfolio: {e}")
-            return {
-                'mode': 'live',
-                'error': f"Failed to fetch from Kraken: {e}",
-                'timestamp': now
-            }
+            logger.error(f"[ACCOUNT-STATE] Failed to fetch live balances: {e}")
+            return {}
     
     else:
         # PAPER MODE: Use paper ledger
         balances = _paper_ledger.get_balances()
-        total_equity = 0.0
         
         # Calculate USD value for each currency
         balances_with_value = {}
@@ -370,7 +353,6 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
             if currency == 'USD':
                 usd_value = total
             else:
-                # Get current market price
                 try:
                     ex = get_exchange()
                     symbol = f"{currency}/USD"
@@ -381,19 +363,50 @@ def get_portfolio_snapshot() -> Dict[str, Any]:
                     usd_value = 0.0
             
             balances_with_value[currency] = {
-                **bal,
-                'usd_value': usd_value
+                'free': bal['free'],
+                'used': bal['used'],
+                'total': bal['total'],
+                'usd_value': usd_value,
+                'last_updated': now_iso
             }
-            total_equity += usd_value
+        
+        return balances_with_value
+
+
+def get_portfolio_snapshot() -> Dict[str, Any]:
+    """
+    Get complete portfolio snapshot from the correct source based on mode.
+    
+    Returns:
+        - mode: "live" or "paper"
+        - total_equity_usd: Total portfolio value in USD
+        - balances: Dict of {currency: {free, used, total, usd_value, last_updated}}
+        - timestamp: When snapshot was taken
+        - data_source: "Kraken API" or "Paper Ledger"
+    """
+    mode = get_mode_str()
+    now = time.time()
+    
+    try:
+        balances = get_balances()
+        total_equity = sum(bal.get('usd_value', 0) for bal in balances.values())
         
         return {
-            'mode': 'paper',
+            'mode': mode,
             'total_equity_usd': total_equity,
-            'balances': balances_with_value,
+            'balances': balances,
             'timestamp': now,
             'datetime_utc': datetime.now(tz=timezone.utc).isoformat(),
-            'data_source': 'Paper Ledger',
-            'starting_balance': _paper_ledger.starting_balance_usd
+            'data_source': 'Kraken API' if mode == 'live' else 'Paper Ledger',
+            'starting_balance': _paper_ledger.starting_balance_usd if mode == 'paper' else None
+        }
+    
+    except Exception as e:
+        logger.error(f"[ACCOUNT-STATE] Failed to get portfolio snapshot: {e}")
+        return {
+            'mode': mode,
+            'error': str(e),
+            'timestamp': now
         }
 
 
