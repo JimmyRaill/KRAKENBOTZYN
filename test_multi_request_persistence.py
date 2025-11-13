@@ -12,9 +12,11 @@ import sys
 from pathlib import Path
 
 LEDGER_FILE = Path(__file__).parent / "paper_ledger.json"
+STATE_FILE = Path(__file__).parent / "paper_trading_state.json"
 
 def reset_ledger():
-    """Reset the paper ledger to clean state"""
+    """Reset the paper ledger AND simulator state to clean state"""
+    # Reset ledger
     ledger_data = {
         'balances': {
             'USD': {
@@ -33,6 +35,16 @@ def reset_ledger():
     with open(LEDGER_FILE, 'w') as f:
         json.dump(ledger_data, f, indent=2)
     print(f"✓ Reset {LEDGER_FILE}")
+    
+    # Reset simulator state (remove lingering positions)
+    if STATE_FILE.exists():
+        STATE_FILE.unlink()
+        print(f"✓ Removed {STATE_FILE}")
+    
+    # Remove lock files
+    for lock in Path(__file__).parent.glob("*.lock"):
+        lock.unlink()
+        print(f"✓ Removed {lock.name}")
 
 def run_in_subprocess(code: str) -> tuple:
     """Run Python code in a subprocess (simulates different worker)"""

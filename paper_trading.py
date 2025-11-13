@@ -287,10 +287,12 @@ class PaperTradingSimulator:
         market_price_str = f"{market_price:.2f}" if market_price is not None else "?"
         slippage_str = f"{slippage_amount:.2f}" if slippage_amount is not None else "?"
         fee_str = f"{fee:.2f}" if fee is not None else "?"
+        sl_str = f"{stop_loss:.2f}" if stop_loss else "None"
+        tp_str = f"{take_profit:.2f}" if take_profit else "None"
         msg = (
             f"[PAPER] Opened {side.upper()} {quantity} {symbol} @ ${fill_price_str} "
             f"(market=${market_price_str}, slippage=${slippage_str}, fee=${fee_str}) "
-            f"SL=${stop_loss:.2f if stop_loss else 'None'} TP=${take_profit:.2f if take_profit else 'None'}"
+            f"SL={sl_str} TP={tp_str}"
         )
         
         return True, msg, position
@@ -356,11 +358,22 @@ class PaperTradingSimulator:
         self.update_equity()
         self.save_state()
         
-        pnl_str = f"+${realized_pnl:.2f}" if realized_pnl >= 0 else f"-${abs(realized_pnl):.2f}"
+        # Defensively format all floats to handle edge cases
+        fill_price_str = f"{fill_price:.2f}" if fill_price is not None else "?"
+        entry_price_str = f"{position.entry_price:.2f}" if position.entry_price is not None else "?"
+        fee_str = f"{fee:.2f}" if fee is not None else "?"
+        
+        if realized_pnl is not None and realized_pnl >= 0:
+            pnl_str = f"+${realized_pnl:.2f}"
+        elif realized_pnl is not None:
+            pnl_str = f"-${abs(realized_pnl):.2f}"
+        else:
+            pnl_str = "?"
+        
         msg = (
-            f"[PAPER] Closed {position.side.upper()} {position.quantity} {symbol} @ ${fill_price:.2f} "
-            f"(entry=${position.entry_price:.2f}, reason={reason}) "
-            f"P&L: {pnl_str} (fee=${fee:.2f})"
+            f"[PAPER] Closed {position.side.upper()} {position.quantity} {symbol} @ ${fill_price_str} "
+            f"(entry=${entry_price_str}, reason={reason}) "
+            f"P&L: {pnl_str} (fee=${fee_str})"
         )
         
         return True, msg, realized_pnl
