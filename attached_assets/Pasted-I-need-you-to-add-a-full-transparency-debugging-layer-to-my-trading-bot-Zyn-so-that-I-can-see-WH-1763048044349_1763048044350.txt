@@ -1,0 +1,79 @@
+I need you to add a full transparency + debugging layer to my trading bot “Zyn” so that I can see WHY he is not trading and confirm that he is actually running every 5 minutes.
+
+Right now, when I ask him why he hasn’t traded today, he gives a vague “NO_TRADE regime due to bad conditions” answer and says he can’t show logs. That is NOT acceptable for a live/paper trading bot. I want proper, structured evaluation logs and chat-accessible debugging.
+
+Do the following, end-to-end, with no errors:
+	1.	Add a persistent evaluation log for every 5-minute check.
+Create a simple, append-only log (either a lightweight database like SQLite or a rotating JSONL/CSV file – pick what fits the current project best).
+Each evaluation (every time the scheduler runs) must log ONE row per symbol evaluated with at least this schema:
+	•	timestamp_utc
+	•	symbol (e.g., “BTC/USD”)
+	•	price (current mid or last price)
+	•	rsi
+	•	atr
+	•	volume (use the same volume source the strategy uses)
+	•	decision (enum: “BUY”, “SELL”, “NO_TRADE”, “SKIP”, “ERROR”)
+	•	reason (short text like “RSI out of range”, “ATR below threshold”, “volume too low”, “no signal”, etc.)
+	•	position_size (0 if NO_TRADE)
+	•	error_message (null unless decision == “ERROR”)
+	2.	NEVER silently fail.
+Wrap the main evaluation logic in a try/except.
+	•	If an exception happens, log a row with decision = "ERROR" and error_message = stack trace or at least the exception string.
+	•	Don’t just crash the scheduler or silently stop evaluating.
+	3.	Add a heartbeat / last-run check.
+Maintain somewhere (DB or in a small table/kv) a single record:
+	•	last_evaluation_ts_utc (datetime of last successful loop run).
+Anytime the scheduler runs, update this.
+If for any reason the evaluation loop hasn’t run in > 10 minutes, and the user asks anything about status, the bot should say clearly:
+“My evaluation loop has not run for X minutes. This indicates a problem with the scheduler or runtime. Please restart or check logs.”
+No pretending it’s running when it’s not.
+	4.	Add chat-accessible debug commands.
+I need to be able to ask the bot for concrete logs. Implement functions and wiring so that from the chat I can do things like:
+	•	show_last_evaluations(limit=20, symbol=None)
+	•	show_today_summary(symbol=None)
+	•	explain_why_no_trades_today(symbol=None)
+Behavior details:
+show_last_evaluations(limit=20, symbol=None)
+	•	Query the log ordered by timestamp DESC.
+	•	If symbol is provided, filter by that symbol.
+	•	Return the last N rows with timestamp, symbol, decision, and reason, plus key indicator values.
+show_today_summary(symbol=None)
+	•	Look at rows for “today” in my timezone or UTC (whichever is consistent in the system).
+	•	Return:
+	•	total evaluations
+	•	counts of BUY/SELL/NO_TRADE/ERROR
+	•	for NO_TRADE, group by reason and show counts (e.g., “RSI out of range: 35 times, ATR too low: 12 times”).
+explain_why_no_trades_today(symbol=None)
+	•	If there actually WERE trades today, say so and summarize them.
+	•	If there were zero BUY/SELL decisions for the day, derive the explanation from the logs instead of a generic message:
+Example response format:
+“I evaluated BTC/USD 42 times today. All 42 decisions were NO_TRADE.
+• 30 times: ATR below threshold
+• 10 times: RSI outside entry zone
+• 2 times: volume below minimum.
+That’s why I did not open any positions today.”
+	•	This explanation must be computed from the stored logs, not hardcoded text.
+	5.	Force the bot to use the new debug layer when talking to me.
+When I ask questions like:
+	•	“Why haven’t you traded today?”
+	•	“Why no positions right now?”
+	•	“What have you been doing all day?”
+The bot should:
+	•	pull data from show_today_summary() and/or the last N evaluations,
+	•	and respond with a concise, data-backed explanation (counts, common reasons, example indicator values).
+It must NOT respond with a generic “NO_TRADE regime due to bad conditions” message without numbers and reasons.
+	6.	Verify the 5-minute scheduler is truly working.
+	•	Confirm there is a real scheduled job running every 5 minutes in the current hosting environment (Replit / cron / background task/etc.).
+	•	Make sure the function that runs every 5 minutes is the same function that writes to the evaluation log and updates the heartbeat.
+	•	If the environment doesn’t natively support 24/7 background tasks, document exactly what assumptions you’re making (e.g., “This only runs while the process is alive” or “Requires an always-on deployment”).
+	7.	Design for both paper and live mode (but same transparency).
+	•	Whether in paper trading or live trading, logging and debug commands MUST behave the same.
+	•	Add a field trading_mode to logs or a separate config (enum: “PAPER”, “LIVE”) and record it per evaluation.
+	8.	Return to me a short summary of what you changed.
+When you’re done, briefly explain:
+	•	what file(s) you added/modified,
+	•	the log schema,
+	•	which chat commands I can use (exact text),
+	•	and an example output for “Why haven’t you traded today?” using fake data.
+
+Make sure everything runs without errors. If you need to refactor code to make this clean, do it. The end goal: when I ask my bot why there are no trades, I get concrete numbers, indicator values, and reasons, not vague strategy-talk.
