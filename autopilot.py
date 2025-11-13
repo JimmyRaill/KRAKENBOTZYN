@@ -648,7 +648,11 @@ def loop_once(ex, symbols: List[str]) -> None:
             atr = calculate_atr(ohlcv, period=14)
             adx = calculate_adx(ohlcv, period=14)
             bb_result = calculate_bollinger_bands(closes, period=20, std_dev=2.0)
-            volume_percentile = calculate_volume_percentile(ohlcv, period=20, percentile=50)
+            
+            # Calculate volume percentile
+            volumes = [candle[5] for candle in ohlcv if len(candle) > 5]
+            current_volume = volumes[-1] if volumes else 0
+            volume_percentile = calculate_volume_percentile(current_volume, volumes[-20:]) if len(volumes) >= 20 else None
             
             # Validate minimum required indicators
             if not current_sma20 or not atr:
@@ -669,6 +673,9 @@ def loop_once(ex, symbols: List[str]) -> None:
             }
             
             # REGIME-AWARE SIGNAL GENERATION
+            trade_signal = None
+            regime = None
+            
             try:
                 orchestrator = get_orchestrator()
                 trade_signal = orchestrator.generate_signal(
@@ -706,7 +713,8 @@ def loop_once(ex, symbols: List[str]) -> None:
             # TREND_DOWN regime with open position → Force exit
             if regime and regime.value == 'TREND_DOWN' and pos_qty > 0:
                 action = "sell_all"
-                why = f"TREND_DOWN regime - exit long position (confidence={trade_signal.confidence:.2f})"
+                confidence_str = f"(confidence={trade_signal.confidence:.2f})" if trade_signal else ""
+                why = f"TREND_DOWN regime - exit long position {confidence_str}"
                 print(f"[REGIME-EXIT] {sym} - Forcing exit due to bearish regime")
             
             # Adjust action based on position
