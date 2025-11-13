@@ -914,6 +914,13 @@ def loop_once(ex, symbols: List[str]) -> None:
                     except Exception as log_err:
                         print(f"[TELEMETRY-ERR] {log_err}")
                 
+                # Record trade opened for daily limit tracking (applies to both paper/live)
+                try:
+                    record_trade_opened(sym, mode_str)
+                    print(f"[DAILY-LIMIT] {sym} - Trade recorded (mode: {mode_str})")
+                except Exception as record_err:
+                    print(f"[DAILY-LIMIT-RECORD-ERR] {sym}: {record_err}")
+                
                 # Record to profit target system
                 if PROFIT_TARGET_ENABLED and get_target_system:
                     try:
