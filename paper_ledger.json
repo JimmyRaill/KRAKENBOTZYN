@@ -5,11 +5,38 @@
       "free": 10000.0,
       "locked": 0.0,
       "total": 10000.0,
-      "last_updated": 1763054213.793837
+      "last_updated": 1763062484.7535276
     }
   },
   "trades": [],
-  "orders": [],
+  "orders": [
+    {
+      "id": "PAPER-A64819FB",
+      "orderId": "PAPER-A64819FB",
+      "symbol": "ZEC/USD",
+      "type": "limit",
+      "side": "sell",
+      "amount": 0.03,
+      "price": 500.0,
+      "stopPrice": null,
+      "status": "open",
+      "timestamp": 1763062484757,
+      "datetime": "2025-11-13T19:34:44"
+    },
+    {
+      "id": "PAPER-BC388371",
+      "orderId": "PAPER-BC388371",
+      "symbol": "ZEC/USD",
+      "type": "stop",
+      "side": "sell",
+      "amount": 0.03,
+      "price": 0.0,
+      "stopPrice": 480.0,
+      "status": "open",
+      "timestamp": 1763062484759,
+      "datetime": "2025-11-13T19:34:44"
+    }
+  ],
   "starting_balance_usd": 10000.0,
-  "last_saved": 1763054213.7938812
+  "last_saved": 1763062484.7596507
 }

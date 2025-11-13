@@ -4,6 +4,9 @@ paper_exchange_wrapper.py - Intercepts ccxt calls and routes to PaperTradingSimu
 This wrapper sits between commands.py and the real ccxt exchange.
 In paper mode, it routes all order creation and data fetching to the simulator.
 In live mode, it passes through to real Kraken API.
+
+CRITICAL: All paper orders are stored in the canonical PaperLedger (paper_ledger.json)
+to ensure complete data integrity between execution and query paths.
 """
 
 import json
@@ -79,46 +82,26 @@ class PaperExchangeWrapper:
     Wraps a ccxt exchange instance and intercepts calls in paper mode.
     
     In PAPER mode:
-    - Stores all orders in paper_orders.json
+    - Stores all orders in canonical PaperLedger (paper_ledger.json)
     - Routes to PaperTradingSimulator for execution
     - Returns paper data for queries (fetch_open_orders, fetch_balance)
     
     In LIVE mode:
     - Passes through to real ccxt exchange
+    
+    CRITICAL: Uses the canonical PaperLedger for ALL paper order storage to ensure
+    complete data integrity between execution and query paths.
     """
     
     def __init__(self, ccxt_exchange, is_paper_mode: bool = True):
         self._exchange = ccxt_exchange
         self._is_paper = is_paper_mode
         self._simulator = PaperTradingSimulator() if is_paper_mode else None
-        self._paper_orders: Dict[str, PaperOrder] = {}
-        self._orders_file = "paper_orders.json"
         
         if is_paper_mode:
-            self._load_orders()
-            logger.info(f"[PAPER-WRAPPER] Initialized with {len(self._paper_orders)} saved orders")
-    
-    def _load_orders(self):
-        """Load paper orders from JSON file"""
-        try:
-            with open(self._orders_file, 'r') as f:
-                data = json.load(f)
-                self._paper_orders = {
-                    k: PaperOrder.from_dict(v) for k, v in data.items()
-                }
-        except FileNotFoundError:
-            logger.info("[PAPER-WRAPPER] No saved orders found - starting fresh")
-        except Exception as e:
-            logger.error(f"[PAPER-WRAPPER] Error loading orders: {e}")
-    
-    def _save_orders(self):
-        """Save paper orders to JSON file"""
-        try:
-            data = {k: v.to_dict() for k, v in self._paper_orders.items()}
-            with open(self._orders_file, 'w') as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.error(f"[PAPER-WRAPPER] Error saving orders: {e}")
+            # Note: Don't load ledger here to avoid circular import.
+            # Ledger is loaded on-demand in each method that needs it.
+            logger.info(f"[PAPER-WRAPPER] Initialized (ledger loaded on-demand to avoid circular import)")
     
     def _generate_order_id(self) -> str:
         """Generate a unique order ID"""
@@ -161,25 +144,33 @@ class PaperExchangeWrapper:
                 self._log_execution('PAPER', symbol, 'buy', amount, success=False, error=msg)
                 raise Exception(msg)
             
-            # Create and store order
+            # Create order and store in canonical ledger
             order_id = self._generate_order_id()
-            order = PaperOrder(
-                order_id=order_id,
-                symbol=symbol,
-                order_type='market',
-                side='buy',
-                amount=amount,
-                price=market_price,
-                status='closed'  # Market orders fill immediately
-            )
+            order_data = {
+                'id': order_id,
+                'orderId': order_id,
+                'symbol': symbol,
+                'type': 'market',
+                'side': 'buy',
+                'amount': amount,
+                'price': market_price,
+                'stopPrice': None,
+                'status': 'closed',  # Market orders fill immediately
+                'timestamp': int(time.time() * 1000),
+                'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
+            }
             
-            self._paper_orders[order_id] = order
-            self._save_orders()
+            # Append to canonical ledger
+            from account_state import get_paper_ledger
+            ledger = get_paper_ledger()
+            ledger.orders.append(order_data)
+            ledger.save()
             
             self._log_execution('PAPER', symbol, 'buy', amount, success=True)
+            logger.info(f"[PAPER-LEDGER] Added order {order_id} to ledger ({len(ledger.orders)} total)")
             logger.info(msg)
             
-            return order.to_ccxt_format()
+            return order_data
         
         except Exception as e:
             self._log_execution('PAPER', symbol, 'buy', amount, success=False, error=str(e))
@@ -206,25 +197,33 @@ class PaperExchangeWrapper:
                 self._log_execution('PAPER', symbol, 'sell', amount, success=False, error=msg)
                 raise Exception(msg)
             
-            # Create and store order
+            # Create order and store in canonical ledger
             order_id = self._generate_order_id()
-            order = PaperOrder(
-                order_id=order_id,
-                symbol=symbol,
-                order_type='market',
-                side='sell',
-                amount=amount,
-                price=market_price,
-                status='closed'
-            )
+            order_data = {
+                'id': order_id,
+                'orderId': order_id,
+                'symbol': symbol,
+                'type': 'market',
+                'side': 'sell',
+                'amount': amount,
+                'price': market_price,
+                'stopPrice': None,
+                'status': 'closed',
+                'timestamp': int(time.time() * 1000),
+                'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
+            }
             
-            self._paper_orders[order_id] = order
-            self._save_orders()
+            # Append to canonical ledger
+            from account_state import get_paper_ledger
+            ledger = get_paper_ledger()
+            ledger.orders.append(order_data)
+            ledger.save()
             
             self._log_execution('PAPER', symbol, 'sell', amount, success=True)
+            logger.info(f"[PAPER-LEDGER] Added order {order_id} to ledger ({len(ledger.orders)} total)")
             logger.info(f"{msg} | PnL=${pnl:.2f}")
             
-            return order.to_ccxt_format()
+            return order_data
         
         except Exception as e:
             self._log_execution('PAPER', symbol, 'sell', amount, success=False, error=str(e))
@@ -238,23 +237,30 @@ class PaperExchangeWrapper:
         # Paper mode: store as open limit order
         try:
             order_id = self._generate_order_id()
-            order = PaperOrder(
-                order_id=order_id,
-                symbol=symbol,
-                order_type='limit',
-                side='buy',
-                amount=amount,
-                price=price,
-                status='open'
-            )
+            order_data = {
+                'id': order_id,
+                'orderId': order_id,
+                'symbol': symbol,
+                'type': 'limit',
+                'side': 'buy',
+                'amount': amount,
+                'price': price,
+                'stopPrice': None,
+                'status': 'open',
+                'timestamp': int(time.time() * 1000),
+                'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
+            }
             
-            self._paper_orders[order_id] = order
-            self._save_orders()
+            # Append to canonical ledger
+            from account_state import get_paper_ledger
+            ledger = get_paper_ledger()
+            ledger.orders.append(order_data)
+            ledger.save()
             
             self._log_execution('PAPER', symbol, 'buy_limit', amount, success=True)
-            logger.info(f"[PAPER] Created limit buy order {order_id} for {amount} {symbol} @ ${price}")
+            logger.info(f"[PAPER-LEDGER] Added limit buy order {order_id} to ledger ({len(ledger.orders)} total)")
             
-            return order.to_ccxt_format()
+            return order_data
         
         except Exception as e:
             self._log_execution('PAPER', symbol, 'buy_limit', amount, success=False, error=str(e))
@@ -268,23 +274,30 @@ class PaperExchangeWrapper:
         # Paper mode: store as open limit order (could be TP from bracket)
         try:
             order_id = self._generate_order_id()
-            order = PaperOrder(
-                order_id=order_id,
-                symbol=symbol,
-                order_type='limit',
-                side='sell',
-                amount=amount,
-                price=price,
-                status='open'
-            )
+            order_data = {
+                'id': order_id,
+                'orderId': order_id,
+                'symbol': symbol,
+                'type': 'limit',
+                'side': 'sell',
+                'amount': amount,
+                'price': price,
+                'stopPrice': None,
+                'status': 'open',
+                'timestamp': int(time.time() * 1000),
+                'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
+            }
             
-            self._paper_orders[order_id] = order
-            self._save_orders()
+            # Append to canonical ledger
+            from account_state import get_paper_ledger
+            ledger = get_paper_ledger()
+            ledger.orders.append(order_data)
+            ledger.save()
             
             self._log_execution('PAPER', symbol, 'sell_limit', amount, tp=price, success=True)
-            logger.info(f"[PAPER] Created limit sell order (TP) {order_id} for {amount} {symbol} @ ${price}")
+            logger.info(f"[PAPER-LEDGER] Added limit sell order (TP) {order_id} to ledger ({len(ledger.orders)} total)")
             
-            return order.to_ccxt_format()
+            return order_data
         
         except Exception as e:
             self._log_execution('PAPER', symbol, 'sell_limit', amount, success=False, error=str(e))
@@ -304,23 +317,30 @@ class PaperExchangeWrapper:
             if stop_price and order_type == 'market':
                 # This is a stop-loss order
                 order_id = self._generate_order_id()
-                order = PaperOrder(
-                    order_id=order_id,
-                    symbol=symbol,
-                    order_type='stop',
-                    side=side,
-                    amount=amount,
-                    stop_price=stop_price,
-                    status='open'
-                )
+                order_data = {
+                    'id': order_id,
+                    'orderId': order_id,
+                    'symbol': symbol,
+                    'type': 'stop',
+                    'side': side,
+                    'amount': amount,
+                    'price': 0.0,
+                    'stopPrice': stop_price,
+                    'status': 'open',
+                    'timestamp': int(time.time() * 1000),
+                    'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
+                }
                 
-                self._paper_orders[order_id] = order
-                self._save_orders()
+                # Append to canonical ledger
+                from account_state import get_paper_ledger
+                ledger = get_paper_ledger()
+                ledger.orders.append(order_data)
+                ledger.save()
                 
                 self._log_execution('PAPER', symbol, f'{side}_stop', amount, sl=stop_price, success=True)
-                logger.info(f"[PAPER] Created stop order (SL) {order_id} for {amount} {symbol} @ stop ${stop_price}")
+                logger.info(f"[PAPER-LEDGER] Added stop order (SL) {order_id} to ledger ({len(ledger.orders)} total)")
                 
-                return order.to_ccxt_format()
+                return order_data
             
             # Fallback to regular order creation
             if order_type == 'market':
@@ -346,14 +366,16 @@ class PaperExchangeWrapper:
             else:
                 return self._exchange.fetch_open_orders()
         
-        # Paper mode: return paper orders with status='open'
+        # Paper mode: return orders from canonical ledger with status='open'
+        from account_state import get_paper_ledger
+        ledger = get_paper_ledger()
         open_orders = [
-            order.to_ccxt_format()
-            for order in self._paper_orders.values()
-            if order.status == 'open' and (not symbol or order.symbol == symbol)
+            order
+            for order in ledger.orders
+            if order.get('status') == 'open' and (not symbol or order.get('symbol') == symbol)
         ]
         
-        logger.debug(f"[PAPER-WRAPPER] fetch_open_orders: {len(open_orders)} open orders")
+        logger.debug(f"[PAPER-WRAPPER] fetch_open_orders from canonical ledger: {len(open_orders)} open orders")
         return open_orders
     
     def fetch_balance(self, params: dict = None):
@@ -392,12 +414,15 @@ class PaperExchangeWrapper:
         if not self._is_paper:
             return self._exchange.cancel_order(order_id, symbol, params)
         
-        # Paper mode: mark as cancelled
-        if order_id in self._paper_orders:
-            self._paper_orders[order_id].status = 'cancelled'
-            self._save_orders()
-            logger.info(f"[PAPER] Cancelled order {order_id}")
-            return {'id': order_id, 'status': 'cancelled'}
+        # Paper mode: mark as cancelled in canonical ledger
+        from account_state import get_paper_ledger
+        ledger = get_paper_ledger()
+        for order in ledger.orders:
+            if order.get('id') == order_id or order.get('orderId') == order_id:
+                order['status'] = 'cancelled'
+                ledger.save()
+                logger.info(f"[PAPER-LEDGER] Cancelled order {order_id}")
+                return {'id': order_id, 'status': 'cancelled'}
         else:
             raise Exception(f"Order {order_id} not found")
     

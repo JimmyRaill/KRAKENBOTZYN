@@ -330,4 +330,36 @@ def handle(text: str) -> str:
         except Exception as e:
             return f"[CANCEL-ERR] {e}"
 
+    # paper debug ledger - dumps paper ledger for debugging
+    if s.lower() in ("paper debug ledger", "debug ledger", "dump ledger"):
+        if not is_paper_mode():
+            return "[DEBUG] Not in paper mode - no paper ledger to dump"
+        
+        try:
+            from account_state import get_paper_ledger
+            import json
+            ledger = get_paper_ledger()
+            
+            ledger_data = {
+                'mode': 'PAPER',
+                'total_orders': len(ledger.orders),
+                'open_orders': [o for o in ledger.orders if o.get('status') == 'open'],
+                'closed_orders': [o for o in ledger.orders if o.get('status') == 'closed'],
+                'cancelled_orders': [o for o in ledger.orders if o.get('status') == 'cancelled'],
+                'balances': ledger.get_balances(),
+                'trades': len(ledger.trades)
+            }
+            
+            return (
+                f"[PAPER-LEDGER DEBUG]\n"
+                f"Total orders: {ledger_data['total_orders']}\n"
+                f"Open orders: {len(ledger_data['open_orders'])}\n"
+                f"Closed orders: {len(ledger_data['closed_orders'])}\n"
+                f"Cancelled orders: {len(ledger_data['cancelled_orders'])}\n"
+                f"Trades: {ledger_data['trades']}\n\n"
+                f"Full JSON:\n{json.dumps(ledger_data, indent=2)}"
+            )
+        except Exception as e:
+            return f"[DEBUG-ERR] {e}"
+
     return HELP
