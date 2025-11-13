@@ -1,0 +1,37 @@
+My bot “Zyn” is reporting trades and equity that are flat-out wrong. My real portfolio value is about $500, but Zyn is telling me it made trades like ETH/USD at 3582.4 and ZEC/USD at 475.86, and that it made 2 trades today at 1:45 PM EST when that never happened on Kraken. This proves the bot is not using the exchange account (or a proper paper ledger) as the single source of truth. I need you to completely fix the state + accounting system so that the bot can NEVER invent trades or equity again.
+
+Do the following, end-to-end, with no errors:
+	1.	Single source of truth per mode. Implement a clean config that sets trading_mode = “LIVE” or “PAPER”.
+• In LIVE mode: all balances, equity, and trade history MUST come directly from the Kraken API (or whatever exchange we’re using). No cached dummy values, no hardcoded examples. Every trade the bot claims MUST be tied to a real order ID that exists in the exchange’s trade history.
+• In PAPER mode: all balances, equity, and trade history MUST come from an internal paper ledger that you maintain yourself (e.g. SQLite DB or a simple persistent store). This ledger must be updated using real market prices from the exchange, but must NOT affect my real money.
+	2.	Portfolio snapshot function. Implement a reliable get_portfolio_snapshot() function that returns, at minimum:
+• current mode (LIVE or PAPER)
+• total equity in USD (computed from current prices)
+• per-asset balances (asset, free, locked, value in USD)
+• timestamp and data source used (e.g. “Kraken balances endpoint at 2025-11-13T18:45:00Z” or “Paper ledger + latest ticker prices”).
+Wire this so that when I ask “What’s my current equity?” or “What’s my portfolio right now?”, all answers come from this function only. No separate ad-hoc calculations.
+	3.	Trade history function. Implement get_trade_history(limit=20) that behaves differently per mode:
+• LIVE mode: fetch from the exchange’s real trade history endpoint (spot or futures, depending on what we use). Return: order ID, symbol, side, quantity, price, executed_at timestamp, and whether it’s open/closed.
+• PAPER mode: fetch from the internal paper ledger (simulated trades you recorded when your strategy “executes”). Same fields as above.
+When the bot says “I made 2 trades today,” it MUST be using this function and returning actual rows, not made-up data.
+	4.	Strict validation before answering. Change the logic for any response about “trades made today” or “trades I executed” so that:
+• It ALWAYS calls get_trade_history() filtered by today’s date.
+• If the result count is zero, it must explicitly say: “I have not executed any trades today in [LIVE/PAPER] mode based on the account data.”
+• If it returns trades, list them with real order IDs, symbols, quantities, actual prices, and timestamps.
+The bot should NEVER claim trades exist unless get_trade_history() actually returns them.
+	5.	No hallucinated prices. You must remove any code where the bot “invents” trades or uses hardcoded prices for explanations. Any example numbers or backtests should be clearly labeled as simulations and kept separate from real account reporting. When answering questions about my real money or real positions, the bot must always:
+• read balances + trades from the correct source (exchange or paper ledger), and
+• if those calls fail, say “I could not fetch your account data” instead of guessing.
+	6.	Mode indicator and safety. Expose a clear field or function like get_trading_mode() so the chat layer can always tell me: “I am currently in PAPER mode” or “I am currently in LIVE mode.” When I ask “Are you trading live or in paper?” the answer must come from this field, not a hardcoded string. Also ensure paper and live mode can NEVER share the same balances or history — they must be completely isolated.
+	7.	Simple status command for me. Add a chat command or handler so when I ask: “Give me a full status report,” it returns something like:
+• mode: LIVE or PAPER
+• current total equity in USD
+• per-asset balances
+• last 5 trades (with real IDs and timestamps)
+• time of last successful market evaluation
+This should all be computed from the new get_portfolio_snapshot() and get_trade_history() functions, not custom logic.
+	8.	Quick sanity check. After you’re done, add a small test or debug endpoint that I can trigger from chat so you can verify that:
+• in LIVE mode, the reported equity matches what the exchange UI shows (within small rounding differences),
+• in PAPER mode, trades and equity only affect the internal ledger and never change live balances.
+
+The key requirement: Zyn must NEVER fabricate trades, prices, or equity again. Every number he gives me about my account must be backed either by the exchange API (LIVE) or by the internal paper ledger (PAPER). If there’s any uncertainty or API failure, he must say that explicitly instead of guessing.
