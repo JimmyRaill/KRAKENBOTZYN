@@ -15,11 +15,14 @@ import ccxt
 
 # NEW: Candle-based strategy imports for 5-minute closed-candle system
 from candle_strategy import (
-    calculate_sma, calculate_atr, detect_sma_crossover,
-    is_new_candle_closed, validate_candle_data,
-    extract_closes, get_latest_candle_timestamp
+    calculate_sma, calculate_atr, calculate_rsi, calculate_adx, calculate_bollinger_bands,
+    detect_sma_crossover, is_new_candle_closed, validate_candle_data,
+    extract_closes, get_latest_candle_timestamp, calculate_volume_percentile
 )
 from exchange_manager import get_manager
+
+# REGIME-AWARE SYSTEM: Strategy orchestrator coordinates regime detection + strategy selection
+from strategy_orchestrator import get_orchestrator
 
 # Bracket order manager - MANDATORY for all trades
 # Type hints for LSP
@@ -638,73 +641,84 @@ def loop_once(ex, symbols: List[str]) -> None:
                 print(f"[WAIT] {sym} - No new 5m candle closed yet (last={last_known_ts}, latest={latest_ts})")
                 continue
             
-            # NEW CANDLE CLOSED - Calculate indicators from closed candles
-            current_sma = calculate_sma(closes, period=20)
+            # NEW CANDLE CLOSED - Calculate ALL indicators for regime detection
+            current_sma20 = calculate_sma(closes, period=20)
+            current_sma50 = calculate_sma(closes, period=50)
+            rsi = calculate_rsi(closes, period=14)
             atr = calculate_atr(ohlcv, period=14)
+            adx = calculate_adx(ohlcv, period=14)
+            bb_result = calculate_bollinger_bands(closes, period=20, std_dev=2.0)
+            volume_percentile = calculate_volume_percentile(ohlcv, period=20, percentile=50)
             
-            if not current_sma:
-                print(f"[SKIP] {sym} - Cannot calculate SMA20 from {len(closes)} closes")
+            # Validate minimum required indicators
+            if not current_sma20 or not atr:
+                print(f"[SKIP] {sym} - Missing critical indicators (SMA20={current_sma20}, ATR={atr})")
                 continue
             
-            # Get previous candle data for crossover detection
-            prev_sma = symbol_tracking.get('last_sma20')
-            prev_close = symbol_tracking.get('last_close')
+            # Build indicators dict for strategy orchestrator
+            indicators_5m = {
+                'sma20': current_sma20,
+                'sma50': current_sma50 or 0.0,
+                'rsi': rsi or 50.0,
+                'atr': atr,
+                'adx': adx or 0.0,
+                'bb_middle': bb_result[0] if bb_result else current_sma20,
+                'bb_upper': bb_result[1] if bb_result else current_sma20 * 1.02,
+                'bb_lower': bb_result[2] if bb_result else current_sma20 * 0.98,
+                'volume_percentile': volume_percentile or 50.0
+            }
             
-            # First run: no previous data, initialize tracking but skip trading
-            if prev_sma is None or prev_close is None:
-                print(f"[INIT] {sym} - First candle processed (SMA20={current_sma:.2f}, close={current_close:.2f})")
-                print(f"[INIT] {sym} - Will evaluate crossover signals starting next candle")
-                update_candle_tracking(state, sym, latest_ts, current_sma, current_close)
-                continue
-            
-            # Detect crossover signal
-            signal = detect_sma_crossover(current_close, current_sma, prev_close, prev_sma)
-            
-            # Determine action based on signal and position
-            price = current_close  # For compatibility with existing code
-            
-            # Determine action based on crossover signal
-            if signal == 'long' and pos_qty <= 0:
-                action = "buy"
-                why = f"SMA20 crossover LONG: price crossed ABOVE SMA20 ({current_close:.2f} > {current_sma:.2f})"
-            elif signal == 'short' and pos_qty > 0:
-                action = "sell_all"
-                why = f"SMA20 crossover SHORT: price crossed BELOW SMA20 ({current_close:.2f} < {current_sma:.2f})"
-            else:
+            # REGIME-AWARE SIGNAL GENERATION
+            try:
+                orchestrator = get_orchestrator()
+                trade_signal = orchestrator.generate_signal(
+                    symbol=sym,
+                    ohlcv_5m=ohlcv,
+                    indicators_5m=indicators_5m
+                )
+                
+                # Extract action and reasoning from trade signal
+                action = trade_signal.action
+                why = trade_signal.reason
+                price = current_close
+                regime = trade_signal.regime
+                
+                # Log regime and strategy details
+                print(f"[REGIME] {sym} - {regime.value} (confidence={trade_signal.confidence:.2f})")
+                print(f"[SIGNAL] {sym} - {action.upper()}: {why}")
+                
+                if trade_signal.htf_aligned:
+                    print(f"[HTF] {sym} - Aligned {trade_signal.dominant_trend} trend on 15m/1h")
+                elif trade_signal.dominant_trend:
+                    print(f"[HTF] {sym} - Dominant {trade_signal.dominant_trend} trend (not fully aligned)")
+                
+            except Exception as e:
+                print(f"[ORCHESTRATOR-ERR] {sym}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fallback to hold on orchestrator error
                 action = "hold"
-                why = f"No crossover signal (price={current_close:.2f}, SMA20={current_sma:.2f}, signal={signal})"
+                why = f"Orchestrator error: {e}"
+                price = current_close
+                regime = None
             
-            # MULTI-TIMEFRAME CONFIRMATION (if enabled) - override action if MTF disagrees
-            mtf_approved = True
-            mtf_reason = ""
-            if MULTI_TIMEFRAME_ENABLED and MultiTimeframeAnalyzer and fetch_multi_timeframe_data:
-                try:
-                    mtf_data = fetch_multi_timeframe_data(ex, sym)
-                    analyzer = MultiTimeframeAnalyzer()
-                    mtf_analysis = analyzer.analyze_all_timeframes(mtf_data)
-                    
-                    # Check if multi-timeframe supports the crossover signal
-                    if action == "buy":
-                        if mtf_analysis["recommendation"] != "buy":
-                            mtf_approved = False
-                            mtf_reason = f"MTF override: {mtf_analysis['consensus']} (alignment={mtf_analysis['alignment_score']:.0%})"
-                    elif action == "sell_all":
-                        if mtf_analysis["recommendation"] != "sell":
-                            mtf_approved = False
-                            mtf_reason = f"MTF override: {mtf_analysis['consensus']} (alignment={mtf_analysis['alignment_score']:.0%})"
-                except Exception as e:
-                    print(f"[MTF-ERR] {sym}: {e}")
-                    mtf_approved = True  # Don't block on MTF errors
+            # CRITICAL: Exit positions in bearish regimes
+            # TREND_DOWN regime with open position → Force exit
+            if regime and regime.value == 'TREND_DOWN' and pos_qty > 0:
+                action = "sell_all"
+                why = f"TREND_DOWN regime - exit long position (confidence={trade_signal.confidence:.2f})"
+                print(f"[REGIME-EXIT] {sym} - Forcing exit due to bearish regime")
             
-            # Override action if MTF blocks it
-            if not mtf_approved:
-                action, why = "hold", mtf_reason
+            # Adjust action based on position
+            if action == 'long' and pos_qty > 0:
+                action = "hold"
+                why = f"LONG signal but already in position ({pos_qty:.6f})"
             
-            # Calculate edge for logging (distance from SMA20)
-            edge_pct = ((price - current_sma) / current_sma * 100.0) if current_sma else None
+            # Calculate edge for logging
+            edge_pct = ((price - current_sma20) / current_sma20 * 100.0) if current_sma20 else None
             
             # Update candle tracking AFTER signal evaluation
-            update_candle_tracking(state, sym, latest_ts, current_sma, current_close)
+            update_candle_tracking(state, sym, latest_ts, current_sma20, current_close)
 
             if action == "buy" and price:
                 eq_full: Dict[str, Any] = ex.fetch_balance()
