@@ -622,6 +622,10 @@ def loop_once(ex, symbols: List[str]) -> None:
             
             # Check if new candle closed
             latest_ts = get_latest_candle_timestamp(ohlcv)
+            if latest_ts is None:
+                print(f"[SKIP] {sym} - Cannot get candle timestamp")
+                continue
+            
             new_candle = is_new_candle_closed(last_known_ts, latest_ts, timeframe_seconds=300)
             
             # Extract data and get current position
