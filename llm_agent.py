@@ -71,6 +71,31 @@ STATE_PATH = Path(os.environ.get("STATE_PATH", str(Path(__file__).with_name("sta
 _MEM_PATH = Path(__file__).with_name("memory.json")
 
 
+# ---------- Conversation History (Session-based) ----------
+# In-memory conversation storage: session_id -> list of {role, content} messages
+_CONVERSATIONS: Dict[str, List[Dict[str, str]]] = {}
+_CONVERSATION_MAX_TURNS = 20  # Keep last 20 turns (40 messages: user+assistant pairs)
+
+def _get_conversation_history(session_id: str) -> List[Dict[str, str]]:
+    """Get conversation history for a session."""
+    return _CONVERSATIONS.get(session_id, [])
+
+def _add_to_conversation(session_id: str, role: str, content: str) -> None:
+    """Add a message to conversation history."""
+    if session_id not in _CONVERSATIONS:
+        _CONVERSATIONS[session_id] = []
+    
+    _CONVERSATIONS[session_id].append({"role": role, "content": content})
+    
+    # Keep only last N turns to avoid token limits
+    if len(_CONVERSATIONS[session_id]) > _CONVERSATION_MAX_TURNS * 2:
+        _CONVERSATIONS[session_id] = _CONVERSATIONS[session_id][-_CONVERSATION_MAX_TURNS * 2:]
+
+def _clear_conversation(session_id: str) -> None:
+    """Clear conversation history for a session."""
+    if session_id in _CONVERSATIONS:
+        del _CONVERSATIONS[session_id]
+
 # ---------- Memory ----------
 def _mem_load() -> Dict[str, Any]:
     try:
@@ -360,9 +385,13 @@ def _execute_trading_command(command: str) -> str:
 
 
 # ---------- Public entrypoint ----------
-def ask_llm(user_text: str) -> str:
+def ask_llm(user_text: str, session_id: str = "default") -> str:
     """
     Primary chat function used by api.py.
+    
+    Args:
+        user_text: The user's message
+        session_id: Session identifier to maintain conversation history (default: "default")
 
     Power commands:
       - remember: <fact>
@@ -370,6 +399,7 @@ def ask_llm(user_text: str) -> str:
       - memory  (or mem)
       - run: <router command>   e.g., run: open   or   run: bal
       - status / report         quick summary from state.json
+      - clear / reset           clear conversation history
     """
     try:
         text = (user_text or "").strip()
@@ -377,6 +407,11 @@ def ask_llm(user_text: str) -> str:
             return "Tell me what to do or ask about balances, P&L, or open orders."
 
         low = text.lower()
+        
+        # Conversation management
+        if low in ("clear", "reset", "new conversation", "start over"):
+            _clear_conversation(session_id)
+            return "Conversation cleared. Let's start fresh! How can I help you, Jimmy?"
 
         # Memory/admin fast paths
         if low.startswith("remember:"):
@@ -666,12 +701,18 @@ def ask_llm(user_text: str) -> str:
             }
         ]
 
-        # Initial API call with tools (60s timeout to avoid shell timeouts)
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_block},
-        ]
+        # Build messages with conversation history
+        # 1. Start with system prompt
+        messages = [{"role": "system", "content": system_prompt}]
         
+        # 2. Add conversation history (past user/assistant exchanges)
+        conversation_history = _get_conversation_history(session_id)
+        messages.extend(conversation_history)
+        
+        # 3. Add current user message
+        messages.append({"role": "user", "content": user_block})
+        
+        # Initial API call with tools (60s timeout to avoid shell timeouts)
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=messages,
@@ -685,7 +726,13 @@ def ask_llm(user_text: str) -> str:
         
         # If no tool call, return the text response
         if not assistant_message.tool_calls:
-            return assistant_message.content or "No response."
+            assistant_response = assistant_message.content or "No response."
+            
+            # Save to conversation history
+            _add_to_conversation(session_id, "user", text)
+            _add_to_conversation(session_id, "assistant", assistant_response)
+            
+            return assistant_response
         
         # Handle tool calls
         messages.append(assistant_message)
@@ -737,7 +784,13 @@ def ask_llm(user_text: str) -> str:
         
         # CRITICAL FIX: Return the actual message content
         final_message = final_resp.choices[0].message
-        return final_message.content or "Command executed (no response from assistant)."
+        assistant_response = final_message.content or "Command executed (no response from assistant)."
+        
+        # Save to conversation history
+        _add_to_conversation(session_id, "user", text)
+        _add_to_conversation(session_id, "assistant", assistant_response)
+        
+        return assistant_response
 
     except Exception as e:
         return "[Backend Error] " + "".join(

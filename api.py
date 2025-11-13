@@ -1260,8 +1260,11 @@ async def ask(a: AskIn):
         from llm_agent import ask_llm
         from telemetry_db import log_conversation
         
-        # Get response
-        out = ask_llm(a.text)
+        # Use session_id from token if provided, otherwise use "jimmy" as default
+        session_id = a.token if a.token else "jimmy"
+        
+        # Get response with conversation history
+        out = ask_llm(a.text, session_id=session_id)
         
         # Log conversation for learning
         try:
