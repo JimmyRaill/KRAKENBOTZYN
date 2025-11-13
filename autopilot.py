@@ -13,6 +13,14 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 import ccxt
 
+# NEW: Candle-based strategy imports for 5-minute closed-candle system
+from candle_strategy import (
+    calculate_sma, calculate_atr, detect_sma_crossover,
+    is_new_candle_closed, validate_candle_data,
+    extract_closes, get_latest_candle_timestamp
+)
+from exchange_manager import get_manager
+
 # Bracket order manager - MANDATORY for all trades
 # Type hints for LSP
 get_bracket_manager = None
@@ -348,6 +356,49 @@ def write_state(payload: Dict[str, Any]) -> None:
     except Exception as e:
         print("[STATE-WRITE-ERR]", e)
 
+def read_state() -> Dict[str, Any]:
+    """
+    Read current state from state.json, return empty dict if missing/corrupt.
+    This enables safe state persistence across autopilot restarts.
+    """
+    try:
+        if not STATE_PATH.exists():
+            return {}
+        content = STATE_PATH.read_text(encoding="utf-8")
+        return json.loads(content) or {}
+    except Exception as e:
+        print(f"[STATE-READ-ERR] {e}, using empty state")
+        return {}
+
+def get_candle_tracking_for_symbol(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    """
+    Safely retrieve candle tracking data for a symbol.
+    
+    Returns:
+        Dict with keys: last_closed_ts, last_sma20, last_close
+        Returns empty dict for first run (no previous data)
+    """
+    candle_tracking = state.setdefault('candle_tracking', {})
+    return candle_tracking.get(symbol, {})
+
+def update_candle_tracking(state: Dict[str, Any], symbol: str, timestamp: int, sma20: float, close: float) -> None:
+    """
+    Update candle tracking data for a symbol in state dict.
+    
+    Args:
+        state: State dict (modified in-place)
+        symbol: Trading pair (e.g., 'BTC/USD')
+        timestamp: Latest candle timestamp (ms)
+        sma20: Calculated SMA20 value
+        close: Latest close price
+    """
+    candle_tracking = state.setdefault('candle_tracking', {})
+    candle_tracking[symbol] = {
+        'last_closed_ts': timestamp,
+        'last_sma20': sma20,
+        'last_close': close
+    }
+
 # -------------------------------------------------------------------
 # guardrails
 # -------------------------------------------------------------------
@@ -536,6 +587,9 @@ def loop_once(ex, symbols: List[str]) -> None:
     except Exception as e:
         print("[KILL-CHECK-ERR]", e)
 
+    # Read state once at start of loop for candle tracking
+    state = read_state()
+    
     # per-symbol logic + trade log
     trade_log: List[Dict[str, Any]] = []
     for sym in symbols:
@@ -548,11 +602,75 @@ def loop_once(ex, symbols: List[str]) -> None:
                 print(f"[COOLDOWN] {sym} — skipping")
                 continue
 
-            ohlcv, closes, price = ohlcv_1m(ex, sym, limit=60)
-            atr = compute_atr(ohlcv, period=14)
+            # NEW: Fetch 5-minute OHLC candles for closed-candle strategy
+            try:
+                manager = get_manager()
+                ohlcv = manager.fetch_ohlc(sym, timeframe='5m', limit=100)
+            except Exception as fetch_err:
+                print(f"[OHLC-ERR] {sym} - Failed to fetch 5m candles: {fetch_err}")
+                continue
+            
+            # Validate candle data (need at least 20 for SMA20)
+            is_valid, reason = validate_candle_data(ohlcv, min_candles=20)
+            if not is_valid:
+                print(f"[SKIP] {sym} - {reason}")
+                continue
+            
+            # Get candle tracking from state
+            symbol_tracking = get_candle_tracking_for_symbol(state, sym)
+            last_known_ts = symbol_tracking.get('last_closed_ts')
+            
+            # Check if new candle closed
+            latest_ts = get_latest_candle_timestamp(ohlcv)
+            new_candle = is_new_candle_closed(last_known_ts, latest_ts, timeframe_seconds=300)
+            
+            # Extract data and get current position
+            closes = extract_closes(ohlcv)
+            current_close = closes[-1]
             pos_qty, usd_cash = position_qty(ex, sym)
             
-            # MULTI-TIMEFRAME CONFIRMATION (if enabled)
+            # If no new candle closed, skip signal evaluation
+            if not new_candle:
+                print(f"[WAIT] {sym} - No new 5m candle closed yet (last={last_known_ts}, latest={latest_ts})")
+                continue
+            
+            # NEW CANDLE CLOSED - Calculate indicators from closed candles
+            current_sma = calculate_sma(closes, period=20)
+            atr = calculate_atr(ohlcv, period=14)
+            
+            if not current_sma:
+                print(f"[SKIP] {sym} - Cannot calculate SMA20 from {len(closes)} closes")
+                continue
+            
+            # Get previous candle data for crossover detection
+            prev_sma = symbol_tracking.get('last_sma20')
+            prev_close = symbol_tracking.get('last_close')
+            
+            # First run: no previous data, initialize tracking but skip trading
+            if prev_sma is None or prev_close is None:
+                print(f"[INIT] {sym} - First candle processed (SMA20={current_sma:.2f}, close={current_close:.2f})")
+                print(f"[INIT] {sym} - Will evaluate crossover signals starting next candle")
+                update_candle_tracking(state, sym, latest_ts, current_sma, current_close)
+                continue
+            
+            # Detect crossover signal
+            signal = detect_sma_crossover(current_close, current_sma, prev_close, prev_sma)
+            
+            # Determine action based on signal and position
+            price = current_close  # For compatibility with existing code
+            
+            # Determine action based on crossover signal
+            if signal == 'long' and pos_qty <= 0:
+                action = "buy"
+                why = f"SMA20 crossover LONG: price crossed ABOVE SMA20 ({current_close:.2f} > {current_sma:.2f})"
+            elif signal == 'short' and pos_qty > 0:
+                action = "sell_all"
+                why = f"SMA20 crossover SHORT: price crossed BELOW SMA20 ({current_close:.2f} < {current_sma:.2f})"
+            else:
+                action = "hold"
+                why = f"No crossover signal (price={current_close:.2f}, SMA20={current_sma:.2f}, signal={signal})"
+            
+            # MULTI-TIMEFRAME CONFIRMATION (if enabled) - override action if MTF disagrees
             mtf_approved = True
             mtf_reason = ""
             if MULTI_TIMEFRAME_ENABLED and MultiTimeframeAnalyzer and fetch_multi_timeframe_data:
@@ -561,29 +679,28 @@ def loop_once(ex, symbols: List[str]) -> None:
                     analyzer = MultiTimeframeAnalyzer()
                     mtf_analysis = analyzer.analyze_all_timeframes(mtf_data)
                     
-                    # Check if multi-timeframe supports the intended action
-                    base_action, base_why = decide_action(price, closes, pos_qty)
-                    if base_action == "buy":
+                    # Check if multi-timeframe supports the crossover signal
+                    if action == "buy":
                         if mtf_analysis["recommendation"] != "buy":
                             mtf_approved = False
-                            mtf_reason = f"MTF: {mtf_analysis['consensus']} (alignment={mtf_analysis['alignment_score']:.0%})"
-                    elif base_action == "sell_all":
+                            mtf_reason = f"MTF override: {mtf_analysis['consensus']} (alignment={mtf_analysis['alignment_score']:.0%})"
+                    elif action == "sell_all":
                         if mtf_analysis["recommendation"] != "sell":
                             mtf_approved = False
-                            mtf_reason = f"MTF: {mtf_analysis['consensus']} (alignment={mtf_analysis['alignment_score']:.0%})"
+                            mtf_reason = f"MTF override: {mtf_analysis['consensus']} (alignment={mtf_analysis['alignment_score']:.0%})"
                 except Exception as e:
                     print(f"[MTF-ERR] {sym}: {e}")
                     mtf_approved = True  # Don't block on MTF errors
             
-            # Get action with MTF override if needed
+            # Override action if MTF blocks it
             if not mtf_approved:
                 action, why = "hold", mtf_reason
-            else:
-                action, why = decide_action(price, closes, pos_qty)
             
-            # Calculate edge for logging
-            sma20 = mean(closes[-20:]) if len(closes) >= 20 else None
-            edge_pct = ((price - sma20) / sma20 * 100.0) if (price and sma20) else None
+            # Calculate edge for logging (distance from SMA20)
+            edge_pct = ((price - current_sma) / current_sma * 100.0) if current_sma else None
+            
+            # Update candle tracking AFTER signal evaluation
+            update_candle_tracking(state, sym, latest_ts, current_sma, current_close)
 
             if action == "buy" and price:
                 eq_full: Dict[str, Any] = ex.fetch_balance()
@@ -909,23 +1026,23 @@ def loop_once(ex, symbols: List[str]) -> None:
         pm = {"error": str(e)}
 
     # write state.json (with heartbeat + running flag)
+    # CRITICAL: Merge candle_tracking from loop (updated per-symbol) with runtime state
     now = time.time()
-    state: Dict[str, Any] = {
-        "autopilot_running": True,
-        "last_loop_at": now,
-        "validate_mode": env_str("KRAKEN_VALIDATE_ONLY", "1"),
-        "equity_now_usd": round(eq_now, 2),
-        "equity_day_start_usd": round(_DAY_START_EQUITY or eq_now, 2),
-        "equity_change_usd": round((eq_now - (_DAY_START_EQUITY or eq_now)), 2),
-        "paused": paused(),
-        "cooldowns": _COOLDOWN_UNTIL,
-        "symbols": per,
-        "open_orders_preview": (open_txt or "")[:2000],
-        "pro_metrics": pm,
-        "last_actions": trade_log,
-        "ts": now,
-        "state_path": str(STATE_PATH),
-    }
+    state["autopilot_running"] = True
+    state["last_loop_at"] = now
+    state["validate_mode"] = env_str("KRAKEN_VALIDATE_ONLY", "1")
+    state["equity_now_usd"] = round(eq_now, 2)
+    state["equity_day_start_usd"] = round(_DAY_START_EQUITY or eq_now, 2)
+    state["equity_change_usd"] = round((eq_now - (_DAY_START_EQUITY or eq_now)), 2)
+    state["paused"] = paused()
+    state["cooldowns"] = _COOLDOWN_UNTIL
+    state["symbols"] = per
+    state["open_orders_preview"] = (open_txt or "")[:2000]
+    state["pro_metrics"] = pm
+    state["last_actions"] = trade_log
+    state["ts"] = now
+    state["state_path"] = str(STATE_PATH)
+    # candle_tracking already updated in state dict during loop - preserve it!
     write_state(state)
     
     # Log performance snapshot to learning database
