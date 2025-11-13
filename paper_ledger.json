@@ -1,0 +1,15 @@
+{
+  "balances": {
+    "USD": {
+      "currency": "USD",
+      "free": 10000.0,
+      "locked": 0.0,
+      "total": 10000.0,
+      "last_updated": 1763054213.793837
+    }
+  },
+  "trades": [],
+  "orders": [],
+  "starting_balance_usd": 10000.0,
+  "last_saved": 1763054213.7938812
+}
