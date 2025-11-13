@@ -1,0 +1,68 @@
+{
+  "PAPER-1EB44532": {
+    "order_id": "PAPER-1EB44532",
+    "symbol": "ZEC/USD",
+    "order_type": "limit",
+    "side": "sell",
+    "amount": 0.03,
+    "price": 500.0,
+    "stop_price": null,
+    "status": "open",
+    "timestamp": 1763061278.4750538
+  },
+  "PAPER-DE4E5ABE": {
+    "order_id": "PAPER-DE4E5ABE",
+    "symbol": "ZEC/USD",
+    "order_type": "stop",
+    "side": "sell",
+    "amount": 0.03,
+    "price": null,
+    "stop_price": 480.0,
+    "status": "open",
+    "timestamp": 1763061278.4778173
+  },
+  "PAPER-B2CC8543": {
+    "order_id": "PAPER-B2CC8543",
+    "symbol": "ZEC/USD",
+    "order_type": "limit",
+    "side": "sell",
+    "amount": 0.04,
+    "price": 518.78,
+    "stop_price": null,
+    "status": "open",
+    "timestamp": 1763062827.8879251
+  },
+  "PAPER-BC0E8297": {
+    "order_id": "PAPER-BC0E8297",
+    "symbol": "ZEC/USD",
+    "order_type": "stop",
+    "side": "sell",
+    "amount": 0.04,
+    "price": null,
+    "stop_price": 503.52,
+    "status": "open",
+    "timestamp": 1763062827.8928301
+  },
+  "PAPER-90B34309": {
+    "order_id": "PAPER-90B34309",
+    "symbol": "ZEC/USD",
+    "order_type": "limit",
+    "side": "sell",
+    "amount": 0.04,
+    "price": 522.24,
+    "stop_price": null,
+    "status": "open",
+    "timestamp": 1763062887.4833264
+  },
+  "PAPER-9359507C": {
+    "order_id": "PAPER-9359507C",
+    "symbol": "ZEC/USD",
+    "order_type": "stop",
+    "side": "sell",
+    "amount": 0.04,
+    "price": null,
+    "stop_price": 506.88,
+    "status": "open",
+    "timestamp": 1763062887.4840958
+  }
+}
