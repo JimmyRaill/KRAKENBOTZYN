@@ -318,51 +318,58 @@ def sync_exchange() -> Dict[str, Any]:
             stats['errors'].append(error_msg)
             logger.error(f"[STATUS-SERVICE] {error_msg}")
         
-        # 2. Sync open orders (LIVE mode only - skip in PAPER)
-        if mode == "live":
-            try:
+        # 2. Sync open orders (mode-aware)
+        try:
+            if mode == "live":
+                # LIVE: Fetch from Kraken API
                 open_orders = _fetch_open_orders_from_kraken()
+            else:
+                # PAPER: Fetch from paper ledger via exchange wrapper
+                from exchange_manager import get_exchange
+                ex = get_exchange()
+                open_orders = ex.fetch_open_orders()
+            
+            # Clear old open orders for this mode
+            cursor.execute("DELETE FROM orders WHERE mode = ? AND status = 'open'", (mode,))
+            
+            for order in open_orders:
+                order_id = order.get('id', '')
+                if not order_id:
+                    continue
                 
-                for order in open_orders:
-                    order_id = order.get('id', '')
-                    if not order_id:
-                        continue
-                    
-                    # Upsert order
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO orders (
-                            order_id, timestamp, datetime_utc, symbol, type, side,
-                            price, amount, filled, remaining, cost, fee, status,
-                            source, mode, raw_data, synced_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        order_id,
-                        order.get('timestamp', now * 1000) / 1000,
-                        datetime.fromtimestamp(order.get('timestamp', now * 1000) / 1000, tz=timezone.utc).isoformat(),
-                        order.get('symbol', ''),
-                        order.get('type', ''),
-                        order.get('side', ''),
-                        order.get('price'),
-                        order.get('amount'),
-                        order.get('filled', 0),
-                        order.get('remaining'),
-                        order.get('cost'),
-                        order.get('fee', {}).get('cost') if order.get('fee') else None,
-                        order.get('status', 'unknown'),
-                        'kraken',
-                        mode,
-                        json.dumps(order),
-                        now
-                    ))
-                    stats['orders_synced'] += 1
-                
-                logger.info(f"[STATUS-SERVICE] Synced {stats['orders_synced']} open orders")
-            except Exception as e:
-                error_msg = f"Open orders sync failed: {str(e)}"
-                stats['errors'].append(error_msg)
-                logger.error(f"[STATUS-SERVICE] {error_msg}")
-        else:
-            logger.debug(f"[STATUS-SERVICE] Skipping open orders sync (mode={mode})")
+                # Upsert order
+                cursor.execute("""
+                    INSERT OR REPLACE INTO orders (
+                        order_id, timestamp, datetime_utc, symbol, type, side,
+                        price, amount, filled, remaining, cost, fee, status,
+                        source, mode, raw_data, synced_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    order_id,
+                    order.get('timestamp', now * 1000) / 1000 if order.get('timestamp') else now,
+                    datetime.fromtimestamp(order.get('timestamp', now * 1000) / 1000 if order.get('timestamp') else now, tz=timezone.utc).isoformat(),
+                    order.get('symbol', ''),
+                    order.get('type', ''),
+                    order.get('side', ''),
+                    order.get('price'),
+                    order.get('amount'),
+                    order.get('filled', 0),
+                    order.get('remaining'),
+                    order.get('cost'),
+                    order.get('fee', {}).get('cost') if order.get('fee') else None,
+                    order.get('status', 'unknown'),
+                    'paper_ledger' if mode == 'paper' else 'kraken',
+                    mode,
+                    json.dumps(order),
+                    now
+                ))
+                stats['orders_synced'] += 1
+            
+            logger.info(f"[STATUS-SERVICE] Synced {stats['orders_synced']} open orders from {'paper ledger' if mode == 'paper' else 'Kraken'}")
+        except Exception as e:
+            error_msg = f"Open orders sync failed: {str(e)}"
+            stats['errors'].append(error_msg)
+            logger.error(f"[STATUS-SERVICE] {error_msg}")
         
         # 3. Sync recent closed orders (LIVE mode only - skip in PAPER)
         if mode == "live":

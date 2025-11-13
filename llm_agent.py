@@ -567,6 +567,14 @@ def _run_paper_trade_test() -> str:
         
         # Step 2: Query open orders immediately
         print("[ZYN-SELF-TEST] Step 2: Querying open orders...")
+        
+        # DIAGNOSTIC: Check what we see directly
+        from exchange_manager import get_exchange
+        ex = get_exchange()
+        direct_orders = ex.fetch_open_orders()
+        direct_order_ids = [o['id'] for o in direct_orders]
+        print(f"[SELF-TEST] mode={mode}, ex={type(ex).__name__}, open_order_ids={direct_order_ids}")
+        
         open_result = _execute_trading_command("open")
         
         # Step 3: Query balances

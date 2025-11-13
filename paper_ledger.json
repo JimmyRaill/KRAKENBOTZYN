@@ -5,51 +5,51 @@
       "free": 10000.0,
       "locked": 0.0,
       "total": 10000.0,
-      "last_updated": 1763069901.0298498
+      "last_updated": 1763070822.8769333
     }
   },
   "trades": [],
   "orders": [
     {
-      "id": "PAPER-BE6D74E9",
-      "orderId": "PAPER-BE6D74E9",
+      "id": "PAPER-A4360C49",
+      "orderId": "PAPER-A4360C49",
       "symbol": "ZEC/USD",
       "type": "market",
       "side": "buy",
-      "amount": 0.04,
-      "price": 489.76,
+      "amount": 0.03,
+      "price": 497.71,
       "stopPrice": null,
       "status": "closed",
-      "timestamp": 1763069901019,
-      "datetime": "2025-11-13T21:38:21"
+      "timestamp": 1763070828577,
+      "datetime": "2025-11-13T21:53:48"
     },
     {
-      "id": "PAPER-9C4324AF",
-      "orderId": "PAPER-9C4324AF",
+      "id": "PAPER-C9F04C48",
+      "orderId": "PAPER-C9F04C48",
       "symbol": "ZEC/USD",
       "type": "limit",
       "side": "sell",
-      "amount": 0.04,
-      "price": 499.56,
+      "amount": 0.03,
+      "price": 507.66,
       "stopPrice": null,
       "status": "open",
-      "timestamp": 1763069901040,
-      "datetime": "2025-11-13T21:38:21"
+      "timestamp": 1763070828588,
+      "datetime": "2025-11-13T21:53:48"
     },
     {
-      "id": "PAPER-51906CF5",
-      "orderId": "PAPER-51906CF5",
+      "id": "PAPER-91AB5879",
+      "orderId": "PAPER-91AB5879",
       "symbol": "ZEC/USD",
       "type": "stop",
       "side": "sell",
-      "amount": 0.04,
+      "amount": 0.03,
       "price": 0.0,
-      "stopPrice": 484.86,
+      "stopPrice": 492.73,
       "status": "open",
-      "timestamp": 1763069901044,
-      "datetime": "2025-11-13T21:38:21"
+      "timestamp": 1763070828590,
+      "datetime": "2025-11-13T21:53:48"
     }
   ],
   "starting_balance_usd": 10000.0,
-  "last_saved": 1763069901.0470579
+  "last_saved": 1763070828.5914912
 }

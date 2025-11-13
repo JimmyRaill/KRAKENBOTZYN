@@ -92,7 +92,15 @@ def _free_coin_qty(ex, symbol: str) -> float:
     return qty or 0.0
 
 def _open_orders_text(ex, symbol_filter: str | None = None) -> str:
+    from exchange_manager import get_mode_str
+    
+    mode = get_mode_str()
     orders = ex.fetch_open_orders(symbol_filter) if symbol_filter else ex.fetch_open_orders()
+    order_ids = [o['id'] for o in orders]
+    
+    # DIAGNOSTIC: Log what this path sees
+    print(f"[OPEN CMD] mode={mode}, ex={type(ex).__name__}, open_order_ids={order_ids}")
+    
     if not orders:
         return "(no open orders)"
     lines = []
