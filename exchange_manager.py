@@ -128,6 +128,38 @@ class ExchangeManager:
         else:
             return True, f"{operation} allowed (live mode - REAL MONEY)"
     
+    def fetch_ohlc(self, symbol: str, timeframe: str = "5m", limit: int = 100):
+        """
+        Fetch OHLC (candlestick) data from Kraken.
+        
+        Args:
+            symbol: Trading pair (e.g., 'BTC/USD', 'ETH/USD')
+            timeframe: Candle timeframe ('1m', '5m', '15m', '1h', '4h', '1d')
+            limit: Number of candles to fetch (default: 100)
+        
+        Returns:
+            List of OHLC candles: [[timestamp, open, high, low, close, volume], ...]
+        
+        Notes:
+            - Kraken API rate limits: ~1 call per second (public), ~15-20/min (private)
+            - This method fetches from public API (no auth required)
+            - Fetching once per 5-minute interval stays 99% under rate limits
+            - Minimum limit recommended: 100 (covers SMA20 + ATR14 + buffer)
+        """
+        if self._exchange is None:
+            raise RuntimeError("ExchangeManager not initialized")
+        
+        # Validate inputs
+        valid_timeframes = ['1m', '5m', '15m', '1h', '4h', '1d']
+        if timeframe not in valid_timeframes:
+            raise ValueError(f"Invalid timeframe '{timeframe}'. Must be one of: {valid_timeframes}")
+        
+        if limit < 20:
+            raise ValueError(f"Limit must be >= 20 for indicator calculations (got {limit})")
+        
+        # Fetch OHLC data from Kraken
+        return self._exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+    
     def reload(self):
         """Force reload configuration from .env"""
         self._reload_config()
