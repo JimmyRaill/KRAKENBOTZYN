@@ -16,7 +16,7 @@ The bot provides a chat interface on port 5000 for real-time interaction and a d
 ### Technical Implementations
 The system is designed with a strong emphasis on mode isolation (LIVE vs. PAPER), ensuring no cross-contamination of data.
 
-- **Account State (`account_state.py`)**: Provides canonical, mode-aware account data, including balances, trade history, and portfolio snapshots, ensuring complete isolation between LIVE and PAPER trading. Paper trading state is persisted via `paper_ledger.json`.
+- **Account State (`account_state.py`)**: Provides canonical, mode-aware account data, including balances, trade history, and portfolio snapshots, ensuring complete isolation between LIVE and PAPER trading. Paper trading state is persisted via `paper_ledger.json`. **CRITICAL ARCHITECTURE (Nov 13, 2025)**: The `PaperLedger` singleton is the single source of truth for ALL paper orders - both execution and query paths use this unified ledger to prevent data disconnection.
 - **Status Service (`status_service.py`)**: Acts as a centralized single source of truth for all trading data, rigorously enforcing mode isolation by routing data requests through `account_state.py` and skipping Kraken API calls in PAPER mode where appropriate.
 - **Self-Learning Components**:
     - **Telemetry Database (`telemetry_db.py`)**: An SQLite database (`trading_memory.db`) for persistent storage of all trades, decisions, performance, insights, errors, and conversations to facilitate continuous learning.
