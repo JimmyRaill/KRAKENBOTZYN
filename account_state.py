@@ -362,13 +362,16 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
                 
                 usd_value = 0.0
                 if currency == 'USD':
-                    usd_value = total
+                    usd_value = float(total) if total is not None else 0.0
                 else:
                     try:
                         symbol = f"{currency}/USD"
                         ticker = ex.fetch_ticker(symbol)
                         price = ticker.get('last', 0.0)
-                        usd_value = total * price
+                        # Explicit type coercion to prevent TypeErrors
+                        total_f = float(total) if total is not None else 0.0
+                        price_f = float(price) if price is not None else 0.0
+                        usd_value = total_f * price_f
                     except:
                         usd_value = 0.0
                 
@@ -396,14 +399,17 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
             total = bal['total']
             
             if currency == 'USD':
-                usd_value = total
+                usd_value = float(total) if total is not None else 0.0
             else:
                 try:
                     ex = get_exchange()
                     symbol = f"{currency}/USD"
                     ticker = ex.fetch_ticker(symbol)
                     price = ticker.get('last', 0.0)
-                    usd_value = total * price
+                    # Explicit type coercion to prevent TypeErrors
+                    total_f = float(total) if total is not None else 0.0
+                    price_f = float(price) if price is not None else 0.0
+                    usd_value = total_f * price_f
                 except:
                     usd_value = 0.0
             

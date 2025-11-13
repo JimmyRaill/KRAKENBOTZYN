@@ -109,7 +109,7 @@ class PaperExchangeWrapper:
     
     def _log_execution(self, mode: str, symbol: str, side: str, size: float, 
                       sl: Optional[float] = None, tp: Optional[float] = None,
-                      success: bool = True, error: str = None):
+                      success: bool = True, error: Optional[str] = None):
         """Comprehensive logging for all trade executions"""
         sl_str = f"{sl:.2f}" if sl else "None"
         tp_str = f"{tp:.2f}" if tp else "None"
@@ -122,10 +122,10 @@ class PaperExchangeWrapper:
         
         logger.info(log_msg)
     
-    def create_market_buy_order(self, symbol: str, amount: float, params: dict = None):
+    def create_market_buy_order(self, symbol: str, amount: float, params: Optional[dict] = None):
         """Create market buy order (paper or live)"""
         if not self._is_paper:
-            return self._exchange.create_market_buy_order(symbol, amount, params)
+            return self._exchange.create_market_buy_order(symbol, amount, params or {})
         
         # Paper mode: simulate market buy
         try:
@@ -134,6 +134,7 @@ class PaperExchangeWrapper:
             market_price = ticker['last']
             
             # Open position in simulator
+            assert self._simulator is not None, "Simulator not initialized in paper mode"
             success, msg, position = self._simulator.open_position(
                 symbol=symbol,
                 side='long',
@@ -178,7 +179,7 @@ class PaperExchangeWrapper:
             self._log_execution('PAPER', symbol, 'buy', amount, success=False, error=str(e))
             raise
     
-    def create_market_sell_order(self, symbol: str, amount: float, params: dict = None):
+    def create_market_sell_order(self, symbol: str, amount: float, params: Optional[dict] = None):
         """Create market sell order (paper or live)"""
         if not self._is_paper:
             return self._exchange.create_market_sell_order(symbol, amount, params)
@@ -230,7 +231,7 @@ class PaperExchangeWrapper:
             self._log_execution('PAPER', symbol, 'sell', amount, success=False, error=str(e))
             raise
     
-    def create_limit_buy_order(self, symbol: str, amount: float, price: float, params: dict = None):
+    def create_limit_buy_order(self, symbol: str, amount: float, price: float, params: Optional[dict] = None):
         """Create limit buy order (paper or live)"""
         if not self._is_paper:
             return self._exchange.create_limit_buy_order(symbol, amount, price, params)
@@ -266,7 +267,7 @@ class PaperExchangeWrapper:
             self._log_execution('PAPER', symbol, 'buy_limit', amount, success=False, error=str(e))
             raise
     
-    def create_limit_sell_order(self, symbol: str, amount: float, price: float, params: dict = None):
+    def create_limit_sell_order(self, symbol: str, amount: float, price: float, params: Optional[dict] = None):
         """Create limit sell order (paper or live)"""
         if not self._is_paper:
             return self._exchange.create_limit_sell_order(symbol, amount, price, params)
@@ -303,7 +304,7 @@ class PaperExchangeWrapper:
             raise
     
     def create_order(self, symbol: str, order_type: str, side: str, amount: float, 
-                    price: Optional[float] = None, params: dict = None):
+                    price: Optional[float] = None, params: Optional[dict] = None):
         """Generic create_order (handles stop orders)"""
         if not self._is_paper:
             return self._exchange.create_order(symbol, order_type, side, amount, price, params)
@@ -356,7 +357,7 @@ class PaperExchangeWrapper:
             self._log_execution('PAPER', symbol, f'{side}_{order_type}', amount, success=False, error=str(e))
             raise
     
-    def fetch_open_orders(self, symbol: str = None, since: int = None, limit: int = None, params: dict = None):
+    def fetch_open_orders(self, symbol: Optional[str] = None, since: Optional[int] = None, limit: Optional[int] = None, params: Optional[dict] = None):
         """Fetch open orders (paper or live)"""
         if not self._is_paper:
             if symbol:
@@ -379,7 +380,7 @@ class PaperExchangeWrapper:
         logger.debug(f"[PAPER-WRAPPER] fetch_open_orders from canonical ledger: {len(open_orders)} open orders (reloaded from disk)")
         return open_orders
     
-    def fetch_balance(self, params: dict = None):
+    def fetch_balance(self, params: Optional[dict] = None):
         """Fetch balance (paper or live)"""
         if not self._is_paper:
             return self._exchange.fetch_balance(params)
@@ -410,7 +411,7 @@ class PaperExchangeWrapper:
         
         return balance
     
-    def cancel_order(self, order_id: str, symbol: str = None, params: dict = None):
+    def cancel_order(self, order_id: str, symbol: Optional[str] = None, params: Optional[dict] = None):
         """Cancel an order"""
         if not self._is_paper:
             return self._exchange.cancel_order(order_id, symbol, params)
