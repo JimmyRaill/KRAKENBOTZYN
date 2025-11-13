@@ -10,10 +10,12 @@ NO CROSS-CONTAMINATION ALLOWED.
 
 import time
 import json
+import fcntl
 from typing import Dict, List, Any, Optional, Literal
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass, asdict
+from contextlib import contextmanager
 
 from exchange_manager import get_exchange, is_paper_mode, get_mode_str
 from loguru import logger
@@ -139,6 +141,49 @@ class PaperLedger:
             
         except Exception as e:
             logger.error(f"[PAPER-LEDGER] Failed to save state: {e}")
+    
+    def append_order_atomic(self, order_data: Dict[str, Any]) -> None:
+        """
+        Atomically append an order to the ledger with file locking.
+        
+        CRITICAL: This method prevents lost updates in multi-worker environments by:
+        1. Acquiring an exclusive file lock
+        2. Loading the latest state from disk
+        3. Appending the new order
+        4. Saving back to disk
+        5. Releasing the lock
+        
+        This ensures that concurrent workers don't overwrite each other's orders.
+        """
+        lock_file = self.state_file.with_suffix('.lock')
+        
+        try:
+            # Create lock file if it doesn't exist
+            lock_file.touch(exist_ok=True)
+            
+            # Acquire exclusive lock
+            with open(lock_file, 'w') as lock_f:
+                fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+                
+                try:
+                    # Reload from disk to get latest state
+                    self.load()
+                    
+                    # Append new order
+                    self.orders.append(order_data)
+                    
+                    # Save back to disk
+                    self.save()
+                    
+                    logger.debug(f"[PAPER-LEDGER] Atomically added order {order_data.get('id')} ({len(self.orders)} total)")
+                    
+                finally:
+                    # Release lock
+                    fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+        
+        except Exception as e:
+            logger.error(f"[PAPER-LEDGER] Failed to atomically append order: {e}")
+            raise
     
     def get_balances(self) -> Dict[str, Dict[str, float]]:
         """Get all balances in format compatible with status_service"""

@@ -160,14 +160,14 @@ class PaperExchangeWrapper:
                 'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
             }
             
-            # Append to canonical ledger
+            # Append to canonical ledger with file locking
             from account_state import get_paper_ledger
             ledger = get_paper_ledger()
-            ledger.orders.append(order_data)
-            ledger.save()
+            ledger.append_order_atomic(order_data)  # Atomic operation with file lock
             
             self._log_execution('PAPER', symbol, 'buy', amount, success=True)
-            logger.info(f"[PAPER-LEDGER] Added order {order_id} to ledger ({len(ledger.orders)} total)")
+            logger.info(f"[PAPER-LEDGER] Added market buy order {order_id} (atomic)")
+
             logger.info(msg)
             
             return order_data
@@ -213,14 +213,13 @@ class PaperExchangeWrapper:
                 'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
             }
             
-            # Append to canonical ledger
+            # Append to canonical ledger with file locking
             from account_state import get_paper_ledger
             ledger = get_paper_ledger()
-            ledger.orders.append(order_data)
-            ledger.save()
+            ledger.append_order_atomic(order_data)  # Atomic operation with file lock
             
             self._log_execution('PAPER', symbol, 'sell', amount, success=True)
-            logger.info(f"[PAPER-LEDGER] Added order {order_id} to ledger ({len(ledger.orders)} total)")
+            logger.info(f"[PAPER-LEDGER] Added market sell order {order_id} (atomic)")
             logger.info(f"{msg} | PnL=${pnl:.2f}")
             
             return order_data
@@ -251,14 +250,13 @@ class PaperExchangeWrapper:
                 'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
             }
             
-            # Append to canonical ledger
+            # Append to canonical ledger with file locking
             from account_state import get_paper_ledger
             ledger = get_paper_ledger()
-            ledger.orders.append(order_data)
-            ledger.save()
+            ledger.append_order_atomic(order_data)  # Atomic operation with file lock
             
             self._log_execution('PAPER', symbol, 'buy_limit', amount, success=True)
-            logger.info(f"[PAPER-LEDGER] Added limit buy order {order_id} to ledger ({len(ledger.orders)} total)")
+            logger.info(f"[PAPER-LEDGER] Added limit buy order {order_id} (atomic)")
             
             return order_data
         
@@ -288,14 +286,13 @@ class PaperExchangeWrapper:
                 'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
             }
             
-            # Append to canonical ledger
+            # Append to canonical ledger with file locking
             from account_state import get_paper_ledger
             ledger = get_paper_ledger()
-            ledger.orders.append(order_data)
-            ledger.save()
+            ledger.append_order_atomic(order_data)  # Atomic operation with file lock
             
             self._log_execution('PAPER', symbol, 'sell_limit', amount, tp=price, success=True)
-            logger.info(f"[PAPER-LEDGER] Added limit sell order (TP) {order_id} to ledger ({len(ledger.orders)} total)")
+            logger.info(f"[PAPER-LEDGER] Added limit sell order (TP) {order_id} (atomic)")
             
             return order_data
         
@@ -331,14 +328,13 @@ class PaperExchangeWrapper:
                     'datetime': time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime())
                 }
                 
-                # Append to canonical ledger
+                # Append to canonical ledger with file locking
                 from account_state import get_paper_ledger
                 ledger = get_paper_ledger()
-                ledger.orders.append(order_data)
-                ledger.save()
+                ledger.append_order_atomic(order_data)  # Atomic operation with file lock
                 
                 self._log_execution('PAPER', symbol, f'{side}_stop', amount, sl=stop_price, success=True)
-                logger.info(f"[PAPER-LEDGER] Added stop order (SL) {order_id} to ledger ({len(ledger.orders)} total)")
+                logger.info(f"[PAPER-LEDGER] Added stop order (SL) {order_id} (atomic)")
                 
                 return order_data
             
@@ -367,15 +363,18 @@ class PaperExchangeWrapper:
                 return self._exchange.fetch_open_orders()
         
         # Paper mode: return orders from canonical ledger with status='open'
+        # CRITICAL: Reload from disk to handle multi-worker uvicorn environment
         from account_state import get_paper_ledger
         ledger = get_paper_ledger()
+        ledger.load()  # Force reload from disk to see latest state across workers
+        
         open_orders = [
             order
             for order in ledger.orders
             if order.get('status') == 'open' and (not symbol or order.get('symbol') == symbol)
         ]
         
-        logger.debug(f"[PAPER-WRAPPER] fetch_open_orders from canonical ledger: {len(open_orders)} open orders")
+        logger.debug(f"[PAPER-WRAPPER] fetch_open_orders from canonical ledger: {len(open_orders)} open orders (reloaded from disk)")
         return open_orders
     
     def fetch_balance(self, params: dict = None):
@@ -415,8 +414,11 @@ class PaperExchangeWrapper:
             return self._exchange.cancel_order(order_id, symbol, params)
         
         # Paper mode: mark as cancelled in canonical ledger
+        # CRITICAL: Reload from disk to handle multi-worker uvicorn environment
         from account_state import get_paper_ledger
         ledger = get_paper_ledger()
+        ledger.load()  # Force reload from disk to see latest state across workers
+        
         for order in ledger.orders:
             if order.get('id') == order_id or order.get('orderId') == order_id:
                 order['status'] = 'cancelled'
