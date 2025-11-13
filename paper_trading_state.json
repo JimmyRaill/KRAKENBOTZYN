@@ -1,0 +1,26 @@
+{
+  "starting_balance": 10000.0,
+  "balance": 9979.6209939892,
+  "equity": 9979.6209939892,
+  "total_fees_paid": 0.0528480108,
+  "total_slippage": 0.010157999999998992,
+  "open_positions": {
+    "ZEC/USD": {
+      "symbol": "ZEC/USD",
+      "side": "long",
+      "entry_price": 508.15394999999995,
+      "quantity": 0.04,
+      "entry_time": 1763068253.3661723,
+      "entry_slippage": 0.010157999999998992,
+      "entry_fee": 0.0528480108,
+      "stop_loss": null,
+      "take_profit": null,
+      "exit_price": null,
+      "exit_time": null,
+      "exit_slippage": 0.0,
+      "exit_fee": 0.0,
+      "realized_pnl": null
+    }
+  },
+  "closed_positions": []
+}

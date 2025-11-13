@@ -111,9 +111,11 @@ class PaperExchangeWrapper:
                       sl: Optional[float] = None, tp: Optional[float] = None,
                       success: bool = True, error: str = None):
         """Comprehensive logging for all trade executions"""
+        sl_str = f"{sl:.2f}" if sl else "None"
+        tp_str = f"{tp:.2f}" if tp else "None"
         log_msg = (
             f"[TRADE-EXEC] mode={mode} | symbol={symbol} | side={side} | "
-            f"size={size} | SL={sl} | TP={tp} | success={success}"
+            f"size={size} | SL={sl_str} | TP={tp_str} | success={success}"
         )
         if error:
             log_msg += f" | error={error}"

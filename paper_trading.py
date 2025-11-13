@@ -283,9 +283,13 @@ class PaperTradingSimulator:
         self.update_equity()
         self.save_state()
         
+        fill_price_str = f"{fill_price:.2f}" if fill_price is not None else "?"
+        market_price_str = f"{market_price:.2f}" if market_price is not None else "?"
+        slippage_str = f"{slippage_amount:.2f}" if slippage_amount is not None else "?"
+        fee_str = f"{fee:.2f}" if fee is not None else "?"
         msg = (
-            f"[PAPER] Opened {side.upper()} {quantity} {symbol} @ ${fill_price:.2f} "
-            f"(market=${market_price:.2f}, slippage=${slippage_amount:.2f}, fee=${fee:.2f}) "
+            f"[PAPER] Opened {side.upper()} {quantity} {symbol} @ ${fill_price_str} "
+            f"(market=${market_price_str}, slippage=${slippage_str}, fee=${fee_str}) "
             f"SL=${stop_loss:.2f if stop_loss else 'None'} TP=${take_profit:.2f if take_profit else 'None'}"
         )
         

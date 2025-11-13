@@ -342,14 +342,15 @@ def handle(text: str) -> str:
                     fill_size = _safe_float(entry_order.get("filled") or entry_order.get("amount"), None)
                     
                     # Fallback: fetch_order if immediate response lacks fill data
-                    if not fill_price or not fill_size:
+                    # Note: Skip fetch_order in paper mode since paper orders return complete data
+                    if (not fill_price or not fill_size) and not is_paper_mode():
                         try:
                             fetched = ex.fetch_order(entry_id, sym)
                             fill_price = _safe_float(fetched.get("price") or fetched.get("average"), None)
                             fill_size = _safe_float(fetched.get("filled") or fetched.get("amount"), amt_p)
-                        except:
+                        except Exception as fetch_err:
                             # Could not get fill data - close position defensively
-                            print(f"[BRACKET-ABORT] Could not verify fill price/size - closing position")
+                            print(f"[BRACKET-ABORT] fetch_order failed: {fetch_err} - closing position")
                             ex.create_market_sell_order(sym, float(amt_p))
                             return f"[BRACKET-ERR] Entry executed but could not verify fill data - position closed for safety"
                     
@@ -387,14 +388,15 @@ def handle(text: str) -> str:
                     fill_size = _safe_float(entry_order.get("filled") or entry_order.get("amount"), None)
                     
                     # Fallback: fetch_order if immediate response lacks fill data
-                    if not fill_price or not fill_size:
+                    # Note: Skip fetch_order in paper mode since paper orders return complete data
+                    if (not fill_price or not fill_size) and not is_paper_mode():
                         try:
                             fetched = ex.fetch_order(entry_id, sym)
                             fill_price = _safe_float(fetched.get("price") or fetched.get("average"), None)
                             fill_size = _safe_float(fetched.get("filled") or fetched.get("amount"), amt_p)
-                        except:
+                        except Exception as fetch_err:
                             # Could not get fill data - close position defensively
-                            print(f"[BRACKET-ABORT] Could not verify fill price/size - closing position")
+                            print(f"[BRACKET-ABORT] fetch_order failed: {fetch_err} - closing position")
                             ex.create_market_buy_order(sym, float(amt_p))
                             return f"[BRACKET-ERR] Entry executed but could not verify fill data - position closed for safety"
                     
