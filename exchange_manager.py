@@ -5,6 +5,7 @@ from typing import Optional
 import ccxt
 from dotenv import load_dotenv
 from pathlib import Path
+from paper_exchange_wrapper import PaperExchangeWrapper
 
 # Load environment
 ENV_PATH = Path(__file__).with_name(".env")
@@ -52,16 +53,21 @@ class ExchangeManager:
             "options": {"validate": self._validate_mode}
         }
         
-        self._exchange = ccxt.kraken(config)  # type: ignore[arg-type]
+        ccxt_exchange = ccxt.kraken(config)  # type: ignore[arg-type]
         
         # Load markets
         try:
-            self._exchange.load_markets()
+            ccxt_exchange.load_markets()
         except Exception as e:
             print(f"[EXCHANGE-MANAGER] Warning: Failed to load markets: {e}")
         
-        mode_label = "PAPER TRADING" if self._validate_mode else "LIVE TRADING"
-        print(f"[EXCHANGE-MANAGER] Initialized in {mode_label} mode")
+        # Wrap with PaperExchangeWrapper in paper mode
+        if self._validate_mode:
+            self._exchange = PaperExchangeWrapper(ccxt_exchange, is_paper_mode=True)
+            print("[EXCHANGE-MANAGER] Initialized in PAPER TRADING mode (with paper wrapper)")
+        else:
+            self._exchange = PaperExchangeWrapper(ccxt_exchange, is_paper_mode=False)
+            print("[EXCHANGE-MANAGER] Initialized in LIVE TRADING mode (wrapper pass-through)")
     
     def get_exchange(self) -> ccxt.kraken:
         """Get the exchange instance"""
@@ -106,17 +112,20 @@ class ExchangeManager:
             "options": {"validate": self._validate_mode}
         }
         
-        self._exchange = ccxt.kraken(config)  # type: ignore[arg-type]
+        ccxt_exchange = ccxt.kraken(config)  # type: ignore[arg-type]
         
         # Load markets
         try:
-            self._exchange.load_markets()
+            ccxt_exchange.load_markets()
         except Exception as e:
             print(f"[EXCHANGE-MANAGER] Warning: Failed to load markets: {e}")
         
+        # Wrap with PaperExchangeWrapper
+        self._exchange = PaperExchangeWrapper(ccxt_exchange, is_paper_mode=paper_mode)
+        
         mode_str = "PAPER" if paper_mode else "LIVE"
         old_str = "PAPER" if old_mode else "LIVE"
-        print(f"[EXCHANGE-MANAGER] Mode changed: {old_str} -> {mode_str} (validate={self._validate_mode})")
+        print(f"[EXCHANGE-MANAGER] Mode changed: {old_str} -> {mode_str} (wrapper enabled)")
     
     def validate_order_allowed(self, operation: str = "trade") -> tuple[bool, str]:
         """

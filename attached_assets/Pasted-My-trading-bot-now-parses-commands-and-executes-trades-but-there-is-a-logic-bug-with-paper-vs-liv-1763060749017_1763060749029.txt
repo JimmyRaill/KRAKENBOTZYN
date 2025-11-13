@@ -1,0 +1,59 @@
+My trading bot now parses commands and “executes” trades, but there is a logic bug with paper vs live mode and tracking of orders/positions.
+
+Here’s what’s happening:
+	•	When I say something like:
+“Paper buy 0.03 ZEC/USD market, SL 1% below, TP 2% above,”
+the bot calculates the prices and says it will execute the order.
+	•	But when I ask:
+“Show open positions and open orders,”
+it reports 0 open positions and 0 open orders, even in paper mode.
+
+This means the manual execution path is NOT correctly updating whatever data structure or backend the “show open positions/orders” command is reading from.
+
+I need you to do the following:
+	1.	Separate paper vs live clearly in code
+	•	Identify where the current mode is stored (paper vs live).
+	•	Make sure there is a clean abstraction like:
+	•	trading_client_live → talks to real Kraken
+	•	trading_client_paper (or similar) → uses an in-memory or simple persistent store for simulated trades.
+	•	In PAPER mode, do not call the real Kraken API at all. Instead, record trades in an internal “paper” ledger.
+	2.	Implement proper paper trade tracking
+	•	When in PAPER mode and execute_trading_command() runs:
+	•	Create a paper “order” object with:
+	•	symbol, side, size, entry price, SL, TP, timestamp, status (open/closed), mode=‘paper’.
+	•	Store it in a list or structure such as paper_open_orders / paper_positions.
+	•	When SL or TP would be hit (if you don’t have full simulation yet, at least leave them as open orders; no need for full backtesting logic right now).
+	3.	Make “show open positions/orders” respect mode
+	•	When the bot is in PAPER mode:
+	•	“Show open positions and open orders” must read from the paper structures (paper_open_orders, paper_positions), not from the live Kraken API.
+	•	When the bot is in LIVE mode:
+	•	It should call Kraken’s API for real open positions and orders.
+	•	Always include the mode in the response, e.g.:
+	•	“Mode: PAPER – 1 open paper position on ZEC/USD …”
+	4.	Log trade execution attempts with details
+	•	Every time execute_trading_command() runs, log:
+	•	mode (paper/live)
+	•	symbol, side, size
+	•	SL, TP
+	•	whether it succeeded or failed
+	•	any error message from the API or validation
+	•	If anything fails (e.g. minimum volume, invalid params), surface that clearly in the response to me instead of silently doing nothing.
+	5.	Add a built-in self-test command
+	•	Implement a simple internal command handler for something like:
+	•	“Run a paper trade test”
+	•	This should:
+	1.	Place a small paper trade (e.g. 0.03 ZEC/USD market with SL/TP).
+	2.	Immediately query and return the paper open orders/positions.
+	•	I want to see a response like:
+	•	“Placed paper order on ZEC/USD … Now 1 open paper order.”
+	6.	Verify behavior after changes
+	•	After you finish, simulate the following flow in code or tests:
+	•	Mode set to PAPER.
+	•	Call execute_trading_command() with a tiny ZEC/USD buy order + SL/TP.
+	•	Call the function that responds to “Show open positions and open orders.”
+	•	Confirm that the order actually appears in the paper ledger and is returned to the user.
+
+Keep the strategy behavior (scheduler, NO_TRADE regime, indicator logic) unchanged. All I want fixed is:
+	•	Paper trades are actually stored and visible.
+	•	“Show open positions/orders” returns paper trades when in paper mode.
+	•	No silent failures on execution.
