@@ -651,37 +651,46 @@ def is_volatility_acceptable(
 def detect_atr_spike(
     current_atr: float,
     recent_atrs: List[float],
-    max_multiplier: float = 3.0
+    max_multiplier: float = 3.0,
+    baseline_period: int = 50
 ) -> Tuple[bool, str]:
     """
     Detect if ATR has spiked abnormally (indicating market shock).
     
+    Uses SMA(ATR14, baseline_period) as stable baseline instead of short-term mean.
+    This prevents false positives from recent volatility changes.
+    
     Args:
         current_atr: Current ATR value
-        recent_atrs: List of recent ATR values for comparison
-        max_multiplier: Max allowed spike (current / average)
+        recent_atrs: List of recent ATR values (ideally 50+)
+        max_multiplier: Max allowed spike (current / baseline_sma)
+        baseline_period: Period for baseline SMA (default: 50)
     
     Returns:
         (is_spike, reason) tuple
     
     Example:
-        is_spike, msg = detect_atr_spike(500, [150, 160, 170], max_multiplier=3.0)
-        # 500 / 160 = 3.125 > 3.0 → spike detected
+        is_spike, msg = detect_atr_spike(500, atr_history[-60:], max_multiplier=3.0)
+        # 500 / SMA50(atr_history) = 3.2 > 3.0 → spike detected
     """
     if not recent_atrs or len(recent_atrs) < 5:
-        return False, "Insufficient ATR history"
+        return False, f"Insufficient ATR history ({len(recent_atrs) if recent_atrs else 0} < 5)"
     
-    avg_atr = statistics.mean(recent_atrs)
+    # Use up to baseline_period recent values for SMA
+    # If less than baseline_period available, use what we have (graceful degradation)
+    lookback = min(len(recent_atrs), baseline_period)
+    baseline_atrs = recent_atrs[-lookback:]
+    baseline_sma = statistics.mean(baseline_atrs)
     
-    if avg_atr == 0:
-        return False, "Average ATR is zero"
+    if baseline_sma == 0:
+        return False, "Baseline ATR is zero"
     
-    spike_ratio = current_atr / avg_atr
+    spike_ratio = current_atr / baseline_sma
     
     if spike_ratio > max_multiplier:
-        return True, f"ATR spike detected ({spike_ratio:.2f}x average, limit={max_multiplier}x)"
+        return True, f"ATR spike detected ({spike_ratio:.2f}x SMA{lookback}, limit={max_multiplier}x)"
     
-    return False, f"ATR normal ({spike_ratio:.2f}x average)"
+    return False, f"ATR normal ({spike_ratio:.2f}x SMA{lookback})"
 
 
 def check_trend_strength(

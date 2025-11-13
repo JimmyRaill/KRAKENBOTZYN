@@ -371,6 +371,15 @@ class PaperTradingSimulator:
         """
         Check if SL or TP should trigger for a position.
         
+        CONSERVATIVE BOTH-BREACH HANDLING:
+        If both SL and TP breach in same candle, we assume worst-case ordering:
+        - LONG positions: SL triggered first (less profitable outcome)
+        - SHORT positions: SL triggered first (less profitable outcome)
+        
+        This prevents over-reporting profits in paper trading when actual
+        execution order is unknown. For longs, SL is always checked first since
+        it represents the losing trade. The system only supports longs currently.
+        
         Args:
             symbol: Trading symbol
             candle_low: Low of current candle
@@ -384,17 +393,27 @@ class PaperTradingSimulator:
         if not position:
             return None
         
-        # Check SL first (safety priority)
-        if position.should_trigger_stop_loss(candle_low, candle_high):
-            # Use SL price for fill
-            self.close_position(symbol, position.stop_loss, reason="stop_loss", is_maker=True)
-            return 'stop_loss'
+        sl_breached = position.should_trigger_stop_loss(candle_low, candle_high)
+        tp_breached = position.should_trigger_take_profit(candle_low, candle_high)
         
-        # Check TP
-        if position.should_trigger_take_profit(candle_low, candle_high):
-            # Use TP price for fill
-            self.close_position(symbol, position.take_profit, reason="take_profit", is_maker=True)
-            return 'take_profit'
+        # CONSERVATIVE: For longs, always favor SL in both-breach scenario
+        # (system only supports long positions in spot trading)
+        if position.side == 'long':
+            if sl_breached:
+                self.close_position(symbol, position.stop_loss, reason="stop_loss", is_maker=True)
+                return 'stop_loss'
+            elif tp_breached:
+                self.close_position(symbol, position.take_profit, reason="take_profit", is_maker=True)
+                return 'take_profit'
+        
+        # Future: For shorts (if implemented), check TP first for conservative fills
+        # elif position.side == 'short':
+        #     if tp_breached:
+        #         self.close_position(symbol, position.take_profit, reason="take_profit", is_maker=True)
+        #         return 'take_profit'
+        #     elif sl_breached:
+        #         self.close_position(symbol, position.stop_loss, reason="stop_loss", is_maker=True)
+        #         return 'stop_loss'
         
         return None
     

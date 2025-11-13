@@ -176,8 +176,9 @@ class SignalEngine:
         if len(recent_atrs) >= 5:
             is_spike, spike_msg = detect_atr_spike(
                 atr,
-                recent_atrs[-20:],  # Use last 20 ATR values
-                max_multiplier=self.filter_cfg.max_atr_spike_multiplier
+                recent_atrs[-60:],  # Use last 60 ATR values (SMA50 baseline + buffer)
+                max_multiplier=self.filter_cfg.max_atr_spike_multiplier,
+                baseline_period=50
             )
             
             if is_spike:

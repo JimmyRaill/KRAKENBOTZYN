@@ -49,9 +49,28 @@ def init_db() -> None:
                 order_id TEXT,
                 reason TEXT,
                 source TEXT,
-                metadata TEXT
+                metadata TEXT,
+                mode TEXT DEFAULT 'live',
+                stop_loss REAL,
+                take_profit REAL
             )
         """)
+        
+        # Migration: Add new columns if they don't exist (SQLite safe)
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN mode TEXT DEFAULT 'live'")
+        except Exception:
+            pass  # Column already exists
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN stop_loss REAL")
+        except Exception:
+            pass  # Column already exists
+        
+        try:
+            cursor.execute("ALTER TABLE trades ADD COLUMN take_profit REAL")
+        except Exception:
+            pass  # Column already exists
         
         # Decisions table - all trading decisions (including holds)
         cursor.execute("""
@@ -148,9 +167,32 @@ def log_trade(
     order_id: Optional[str] = None,
     reason: Optional[str] = None,
     source: str = "autopilot",
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    mode: str = "live",
+    stop_loss: Optional[float] = None,
+    take_profit: Optional[float] = None
 ) -> Optional[int]:
-    """Log an executed trade."""
+    """
+    Log an executed trade.
+    
+    Args:
+        symbol: Trading symbol (e.g., 'BTC/USD')
+        side: 'buy' or 'sell'
+        action: 'open' or 'close'
+        quantity: Trade quantity
+        price: Execution price
+        usd_amount: USD value of trade
+        order_id: Exchange order ID
+        reason: Reason for trade (e.g., 'entry', 'stop_loss', 'take_profit')
+        source: Source of trade ('autopilot', 'manual', etc.)
+        metadata: Additional trade metadata
+        mode: Trading mode ('paper' or 'live')
+        stop_loss: Stop-loss price (for entry trades)
+        take_profit: Take-profit price (for entry trades)
+    
+    Returns:
+        Trade ID or None if error
+    """
     now = time.time()
     dt = datetime.fromtimestamp(now)
     
@@ -159,8 +201,8 @@ def log_trade(
         cursor.execute("""
             INSERT INTO trades (
                 timestamp, date, symbol, side, action, quantity, price,
-                usd_amount, order_id, reason, source, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                usd_amount, order_id, reason, source, metadata, mode, stop_loss, take_profit
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             now,
             dt.strftime("%Y-%m-%d"),
@@ -173,7 +215,10 @@ def log_trade(
             order_id,
             reason,
             source,
-            json.dumps(metadata) if metadata else None
+            json.dumps(metadata) if metadata else None,
+            mode,
+            stop_loss,
+            take_profit
         ))
         return cursor.lastrowid
 
