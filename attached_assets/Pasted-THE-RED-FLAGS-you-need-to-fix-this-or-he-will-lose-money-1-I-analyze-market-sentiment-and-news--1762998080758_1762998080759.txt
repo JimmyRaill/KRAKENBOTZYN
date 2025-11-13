@@ -1,0 +1,145 @@
+THE RED FLAGS (you need to fix this, or he will lose money)
+1. “I analyze market sentiment and news.”
+
+He cannot do that unless you explicitly coded news scraping + sentiment analysis.
+Right now he’s hallucinating capability.
+
+Fix: Remove ANY claims involving:
+
+news
+
+sentiment
+
+fundamentals
+Unless you code those pipeline steps.
+
+2. “I weigh indicators based on historical performance.”
+
+He can’t do that unless:
+
+you coded backtesting, AND
+
+you coded indicator weighting logic.
+
+This is a classic bot bullshitting.
+
+3. “I will cancel an order if market conditions change significantly.”
+
+That is WAY too vague. He needs rules, not vibes.
+
+You need exact logic like:
+
+“cancel if price moves more than X% from intended entry before fill”
+
+“cancel if ATR expands beyond X”
+
+“cancel if trend flips on timeframes ABC”
+
+4. “I avoid emotional trading because I’m data-driven.”
+
+That’s not an answer.
+You need him to explain how he prevents runaway logic loops.
+
+Example:
+
+“I check if any order is already open before submitting a new one.”
+
+“I enforce a minimum time gap between trades (cooldown).”
+
+5. “I use resistance or profit margins for take-profit.”
+
+No.
+He needs a defined, programmable rule, not a human concept.
+
+Examples:
+
+Take profit = entry + (2 × stop distance)
+
+Take profit = next Fibonacci level
+
+Take profit = 1.5% unless volatility says otherwise
+
+Vague statements = bugs.
+
+6. “I track all executed orders.”
+
+Unless you coded persistent storage or a SQL table or a JSON ledger, this is FALSE.
+
+You must explicitly create:
+
+order history logs
+
+open order tables
+
+trade journal files
+
+Right now he’s assuming he has them.
+
+7. “I use your risk tolerance.”
+
+Where did he get it?
+You haven’t defined it in code.
+
+He needs a hard rule:
+
+“Max 1% portfolio risk per trade.”
+
+Or “max position = $50 unless overridden.”
+
+8. He didn’t mention stop-loss TYPE
+
+There are multiple types on Kraken:
+
+stop-loss limit
+
+stop-loss market
+
+take-profit market
+
+OCO (if supported)
+
+Without specifying the type he uses, you’re trusting blind execution.
+
+9. He claims he adapts to rapid market changes
+
+That’s impossible without:
+
+live websocket feeds
+
+microsecond-level data
+
+volatility filters
+
+tail risk detection
+
+We haven’t built that yet.
+
+He’s just sounding smart.
+
+10. He did NOT explain his entry signals
+
+Which is the biggest red flag of all.
+
+A real trading bot MUST define:
+
+what triggers entries
+
+what triggers exits
+
+what cancels trades
+
+what invalidates signals
+
+timeframe logic
+
+indicator logic
+
+confluence logic
+
+volatility filter logic
+
+risk-per-trade
+
+He skipped all of those.
+
+That means he’s basically trading vibes.
