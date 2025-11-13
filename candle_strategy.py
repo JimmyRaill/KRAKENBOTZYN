@@ -1,17 +1,30 @@
 """
-candle_strategy.py - Pure indicator calculations from closed candles
+candle_strategy.py - Professional indicator calculations and filters
 
-This module provides technical indicator calculations (SMA, ATR) and
-signal detection logic based on CLOSED candles only. No live price checks.
+This module provides comprehensive technical analysis for a disciplined,
+regime-aware day-trading system. All calculations use CLOSED candles only.
+
+Indicators:
+- SMA (Simple Moving Average)
+- RSI (Relative Strength Index)
+- ATR (Average True Range)
+
+Filters:
+- Trend strength detection
+- Chop/sideways market detection
+- Volume filters
+- Volatility filters
+- ATR spike detection
 
 Key principles:
 - All functions are pure (no side effects)
 - Only work with historical OHLC data
 - No mid-candle evaluations
-- Designed for 5-minute candle strategy
+- Designed for 5-minute candle strategy with multi-signal confirmation
 """
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
+import statistics
 
 
 def calculate_sma(closes: List[float], period: int = 20) -> Optional[float]:
@@ -206,3 +219,343 @@ def validate_candle_data(ohlcv: List[List[float]], min_candles: int = 20) -> Tup
         return False, f"Insufficient valid closes: {len(closes)} < {min_candles}"
     
     return True, "Candle data valid"
+
+
+# =============================================================================
+# ADVANCED INDICATORS - Professional Trading Filters
+# =============================================================================
+
+def calculate_rsi(closes: List[float], period: int = 14) -> Optional[float]:
+    """
+    Calculate Relative Strength Index from closed candles.
+    
+    Args:
+        closes: List of closing prices (most recent last)
+        period: RSI period (default: 14)
+    
+    Returns:
+        RSI value (0-100), or None if insufficient data
+    
+    Formula:
+        RSI = 100 - (100 / (1 + RS))
+        where RS = Average Gain / Average Loss over period
+    
+    Example:
+        rsi = calculate_rsi(closes, period=14)
+        if rsi and rsi > 70:
+            print("Overbought")
+    """
+    if not closes or len(closes) < period + 1:
+        return None
+    
+    # Calculate price changes
+    changes = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+    
+    # Separate gains and losses
+    gains = [max(change, 0) for change in changes]
+    losses = [abs(min(change, 0)) for change in changes]
+    
+    # Calculate initial average gain and loss
+    avg_gain = sum(gains[-period:]) / period
+    avg_loss = sum(losses[-period:]) / period
+    
+    # Handle division by zero
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    
+    # Calculate RS and RSI
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    
+    return rsi
+
+
+def extract_volumes(ohlcv: List[List[float]]) -> List[float]:
+    """
+    Extract volume data from OHLC candles.
+    
+    Args:
+        ohlcv: List of candles [[timestamp, open, high, low, close, volume], ...]
+    
+    Returns:
+        List of volumes
+    """
+    return [candle[5] for candle in ohlcv if candle and len(candle) >= 6]
+
+
+def calculate_volume_percentile(
+    current_volume: float,
+    recent_volumes: List[float]
+) -> Optional[float]:
+    """
+    Calculate what percentile the current volume falls into.
+    
+    Args:
+        current_volume: Volume of latest candle
+        recent_volumes: List of recent volumes for comparison
+    
+    Returns:
+        Percentile (0-100), or None if insufficient data
+    
+    Example:
+        percentile = calculate_volume_percentile(1000, [500, 600, 800, 1200])
+        # Returns 75.0 (current volume is in 75th percentile)
+    """
+    if not recent_volumes or len(recent_volumes) < 10:
+        return None
+    
+    # Count how many recent volumes are below current
+    below_count = sum(1 for v in recent_volumes if v < current_volume)
+    
+    # Calculate percentile
+    percentile = (below_count / len(recent_volumes)) * 100
+    
+    return percentile
+
+
+def is_volume_acceptable(
+    ohlcv: List[List[float]],
+    min_percentile: float = 30.0,
+    lookback: int = 20
+) -> Tuple[bool, str]:
+    """
+    Check if current volume meets minimum threshold.
+    
+    Args:
+        ohlcv: List of candles
+        min_percentile: Minimum volume percentile (default: 30th)
+        lookback: Candles to use for percentile calculation
+    
+    Returns:
+        (is_acceptable, reason) tuple
+    
+    Example:
+        ok, reason = is_volume_acceptable(ohlcv, min_percentile=30)
+        if not ok:
+            print(f"Low volume: {reason}")
+    """
+    if not ohlcv or len(ohlcv) < lookback + 1:
+        return False, f"Insufficient data for volume analysis ({len(ohlcv)} < {lookback+1})"
+    
+    volumes = extract_volumes(ohlcv)
+    if len(volumes) < lookback + 1:
+        return False, "Missing volume data"
+    
+    current_volume = volumes[-1]
+    recent_volumes = volumes[-(lookback+1):-1]  # Exclude current
+    
+    percentile = calculate_volume_percentile(current_volume, recent_volumes)
+    
+    if percentile is None:
+        return False, "Cannot calculate volume percentile"
+    
+    if percentile < min_percentile:
+        return False, f"Volume too low ({percentile:.1f}th percentile < {min_percentile})"
+    
+    return True, f"Volume acceptable ({percentile:.1f}th percentile)"
+
+
+def calculate_sma_slope(closes: List[float], period: int = 20, lookback: int = 10) -> Optional[float]:
+    """
+    Calculate the slope of SMA over recent candles.
+    
+    Args:
+        closes: List of closing prices
+        period: SMA period
+        lookback: Number of candles to measure slope
+    
+    Returns:
+        Slope value (positive = upward, negative = downward, ~0 = flat)
+        or None if insufficient data
+    
+    Logic:
+        slope = (current_SMA - SMA_N_candles_ago) / N
+    """
+    if not closes or len(closes) < period + lookback:
+        return None
+    
+    # Calculate current SMA
+    current_sma = calculate_sma(closes, period)
+    if current_sma is None:
+        return None
+    
+    # Calculate SMA N candles ago
+    past_closes = closes[:-lookback]
+    past_sma = calculate_sma(past_closes, period)
+    if past_sma is None:
+        return None
+    
+    # Calculate slope
+    slope = (current_sma - past_sma) / lookback
+    
+    return slope
+
+
+def is_choppy_market(
+    ohlcv: List[List[float]],
+    sma_period: int = 20,
+    slope_threshold: float = 0.0005,
+    lookback: int = 10,
+    atr_range_multiplier: float = 1.5
+) -> Tuple[bool, str]:
+    """
+    Detect if market is choppy/sideways (not trending).
+    
+    Args:
+        ohlcv: List of candles
+        sma_period: SMA period for slope calculation
+        slope_threshold: Max slope for "flat" SMA (absolute value)
+        lookback: Candles to measure slope
+        atr_range_multiplier: Price range threshold vs ATR
+    
+    Returns:
+        (is_choppy, reason) tuple
+    
+    Chop Detection Logic:
+        1. SMA slope is nearly flat (< threshold)
+        2. Price is ranging (high-low range < ATR × multiplier)
+    
+    Example:
+        choppy, reason = is_choppy_market(ohlcv)
+        if choppy:
+            print(f"Skip trade: {reason}")
+    """
+    if not ohlcv or len(ohlcv) < sma_period + lookback:
+        return False, "Insufficient data for chop detection"
+    
+    closes = extract_closes(ohlcv)
+    
+    # Check SMA slope
+    slope = calculate_sma_slope(closes, sma_period, lookback)
+    if slope is None:
+        return False, "Cannot calculate SMA slope"
+    
+    # Check if slope is flat
+    if abs(slope) > slope_threshold:
+        return False, f"SMA trending (slope={slope:.4f})"
+    
+    # Check price range vs ATR
+    atr = calculate_atr(ohlcv[-lookback:], period=min(14, lookback))
+    if atr is None or atr == 0:
+        return False, "Cannot calculate ATR for range check"
+    
+    # Get high-low range over lookback period
+    recent_candles = ohlcv[-lookback:]
+    highs = [candle[2] for candle in recent_candles]
+    lows = [candle[3] for candle in recent_candles]
+    price_range = max(highs) - min(lows)
+    
+    # If range is small compared to ATR, market is choppy
+    if price_range < (atr * atr_range_multiplier):
+        return True, f"Choppy market (range={price_range:.2f}, ATR={atr:.2f}, flat SMA slope={slope:.4f})"
+    
+    return False, f"Market has movement (range={price_range:.2f} > {atr*atr_range_multiplier:.2f})"
+
+
+def is_volatility_acceptable(
+    current_close: float,
+    atr: float,
+    min_atr_pct: float = 0.001
+) -> Tuple[bool, str]:
+    """
+    Check if volatility (ATR) meets minimum threshold.
+    
+    Args:
+        current_close: Current closing price
+        atr: Average True Range
+        min_atr_pct: Minimum ATR as percentage of price (default: 0.1%)
+    
+    Returns:
+        (is_acceptable, reason) tuple
+    
+    Example:
+        ok, reason = is_volatility_acceptable(50000, 250, min_atr_pct=0.001)
+        # ATR = 250, price = 50000, ATR/price = 0.005 = 0.5% > 0.1% ✓
+    """
+    if atr is None or atr <= 0:
+        return False, "ATR is zero or unavailable"
+    
+    atr_pct = atr / current_close
+    
+    if atr_pct < min_atr_pct:
+        return False, f"Volatility too low (ATR={atr_pct*100:.3f}% < {min_atr_pct*100:.3f}%)"
+    
+    return True, f"Volatility acceptable (ATR={atr_pct*100:.3f}%)"
+
+
+def detect_atr_spike(
+    current_atr: float,
+    recent_atrs: List[float],
+    max_multiplier: float = 3.0
+) -> Tuple[bool, str]:
+    """
+    Detect if ATR has spiked abnormally (indicating market shock).
+    
+    Args:
+        current_atr: Current ATR value
+        recent_atrs: List of recent ATR values for comparison
+        max_multiplier: Max allowed spike (current / average)
+    
+    Returns:
+        (is_spike, reason) tuple
+    
+    Example:
+        is_spike, msg = detect_atr_spike(500, [150, 160, 170], max_multiplier=3.0)
+        # 500 / 160 = 3.125 > 3.0 → spike detected
+    """
+    if not recent_atrs or len(recent_atrs) < 5:
+        return False, "Insufficient ATR history"
+    
+    avg_atr = statistics.mean(recent_atrs)
+    
+    if avg_atr == 0:
+        return False, "Average ATR is zero"
+    
+    spike_ratio = current_atr / avg_atr
+    
+    if spike_ratio > max_multiplier:
+        return True, f"ATR spike detected ({spike_ratio:.2f}x average, limit={max_multiplier}x)"
+    
+    return False, f"ATR normal ({spike_ratio:.2f}x average)"
+
+
+def check_trend_strength(
+    current_close: float,
+    sma_fast: Optional[float],
+    sma_slow: Optional[float],
+    required_direction: str  # 'long' or 'short'
+) -> Tuple[bool, str]:
+    """
+    Check if trend is strong enough in the required direction.
+    
+    Args:
+        current_close: Current closing price
+        sma_fast: Fast SMA (e.g., SMA20)
+        sma_slow: Slow SMA (e.g., SMA50)
+        required_direction: 'long' or 'short'
+    
+    Returns:
+        (trend_confirmed, reason) tuple
+    
+    Logic:
+        For LONG: price > SMA_fast AND SMA_fast > SMA_slow
+        For SHORT: price < SMA_fast AND SMA_fast < SMA_slow
+    """
+    if sma_fast is None or sma_slow is None:
+        return False, "Missing SMA data for trend check"
+    
+    if required_direction == 'long':
+        if current_close <= sma_fast:
+            return False, f"Price ({current_close:.2f}) not above SMA{len([1]*20)} ({sma_fast:.2f})"
+        if sma_fast <= sma_slow:
+            return False, f"SMA trend down (fast={sma_fast:.2f} <= slow={sma_slow:.2f})"
+        return True, f"Strong uptrend (price={current_close:.2f} > SMA_fast={sma_fast:.2f} > SMA_slow={sma_slow:.2f})"
+    
+    elif required_direction == 'short':
+        if current_close >= sma_fast:
+            return False, f"Price ({current_close:.2f}) not below SMA{len([1]*20)} ({sma_fast:.2f})"
+        if sma_fast >= sma_slow:
+            return False, f"SMA trend up (fast={sma_fast:.2f} >= slow={sma_slow:.2f})"
+        return True, f"Strong downtrend (price={current_close:.2f} < SMA_fast={sma_fast:.2f} < SMA_slow={sma_slow:.2f})"
+    
+    return False, f"Unknown direction: {required_direction}"

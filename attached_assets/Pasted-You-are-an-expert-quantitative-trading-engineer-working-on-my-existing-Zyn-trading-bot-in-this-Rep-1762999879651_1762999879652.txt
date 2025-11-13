@@ -1,0 +1,153 @@
+You are an expert quantitative trading engineer working on my existing “Zyn” trading bot in this Replit.
+
+Your job: 
+Combine a STRONG, CLEAN trading strategy with ROBUST infrastructure so that Zyn becomes a highly disciplined, risk-controlled, regime-aware day-trading bot. He must be honest about his capabilities, never hallucinate anything, and never take vague or unsafe trades.
+
+DO NOT start from scratch. Work inside the current codebase and UPGRADE what exists.
+
+==================================================
+CONTEXT: CURRENT BEHAVIOR (SUMMARY)
+==================================================
+From Zyn’s own description, he currently:
+- Uses 5-minute candles.
+- Enters long when price crosses ABOVE SMA20 on candle close.
+- Enters short when price crosses BELOW SMA20 on candle close.
+- Uses SL = entry ± (2 × ATR(14)), TP = entry ± (3 × ATR(14)); falls back to 2%/3% if ATR unavailable.
+- Risks 0.25% of equity per trade with position size = (equity × 0.0025) / stop_distance.
+- Has a daily loss kill-switch.
+- Only one open position per symbol.
+- Has some “paper mode” logic that prevents sending real orders but does NOT properly simulate fills.
+- Relies heavily on Kraken TRADING_STATUS for state.
+- Has almost no:
+  - volatility filters,
+  - chop/sideways detection,
+  - volume filters,
+  - performance metrics,
+  - ATR spike handling,
+  - max trades per day,
+  - robust cooldown logic,
+  - crash/restart safety.
+
+You must keep what is GOOD (risk discipline, brackets, 5m candles, etc.), but FIX and UPGRADE everything else.
+
+==================================================
+SECTION 1 — DATA & TIMEFRAME (5-MINUTE CANDLE CORE)
+==================================================
+1. Use **5-minute OHLC candles** from Kraken as the PRIMARY timeframe.
+2. All entry/exit decisions must be based on **CLOSED 5m candles**, never intrabar prices.
+3. Replace any “check every 60 seconds” logic with a clean 5-minute cycle:
+   - On each NEW 5m candle close:
+     - fetch the latest batch of 5m candles,
+     - update indicators (SMA, EMA, RSI, ATR, volume, etc.),
+     - evaluate entry/exit conditions,
+     - decide whether to act.
+4. Make sure API usage respects Kraken rate limits.
+
+==================================================
+SECTION 2 — STRATEGY UPGRADE (BETTER ENTRY / EXIT LOGIC)
+==================================================
+Transform Zyn from a raw SMA20 cross bot into a more robust, multi-signal strategy while still being simple and explainable.
+
+Implement:
+
+1) PRIMARY ENTRY SIGNALS (5M)
+- Keep SMA20, but add:
+  - A higher timeframe or “trend filter” (e.g. SMA50 or SMA100 on 5m, or SMA on a higher timeframe like 15m/1h).
+  - An RSI filter (e.g., RSI(14) to avoid buying overbought or selling oversold in extreme conditions).
+
+Example for LONG (you can adjust values, but keep it clear and documented):
+- Price closes above SMA20 on 5m.
+- SMA20 is above SMA50 (trend up) OR higher timeframe confirms uptrend.
+- RSI(14) on 5m is not extremely overbought (e.g., RSI < 70).
+- Volatility & market filters pass (see Section 3).
+
+Example for SHORT:
+- Price closes below SMA20.
+- SMA20 is below SMA50 (trend down) OR higher timeframe confirms downtrend.
+- RSI(14) is not extremely oversold (e.g., RSI > 30).
+- Volatility & market filters pass.
+
+2) NO MID-CANDLE EVALUATION
+- Do NOT re-check signals mid-candle.
+- Signals are only evaluated once per 5m candle close.
+
+3) CHOP/NO-TRADE ZONE DETECTION
+Implement a simple sideways/choppy filter, for example:
+- If price stays within a tight range compared to ATR for N candles.
+- Or SMA20’s slope is near flat (very small change over last N candles).
+- Or optional: ADX below a threshold.
+If chop is detected:
+- **Do not open new trades**.
+
+All of these rules must live in clean functions like:
+- `should_open_long()`
+- `should_open_short()`
+- `is_trending_market()`
+- `is_choppy_market()`
+
+Return True/False with deterministic rules.
+
+==================================================
+SECTION 3 — VOLATILITY & MARKET FILTERS
+==================================================
+Add robust filters so Zyn only trades when the market conditions are suitable:
+
+1. VOLATILITY FILTER:
+- Define a minimum ATR(14) threshold relative to price (e.g. ATR / price > some small %).
+- If volatility is too low → no trade.
+
+2. VOLUME FILTER (if available from Kraken pair data):
+- Define a minimum volume threshold using recent candles.
+- If volume is dead → no trade.
+
+3. ATR SPIKE HANDLING:
+- If ATR suddenly spikes beyond a certain multiple of its recent average, either:
+  - widen stops in a controlled way, OR
+  - simply **skip new entries** on that candle to avoid crazy moves.
+Document clearly which choice you implement and why.
+
+==================================================
+SECTION 4 — RISK MANAGEMENT & POSITION SIZING
+==================================================
+Keep the risk-based logic but centralize and harden it:
+
+1. Risk per trade:
+- Keep 0.25% of equity per trade as default, but make it configurable: `risk_per_trade = 0.0025`.
+
+2. Formula:
+- `position_size = (equity * risk_per_trade) / stop_loss_distance`.
+
+3. Global limits:
+- Max active risk at once (e.g., no more than 1–2% of equity across all open trades).
+- Max trades per day (configurable).
+- Cooldown per symbol measured in **5-minute candles**, not seconds:
+  - e.g., no more than one new trade per symbol every N 5m candles.
+
+4. Daily kill-switch:
+- Keep and expose the settings in a config block:
+  - daily_max_loss
+  - behavior when triggered = no more trades for the rest of the day.
+
+==================================================
+SECTION 5 — STOP-LOSS & TAKE-PROFIT (BRACKET ENFORCEMENT)
+==================================================
+1. Keep the core logic: SL = k1 × ATR(14), TP = k2 × ATR(14), with fallback to %.
+2. Make sure the R:R is always >= some minimum (e.g. 1.5R or 2R).
+3. Enforce:
+   - For LONG:
+     - SL < entry, TP > entry.
+   - For SHORT:
+     - SL > entry, TP < entry.
+4. If any of these are not true → DO NOT place trade.
+5. Make sure SL/TP are always attached as a bracket (or OCO-equivalent) whenever possible.
+
+==================================================
+SECTION 6 — PAPER MODE VS LIVE MODE (FULL IMPLEMENTATION)
+==================================================
+Paper mode is currently incomplete. Make it real:
+
+1. Introduce a clear config flag:
+   - `mode = "paper"` or `mode = "live"`.
+
+2. When mode == "paper":
+   - Do
