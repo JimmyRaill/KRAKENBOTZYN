@@ -443,10 +443,15 @@ def _execute_trading_command(command: str) -> str:
     """
     try:
         from commands import handle, HELP
-        from exchange_manager import get_mode_str, is_paper_mode
+        from exchange_manager import get_mode_str, is_paper_mode, get_exchange
         
         mode = get_mode_str()
         cmd_lower = command.lower().strip()
+        
+        # DIAGNOSTIC: Log exchange instance type
+        ex = get_exchange()
+        ex_type = type(ex).__name__
+        print(f"[ZYN-EXCHANGE-DEBUG] Mode={mode} | Exchange type: {ex_type}")
         
         # Log the exact command being attempted
         print(f"[ZYN-COMMAND-ATTEMPT] Mode={mode} | Raw command: '{command}'")

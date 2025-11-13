@@ -282,6 +282,7 @@ def handle(text: str) -> str:
             return f"[STOP-BUY-ERR] {e}"
 
     # bracket <symbol> <amount> tp <px> sl <px>
+    # FIXED: Now creates entry order + TP + SL (complete bracket)
     m = re.fullmatch(
         r"(?i)bracket\s+([A-Za-z0-9:/\-\._]+)\s+([0-9]+(?:\.[0-9]+)?)\s+tp\s+([0-9]+(?:\.[0-9]+)?)\s+sl\s+([0-9]+(?:\.[0-9]+)?)",
         s,
@@ -299,11 +300,36 @@ def handle(text: str) -> str:
             sl_p  = _safe_float(ex.price_to_precision(sym, sl), None)
             if (amt_p is None or amt_p <= 0) or (tp_p is None or tp_p <= 0) or (sl_p is None or sl_p <= 0):
                 return "[BRACKET-ERR] precision produced zero"
-            tp_order = ex.create_limit_sell_order(sym, float(amt_p), float(tp_p))
-            sl_order = _create_stop_market(ex, sym, "sell", float(amt_p), float(sl_p))
+            
+            # CRITICAL FIX: Create market BUY entry order first
+            # TP > current price means LONG position (buy entry)
+            current_price = _last_price(ex, sym)
+            
+            # Determine direction from TP/SL relative to current price
+            is_long = tp_p > current_price
+            
+            if is_long:
+                # LONG: Market buy entry + limit sell TP + stop sell SL
+                entry_order = ex.create_market_buy_order(sym, float(amt_p))
+                entry_id = str(entry_order.get("id") or entry_order.get("orderId") or "<no-id>")
+                tp_order = ex.create_limit_sell_order(sym, float(amt_p), float(tp_p))
+                sl_order = _create_stop_market(ex, sym, "sell", float(amt_p), float(sl_p))
+                side_str = "LONG"
+            else:
+                # SHORT: Market sell entry + limit buy TP + stop buy SL  
+                entry_order = ex.create_market_sell_order(sym, float(amt_p))
+                entry_id = str(entry_order.get("id") or entry_order.get("orderId") or "<no-id>")
+                tp_order = ex.create_limit_buy_order(sym, float(amt_p), float(tp_p))
+                sl_order = _create_stop_market(ex, sym, "buy", float(amt_p), float(sl_p))
+                side_str = "SHORT"
+            
             tid = str(tp_order.get("id") or tp_order.get("orderId") or "<no-id>")
             sid = str(sl_order.get("id") or sl_order.get("orderId") or "<no-id>")
-            return f"BRACKET OK {sym} amt={amt_p} TP@{tp_p} id={tid} | SL@stop {sl_p} id={sid}"
+            
+            return (f"BRACKET OK {side_str} {sym} amt={amt_p}\n"
+                   f"  Entry: {side_str} @ market, id={entry_id}\n"
+                   f"  TP: {tp_p} id={tid}\n"
+                   f"  SL: {sl_p} id={sid}")
         except Exception as e:
             return f"[BRACKET-ERR] {e}"
 
@@ -312,6 +338,11 @@ def handle(text: str) -> str:
     if m:
         f = m.group(1)
         try:
+            # DIAGNOSTIC: Log exchange instance type
+            ex_type = type(ex).__name__
+            mode = get_mode_str()
+            print(f"[CMD-OPEN-DEBUG] Mode={mode} | Exchange type: {ex_type}")
+            
             sym = _norm_sym(f) if f else None
             return _open_orders_text(ex, sym)
         except Exception as e:
