@@ -325,7 +325,7 @@ def handle(text: str) -> str:
                 if sl_p <= current_price + min_sep:
                     return f"[BRACKET-ERR] SHORT SL must be above market (SL=${sl_p:.2f}, market=${current_price:.2f})"
             
-            # Execute bracket with rollback protection
+            # Execute bracket with post-fill validation and rollback protection
             entry_order = None
             tp_order = None
             sl_order = None
@@ -337,14 +337,44 @@ def handle(text: str) -> str:
                     entry_id = str(entry_order.get("id") or entry_order.get("orderId") or "<no-id>")
                     side_str = "LONG"
                     
-                    # Create protective orders
+                    # Get actual fill price and size - use fetch_order for authoritative data
+                    fill_price = _safe_float(entry_order.get("price") or entry_order.get("average"), None)
+                    fill_size = _safe_float(entry_order.get("filled") or entry_order.get("amount"), None)
+                    
+                    # Fallback: fetch_order if immediate response lacks fill data
+                    if not fill_price or not fill_size:
+                        try:
+                            fetched = ex.fetch_order(entry_id, sym)
+                            fill_price = _safe_float(fetched.get("price") or fetched.get("average"), None)
+                            fill_size = _safe_float(fetched.get("filled") or fetched.get("amount"), amt_p)
+                        except:
+                            # Could not get fill data - close position defensively
+                            print(f"[BRACKET-ABORT] Could not verify fill price/size - closing position")
+                            ex.create_market_sell_order(sym, float(amt_p))
+                            return f"[BRACKET-ERR] Entry executed but could not verify fill data - position closed for safety"
+                    
+                    # Use fill_size or fall back to requested amount
+                    fill_size = fill_size or amt_p
+                    
+                    # POST-FILL VALIDATION: Ensure TP/SL still valid after fill
+                    if fill_price:
+                        if tp_p <= fill_price:
+                            print(f"[BRACKET-ABORT] LONG TP ${tp_p} below/at fill ${fill_price} - closing position")
+                            ex.create_market_sell_order(sym, float(fill_size))
+                            return f"[BRACKET-ERR] Entry filled at ${fill_price:.2f} but TP ${tp_p:.2f} is not above - position closed for safety (slippage detected)"
+                        if sl_p >= fill_price:
+                            print(f"[BRACKET-ABORT] LONG SL ${sl_p} above/at fill ${fill_price} - closing position")
+                            ex.create_market_sell_order(sym, float(fill_size))
+                            return f"[BRACKET-ERR] Entry filled at ${fill_price:.2f} but SL ${sl_p:.2f} is not below - position closed for safety (slippage detected)"
+                    
+                    # Create protective orders using ACTUAL fill size
                     try:
-                        tp_order = ex.create_limit_sell_order(sym, float(amt_p), float(tp_p))
-                        sl_order = _create_stop_market(ex, sym, "sell", float(amt_p), float(sl_p))
+                        tp_order = ex.create_limit_sell_order(sym, float(fill_size), float(tp_p))
+                        sl_order = _create_stop_market(ex, sym, "sell", float(fill_size), float(sl_p))
                     except Exception as protect_err:
                         # ROLLBACK: Close position if protective orders fail
                         print(f"[BRACKET-ROLLBACK] TP/SL creation failed, closing position: {protect_err}")
-                        ex.create_market_sell_order(sym, float(amt_p))
+                        ex.create_market_sell_order(sym, float(fill_size))
                         return f"[BRACKET-ERR] Entry executed but TP/SL failed - position closed for safety: {protect_err}"
                 else:
                     # SHORT: Market sell entry
@@ -352,14 +382,44 @@ def handle(text: str) -> str:
                     entry_id = str(entry_order.get("id") or entry_order.get("orderId") or "<no-id>")
                     side_str = "SHORT"
                     
-                    # Create protective orders
+                    # Get actual fill price and size - use fetch_order for authoritative data
+                    fill_price = _safe_float(entry_order.get("price") or entry_order.get("average"), None)
+                    fill_size = _safe_float(entry_order.get("filled") or entry_order.get("amount"), None)
+                    
+                    # Fallback: fetch_order if immediate response lacks fill data
+                    if not fill_price or not fill_size:
+                        try:
+                            fetched = ex.fetch_order(entry_id, sym)
+                            fill_price = _safe_float(fetched.get("price") or fetched.get("average"), None)
+                            fill_size = _safe_float(fetched.get("filled") or fetched.get("amount"), amt_p)
+                        except:
+                            # Could not get fill data - close position defensively
+                            print(f"[BRACKET-ABORT] Could not verify fill price/size - closing position")
+                            ex.create_market_buy_order(sym, float(amt_p))
+                            return f"[BRACKET-ERR] Entry executed but could not verify fill data - position closed for safety"
+                    
+                    # Use fill_size or fall back to requested amount
+                    fill_size = fill_size or amt_p
+                    
+                    # POST-FILL VALIDATION: Ensure TP/SL still valid after fill
+                    if fill_price:
+                        if tp_p >= fill_price:
+                            print(f"[BRACKET-ABORT] SHORT TP ${tp_p} above/at fill ${fill_price} - closing position")
+                            ex.create_market_buy_order(sym, float(fill_size))
+                            return f"[BRACKET-ERR] Entry filled at ${fill_price:.2f} but TP ${tp_p:.2f} is not below - position closed for safety (slippage detected)"
+                        if sl_p <= fill_price:
+                            print(f"[BRACKET-ABORT] SHORT SL ${sl_p} below/at fill ${fill_price} - closing position")
+                            ex.create_market_buy_order(sym, float(fill_size))
+                            return f"[BRACKET-ERR] Entry filled at ${fill_price:.2f} but SL ${sl_p:.2f} is not above - position closed for safety (slippage detected)"
+                    
+                    # Create protective orders using ACTUAL fill size
                     try:
-                        tp_order = ex.create_limit_buy_order(sym, float(amt_p), float(tp_p))
-                        sl_order = _create_stop_market(ex, sym, "buy", float(amt_p), float(sl_p))
+                        tp_order = ex.create_limit_buy_order(sym, float(fill_size), float(tp_p))
+                        sl_order = _create_stop_market(ex, sym, "buy", float(fill_size), float(sl_p))
                     except Exception as protect_err:
                         # ROLLBACK: Close position if protective orders fail
                         print(f"[BRACKET-ROLLBACK] TP/SL creation failed, closing position: {protect_err}")
-                        ex.create_market_buy_order(sym, float(amt_p))
+                        ex.create_market_buy_order(sym, float(fill_size))
                         return f"[BRACKET-ERR] Entry executed but TP/SL failed - position closed for safety: {protect_err}"
                 
                 tid = str(tp_order.get("id") or tp_order.get("orderId") or "<no-id>")
