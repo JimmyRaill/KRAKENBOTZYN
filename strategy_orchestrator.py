@@ -309,32 +309,68 @@ class StrategyOrchestrator:
                 symbol=symbol
             )
         
-        # Long signal: price at lower band + RSI oversold
-        if bb_lower and price <= bb_lower and rsi and rsi < 35:
-            # Confidence bonus if HTF aligned
-            confidence = 0.6
-            if htf.htf_aligned and htf.dominant_trend == 'up':
-                confidence = 0.7
-            
-            return TradeSignal(
-                action='long',
-                regime=regime_result.regime,
-                confidence=confidence,
-                reason=f"RANGE mean reversion: price={price:.2f} at BB_lower={bb_lower:.2f}, RSI={rsi:.1f}, HTF={htf.dominant_trend}",
-                entry_price=price,
-                stop_loss=bb_lower * 0.995,
-                take_profit=bb_middle,
-                position_size_multiplier=confidence,
-                htf_aligned=htf.htf_aligned,
-                dominant_trend=htf.dominant_trend,
-                symbol=symbol
-            )
+        # AGGRESSIVE RANGE TRADING: Enter when price APPROACHES lower band
+        # Calculate band position: 0% = lower, 50% = middle, 100% = upper
+        band_range = (bb_upper - bb_lower) if (bb_upper and bb_lower) else 0
+        price_position_pct = ((price - bb_lower) / band_range) * 100 if (band_range > 0 and bb_lower) else 50
         
+        # Long signal: price in lower 40% of band (was: only at exact lower band)
+        # This allows entries when moving toward lower band, not just at the edge
+        if price_position_pct <= 40:  # In lower 40% of range
+            # Check RSI (relaxed from 35 to 45 for more opportunities)
+            if rsi and rsi < 45:
+                # Confidence based on how close to lower band
+                base_confidence = 0.5
+                if price_position_pct <= 20:  # Very close to lower band
+                    base_confidence = 0.65
+                if bb_lower and price <= bb_lower:  # At or below lower band
+                    base_confidence = 0.75
+                
+                # HTF bonus
+                confidence = base_confidence
+                if htf.htf_aligned and htf.dominant_trend == 'up':
+                    confidence = min(0.85, base_confidence + 0.15)
+                
+                return TradeSignal(
+                    action='long',
+                    regime=regime_result.regime,
+                    confidence=confidence,
+                    reason=f"RANGE entry: price at {price_position_pct:.0f}% of band (price={price:.2f}, BB=[{bb_lower:.2f}, {bb_upper:.2f}]), RSI={rsi:.1f}",
+                    entry_price=price,
+                    stop_loss=(bb_lower * 0.995) if bb_lower else (price * 0.98),
+                    take_profit=bb_middle if bb_middle else (price * 1.02),
+                    position_size_multiplier=confidence,
+                    htf_aligned=htf.htf_aligned,
+                    dominant_trend=htf.dominant_trend,
+                    symbol=symbol
+                )
+        
+        # Approaching middle band from below (momentum play)
+        elif 40 < price_position_pct <= 60 and rsi and rsi < 50:
+            # Only if HTF is bullish (safer mid-band entries)
+            if htf.dominant_trend == 'up':
+                confidence = 0.45  # Lower confidence for mid-band entries
+                
+                return TradeSignal(
+                    action='long',
+                    regime=regime_result.regime,
+                    confidence=confidence,
+                    reason=f"RANGE momentum: mid-band entry with HTF support (price at {price_position_pct:.0f}%, RSI={rsi:.1f})",
+                    entry_price=price,
+                    stop_loss=(bb_lower * 0.995) if bb_lower else (price * 0.98),
+                    take_profit=(bb_middle * 1.01) if bb_middle else (price * 1.02),
+                    position_size_multiplier=confidence,
+                    htf_aligned=htf.htf_aligned,
+                    dominant_trend=htf.dominant_trend,
+                    symbol=symbol
+                )
+        
+        # No signal - price too high in range or RSI not favorable
         return TradeSignal(
             action='hold',
             regime=regime_result.regime,
             confidence=0.0,
-            reason=f"RANGE but price mid-band (price={price:.2f}, BB=[{bb_lower:.2f}, {bb_upper:.2f}])",
+            reason=f"RANGE but no setup (price at {price_position_pct:.0f}% of band, RSI={rsi:.1f if rsi else 'N/A'})",
             entry_price=price,
             htf_aligned=htf.htf_aligned,
             dominant_trend=htf.dominant_trend,
