@@ -1,0 +1,198 @@
+You are an expert quantitative trading engineer working on my existing “Zyn” trading bot in this Replit.
+
+Your job now is to do a **targeted cleanup + correctness pass** on the current codebase.
+
+You MUST implement or fix ALL of the following. If something is not implemented, REMOVE any claim that it exists.
+
+========================================
+1) REMOVE FAKE / UNIMPLEMENTED FEATURES
+========================================
+Scan the entire codebase and remove or rewrite any logic or responses where Zyn claims to:
+
+- Use an “economic calendar” or detect “major news events.”
+- Detect “market manipulation” or “manipulation signs.”
+- Use any data source that is NOT actually queried via code.
+
+If you can’t fully implement those features right now, then Zyn must NOT mention them or rely on them anywhere (code, logs, or explanations).
+
+Zyn should ONLY describe and use:
+- indicators that are actually calculated (SMA/EMA/RSI/ATR/ADX/Bollinger/etc.),
+- volume or OHLC data actually coming from Kraken or internal state,
+- regime/strategy/risk logic that is truly implemented.
+
+No vague or imaginary capabilities.
+
+========================================
+2) FIX MAX ACTIVE RISK CALCULATION
+========================================
+Right now, Zyn’s “max_active_risk” is wrong or underspecified.
+
+You must:
+
+- Implement a real calculation of total active risk across all open positions.
+  - For each open trade:
+    - risk_for_trade = position_size * stop_loss_distance (in price units), converted to account currency if needed.
+  - max_active_risk = SUM of risk_for_trade for all open trades.
+
+- Enforce a hard cap:
+  - If max_active_risk after adding a new trade would exceed a configured limit
+    (e.g., max_active_risk_pct * equity, like 0.02 = 2%),
+    then Zyn must NOT open the new position.
+
+Put the following into config:
+
+- risk_per_trade
+- max_active_risk_pct
+
+And make sure these are applied properly.
+
+========================================
+3) PAPER-MODE SL/TP ORDER OF EVENTS (NO CHEATING)
+========================================
+In paper mode, you MUST handle the “SL vs TP in the same candle” scenario conservatively and deterministically.
+
+Implement the following:
+
+- Given a 5m candle with:
+  - open, high, low, close
+  - current SL and TP
+
+For a LONG:
+- If low <= SL before high >= TP (based on candle extremities), assume SL hits first.
+- If high >= TP and low > SL, TP hits.
+- If both SL and TP are breached in the same candle, use a conservative rule:
+  - PRIORITIZE the one that would realistically trigger first given:
+    - If open is between SL and TP and low < SL and high > TP:
+      - Use a fixed rule like: SL-first OR TP-first, but it must be consistent and documented.
+For a SHORT:
+- Mirror the logic.
+
+Important:
+- DO NOT always favor TP like “if both are hit, TP wins.”
+- The behavior MUST be conservative, not optimistic.
+
+Add a clearly commented function to handle this, e.g.:
+- `simulate_fill_for_candle(position, candle)`
+
+Use this for all paper-mode SL/TP resolution.
+
+========================================
+4) ATR SPIKE LOGIC MUST BE NUMERICALLY DEFINED
+========================================
+Right now Zyn mentions “3x ATR spike” but doesn’t clearly define it.
+
+You must:
+
+- Compute a recent baseline ATR, e.g. ATR(14) and also an average ATR over a longer window, like ATR(50) or SMA of ATR(14) over 50 candles.
+- Define:
+
+  atr_spike_ratio = current_ATR / baseline_ATR
+
+- If atr_spike_ratio > atr_spike_threshold (e.g. 3.0 from config), then:
+  - Zyn must SKIP opening new trades on that candle (no new entries).
+  - Existing trades are managed normally via SL/TP.
+
+Add in config:
+- atr_spike_threshold (e.g. 3.0)
+- baseline_atr_period or similar.
+
+========================================
+5) PAPER VS LIVE MODE — SEPARATE STATS, CONSISTENT LIMITS
+========================================
+Clean up the confusion around paper/live behavior.
+
+Implement this clearly:
+
+- Trade log entries MUST have a `mode` field: "paper" or "live".
+- Performance metrics MUST be computable:
+  - overall,
+  - for mode = "paper" only,
+  - for mode = "live" only.
+
+Do NOT reset or erase stats when switching modes.
+
+For daily limits and cooldowns:
+- Use the same enforcement logic regardless of mode (so behavior is realistic).
+- When switching from paper → live:
+  - Do NOT reset trade counts or cooldowns in a way that allows unrealistically more trades.
+  - Use a clear rule:
+    - Either:
+      - Continue using the same cooldowns/trade limits across modes, OR
+      - Keep separate counters per mode, but then ensure live-mode limits are not bypassed because of paper trading.
+
+Pick ONE consistent design and implement it fully. Document it in comments.
+
+========================================
+6) PERFORMANCE METRICS MUST BE ACTUAL, NOT MADE-UP
+========================================
+Right now Zyn talks about expected win rate and R-values like they are measured, but they aren’t.
+
+You must:
+
+- Compute from the trade log (for closed trades):
+  - win rate = wins / total_trades,
+  - average R multiple = average of (PnL / initial_risk),
+  - profit factor = gross_profit / gross_loss,
+  - max drawdown based on equity curve over time.
+
+- Implement a function like:
+
+  `print_performance_summary(mode_filter=None, strategy_filter=None)`
+
+  which:
+  - if mode_filter is "paper" or "live", uses only those trades,
+  - if strategy_filter is TREND / BREAKOUT / RANGE, uses only those trades,
+  - otherwise uses all.
+
+- Remove any hard-coded “expected win rate” or “expected R” text from Zyn.
+  - If he is asked about his stats, he MUST respond based on the actual calculated metrics from the log, not made-up expectations.
+
+========================================
+7) REGIME & STRATEGY PRIORITY RULES
+========================================
+Currently, some answers implied that SMA20 cross or other signals could override filters.
+
+You must enforce:
+
+- Regime and global filters ALWAYS have higher priority than any entry signal.
+- If regime == NO_TRADE, or filters (volatility/volume/ATR spike/kill-switch) fail:
+  - NO strategy may open a trade.
+- If two strategies give conflicting signals on the same candle:
+  - Zyn must STAND ASIDE and not trade.
+
+Make sure this is reflected in the actual code path from:
+- regime detection → strategy selection → entry decision.
+
+========================================
+8) USER-FACING EXPLANATIONS MUST MATCH REALITY
+========================================
+Finally:
+
+- Update any user-facing explanation functions or chat responses so that:
+  - Zyn NEVER mentions:
+    - news/calendar,
+    - manipulation,
+    - unimplemented features.
+  - Zyn only describes:
+    - real regimes (TREND_UP, TREND_DOWN, RANGE, BREAKOUT_EXPANSION, NO_TRADE),
+    - actual strategies,
+    - real filters (ATR/volume/ADX/etc.),
+    - real performance stats as computed from logs.
+
+NO vague language, NO made-up behaviors.
+
+========================================
+FINAL STEP
+========================================
+When you’re done, give a short summary of:
+
+- Where max_active_risk logic lives.
+- Where the paper-mode fill simulation (SL/TP vs candle) is implemented.
+- Where ATR spike detection and thresholds are configured.
+- Where paper/live mode and performance summary functions are located.
+- How to call a function to print real performance stats for:
+  - all trades,
+  - only paper trades,
+  - only live trades.
+
+All of the above must be fully implemented, not theoretical.
