@@ -1,0 +1,194 @@
+You are an expert engineer working on my Kraken trading bot project. Your job is to make the entire bot/app/AI run correctly, in sync, and consistently — no fake executions, no desync between components, no half-wired paper mode.
+
+You must treat this as a full-system audit and repair.
+
+⸻
+
+0. High-level requirements
+
+My bot must:
+	1.	Support two modes:
+	•	LIVE – real Kraken orders, real balances.
+	•	PAPER – fully simulated, with persistent paper orders/positions.
+	2.	Support two behaviors:
+	•	Strategy-driven: scheduler evaluates market and auto-trades when conditions are met.
+	•	Manual commands: when I explicitly tell it to trade, it must execute (respecting risk and mode) and correctly track orders.
+	3.	Keep all subsystems in sync:
+	•	LLM layer / chat commands
+	•	Command parser (commands.handle)
+	•	Trading engine (execute_trading_command)
+	•	Exchange wrappers (live + paper)
+	•	Ledger / state (PaperLedger, Kraken API)
+	•	“Show open orders/positions” queries
+	4.	Never “pretend” to trade. If it says it executed, it must be visible in the appropriate open orders / positions query for that mode.
+
+⸻
+
+1. Unify exchange handling & modes
+
+You already have:
+	•	execute_trading_command() in llm_agent.py (lines 437–524)
+	•	commands.handle() and "open" handler in commands.py
+	•	PaperLedger + get_paper_ledger() in account_state.py
+	•	PaperExchangeWrapper in paper_exchange_wrapper.py
+	•	fetch_open_orders() in paper_exchange_wrapper.py
+
+You must ensure:
+	1.	There is a single, authoritative way to construct and access the current exchange client (ex) for the active mode (LIVE or PAPER).
+	•	In LIVE mode: ex must be the live Kraken exchange wrapper.
+	•	In PAPER mode: ex must be PaperExchangeWrapper, and only that.
+	2.	Both:
+	•	execute_trading_command()
+	•	commands.handle() (for "open", "positions", etc.)
+MUST use the same ex instance for that request. No separate clients pointing to different ledgers.
+	3.	Log the exchange type everywhere:
+	•	In execute_trading_command() log: f"[EXEC] mode={mode}, ex={type(ex).__name__}"
+	•	In _open_orders_text() / "open" handler log: f"[OPEN] mode={mode}, ex={type(ex).__name__}"
+
+The logs must make it impossible for execute_trading_command() to be using live while "open" is using paper, or vice-versa.
+
+⸻
+
+2. Fix paper trading so it’s real, not cosmetic
+
+Right now, manual paper trades are “executed” in text but do not appear in “open orders.”
+
+You already have:
+	•	PaperLedger (with load, save, append_order_atomic)
+	•	get_paper_ledger()
+	•	PaperExchangeWrapper using ledger.append_order_atomic(order_data)
+	•	PaperExchangeWrapper.fetch_open_orders() loading the ledger and filtering ledger.orders
+
+You must guarantee:
+	1.	All paper trades — whether from scheduler or manual commands — go through PaperExchangeWrapper and thus call ledger.append_order_atomic(order_data).
+	2.	When I run a manual paper command like:
+Paper buy 0.04 ZEC/USD market. SL 1% below. TP 2% above. Execute.
+the following must happen in a single process:
+	•	execute_trading_command() routes to commands.handle()
+	•	commands.handle() routes to the correct “buy”/order logic
+	•	That logic calls ex.create_order(...) where ex is PaperExchangeWrapper
+	•	PaperExchangeWrapper calls ledger.append_order_atomic(order_data)
+	•	The order ends up in ledger.orders with status='open'
+	3.	When I immediately call:
+	•	Show open positions and open orders.
+or
+	•	Any open paper orders?
+the "open" handler must:
+	•	Use the same ex (PaperExchangeWrapper in PAPER mode)
+	•	Call ex.fetch_open_orders()
+	•	Which calls ledger.load() and returns orders with status=='open'
+	•	Result: the just-created paper order must appear.
+	4.	If the environment is stateless between requests, PaperLedger must persist via disk (JSON) or DB and be correctly loaded each time. Confirm that:
+	•	PaperLedger.load() is called before reading.
+	•	PaperLedger.save()/append_order_atomic() correctly write to paper_ledger.json.
+
+⸻
+
+3. Make LIVE mode and PAPER mode behavior explicit and safe
+	1.	In LIVE mode:
+	•	All orders must go to the real Kraken exchange wrapper.
+	•	"open" and "positions" must call Kraken to fetch real open orders/positions.
+	•	No usage of PaperLedger here.
+	2.	In PAPER mode:
+	•	No call to Kraken order endpoints.
+	•	All order creation and cancellations go through PaperExchangeWrapper + PaperLedger.
+	•	"open" and "positions" must use fetch_open_orders() / ledger state.
+	3.	Mode must always be clearly visible:
+	•	Add a helper that returns a string like "LIVE" or "PAPER".
+	•	Include this in all user-facing responses where orders or positions are shown:
+	•	Example: "Mode: PAPER. Open orders: ..."
+
+⸻
+
+4. Ensure command parsing and execution are robust
+	1.	execute_trading_command() must:
+	•	Safely parse commands and reject invalid syntax with clear errors.
+	•	Never silently swallow failures — log them and return explicit messages ([EXEC-ERR] ...).
+	•	Respect risk rules (max risk %, min volume, no naked live positions if prohibited).
+	2.	For typical commands like:
+	•	Paper buy 0.04 ZEC/USD market. SL 1% below. TP 2% above. Execute.
+	•	The path must be:
+	•	Parse command → build normalized internal command → call commands.handle() or a dedicated trading function → call ex.create_order(...)
+	3.	If anything fails (e.g., volume too low, missing price, bad symbol):
+	•	Return a clear structured error string.
+	•	Do not claim “order executed” if it was rejected.
+
+⸻
+
+5. Scheduler, regime logic, indicators
+
+Do not change the trading strategy / logic unless absolutely necessary.
+
+Just ensure:
+	1.	Scheduler runs on its fixed interval and:
+	•	Uses the correct exchange for the current mode.
+	•	Can place automatic trades in PAPER mode safely.
+	•	Logs regime, RSI, ATR, and decision (LONG, SHORT, NO_TRADE, etc.).
+	2.	Indicator calculations (RSI, ATR, Bollinger, etc.):
+	•	Must not crash due to formatting/string issues.
+	•	Missing data should be handled gracefully (e.g., "N/A").
+
+⸻
+
+6. System-level tests you MUST run
+
+You must implement & run at least the following tests in code (not just mentally):
+
+Test A: Manual PAPER trade → open orders
+
+In a single process / test script:
+	1.	Force mode = PAPER.
+	2.	Instantiate the same ex the app uses (PaperExchangeWrapper).
+	3.	Call the internal equivalent of execute_trading_command() with a paper buy on ZEC (min valid size, market, SL/TP).
+	4.	Immediately call ex.fetch_open_orders().
+	5.	Assert that the returned list has at least 1 order and it matches the symbol/size.
+
+Test B: Manual LIVE trade path wiring (no real API needed)
+	1.	In LIVE mode, mock or stub the Kraken client so you don’t hit real API.
+	2.	Ensure that execute_trading_command() calls the live wrapper, not PaperExchangeWrapper.
+	3.	Ensure "open" calls the same live wrapper.
+
+Test C: LLM → command → exchange integration
+
+Simulate a user message string as the LLM input:
+	•	“Paper buy 0.04 ZEC/USD market. SL 1% below. TP 2% above. Execute.”
+
+Then:
+	•	Confirm the codepath hits execute_trading_command()
+	•	Confirm the exchange type is PaperExchangeWrapper
+	•	Confirm an order is persisted and shows up in "open".
+
+⸻
+
+7. Logging & diagnostics
+
+Add or verify:
+	1.	Execution logs:
+	•	Every manual and strategy trade attempt logs:
+	•	mode, symbol, side, size, entry, SL, TP, exchange type, and success/failure reason.
+	2.	Open orders logs:
+	•	"open" handler logs:
+	•	mode, exchange type, number of open orders returned.
+	3.	Add a diagnostic command I can call from the chat, e.g.:
+	•	"run full system diagnostic"
+This should:
+	•	Report current mode, exchange class being used.
+	•	Run a small paper test trade (in PAPER mode) and immediately show whether it appears in open orders.
+	•	Report any failure clearly.
+
+⸻
+
+8. Deliverables
+
+When you are done, you must:
+	1.	Ensure the code runs without syntax/runtime errors.
+	2.	Ensure that in PAPER mode:
+	•	A manual paper trade is guaranteed to appear in open orders/positions right after execution.
+	3.	Ensure that in LIVE mode:
+	•	Manual and "open" commands use the live Kraken wrapper.
+
+Finally, summarize in a short message:
+	•	What you changed (files and main functions).
+	•	How PAPER vs LIVE is now determined and wired.
+	•	How manual commands → exchange → open orders now flow.
+	•	Confirm that you ran and passed the tests described above.
