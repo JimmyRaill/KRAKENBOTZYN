@@ -418,7 +418,6 @@ def _execute_bracket_with_percentages(symbol: str, amount: float, sl_percent: fl
         
         # Parse JSON result, add conversion metadata, re-serialize
         try:
-            import json
             from trade_result_validator import TradeResult
             
             # Parse the JSON result
@@ -725,7 +724,6 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
         # DIAGNOSTIC DUMP - Real-time verification (bypasses LLM)
         if low in ("diagnostic", "diagnostic_dump_now", "dump"):
             from trade_result_validator import get_realtime_trading_status
-            import json
             
             status = get_realtime_trading_status()
             
