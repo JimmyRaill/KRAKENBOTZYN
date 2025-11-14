@@ -414,18 +414,50 @@ def _execute_bracket_with_percentages(symbol: str, amount: float, sl_percent: fl
               f"SL={sl_percent}% → ${sl_price:.2f} | TP={tp_percent}% → ${tp_price:.2f}")
         
         # Execute the bracket command
-        result = _execute_trading_command(bracket_cmd)
+        result_json = _execute_trading_command(bracket_cmd)
         
-        # Enhance result with conversion details (using proper precision)
-        conversion_info = (
-            f"\n📊 Conversion details:\n"
-            f"- Entry price: {ex.price_to_precision(symbol_upper, current_price)}\n"
-            f"- Stop-loss: {sl_price_str} ({sl_percent}% below entry)\n"
-            f"- Take-profit: {tp_price_str} ({tp_percent}% above entry)\n"
-            f"- Amount: {amount_str}"
-        )
-        
-        return result + conversion_info
+        # Parse JSON result, add conversion metadata, re-serialize
+        try:
+            import json
+            from trade_result_validator import TradeResult
+            
+            # Parse the JSON result
+            result_dict = json.loads(result_json)
+            
+            # Add conversion details as structured metadata
+            result_dict['conversion_details'] = {
+                'entry_price': ex.price_to_precision(symbol_upper, current_price),
+                'stop_loss': sl_price_str,
+                'stop_loss_pct': sl_percent,
+                'take_profit': tp_price_str,
+                'take_profit_pct': tp_percent,
+                'amount': amount_str,
+            }
+            
+            # Add human-readable summary to raw_message
+            conversion_summary = (
+                f"\n📊 Conversion details:\n"
+                f"- Entry price: {ex.price_to_precision(symbol_upper, current_price)}\n"
+                f"- Stop-loss: {sl_price_str} ({sl_percent}% below entry)\n"
+                f"- Take-profit: {tp_price_str} ({tp_percent}% above entry)\n"
+                f"- Amount: {amount_str}"
+            )
+            result_dict['raw_message'] = result_dict.get('raw_message', '') + conversion_summary
+            
+            # Return valid JSON
+            return json.dumps(result_dict, indent=2)
+            
+        except (json.JSONDecodeError, KeyError) as e:
+            # Fallback: If JSON parsing fails, just append (old behavior)
+            logger.warning(f"[BRACKET-HELPER] Failed to parse JSON result: {e}")
+            conversion_info = (
+                f"\n📊 Conversion details:\n"
+                f"- Entry price: {ex.price_to_precision(symbol_upper, current_price)}\n"
+                f"- Stop-loss: {sl_price_str} ({sl_percent}% below entry)\n"
+                f"- Take-profit: {tp_price_str} ({tp_percent}% above entry)\n"
+                f"- Amount: {amount_str}"
+            )
+            return result_json + conversion_info
         
     except Exception as e:
         error_msg = f"[BRACKET-AUTO-ERR] {e}"
