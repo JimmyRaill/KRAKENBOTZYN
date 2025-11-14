@@ -440,10 +440,14 @@ def _execute_trading_command(command: str) -> str:
     SAFETY: Blocks naked market orders in live mode - brackets required.
     VALIDATION: Detects invalid command syntax and provides helpful error messages.
     Logs execution for safety and telemetry.
+    
+    Returns:
+        Structured JSON with success/error information (TradeResult format)
     """
     try:
         from commands import handle, HELP
         from exchange_manager import get_mode_str, is_paper_mode, get_exchange
+        from trade_result_validator import TradeResult
         
         mode = get_mode_str()
         cmd_lower = command.lower().strip()
@@ -520,13 +524,29 @@ def _execute_trading_command(command: str) -> str:
                 "I CANNOT execute naked positions - that would violate safety requirements. "
                 "Please wait until your balance increases, or try a different symbol with lower minimums."
             )
-            return enhanced_result
+            result_str = enhanced_result
         
-        return result_str
+        # Convert to structured format
+        trade_result = TradeResult.from_command_result(command, result_str, mode)
+        structured_json = trade_result.to_json()
+        
+        print(f"[ZYN-STRUCTURED-RESULT] Success={trade_result.success} | OrderIDs={trade_result.order_ids}")
+        
+        # Return structured JSON for validator
+        return structured_json
+        
     except Exception as e:
         error_msg = f"[COMMAND-ERR] {e}"
         print(f"[ZYN-COMMAND-EXCEPTION] Command: '{command}' | Error: {e}")
-        return error_msg
+        
+        # Return structured error
+        error_result = TradeResult(
+            success=False,
+            command=command,
+            error=str(e),
+            raw_message=error_msg
+        )
+        return error_result.to_json()
 
 
 # ---------- Paper Trade Self-Test ----------
@@ -670,6 +690,89 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
             _clear_conversation(session_id)
             return "Conversation cleared. Let's start fresh! How can I help you, Jimmy?"
 
+        # DIAGNOSTIC DUMP - Real-time verification (bypasses LLM)
+        if low in ("diagnostic", "diagnostic_dump_now", "dump"):
+            from trade_result_validator import get_realtime_trading_status
+            import json
+            
+            status = get_realtime_trading_status()
+            
+            # Format for human readability
+            diagnostic_report = (
+                "═══════════════════════════════════════════════════════════\n"
+                "🔍 DIAGNOSTIC DUMP - Real-Time Trading Data\n"
+                "═══════════════════════════════════════════════════════════\n\n"
+                f"Mode: {status['mode'].upper()}\n"
+                f"Source: {status['source']} (bypasses 5-min cache)\n"
+                f"Timestamp: {status['timestamp']}\n\n"
+                "─────────────────────────────────────────────────────────────\n"
+                "BALANCES:\n"
+                "─────────────────────────────────────────────────────────────\n"
+            )
+            
+            balances = status.get('balances', {})
+            if balances:
+                for currency, bal in balances.items():
+                    if isinstance(bal, dict):
+                        total = bal.get('total', 0)
+                        usd_value = bal.get('usd_value', 0)
+                        diagnostic_report += f"  {currency}: {total:.8f} (${usd_value:.2f} USD)\n"
+            else:
+                diagnostic_report += "  No balances found\n"
+            
+            diagnostic_report += (
+                f"\nTotal Equity: ${status.get('total_equity_usd', 0):.2f} USD\n\n"
+                "─────────────────────────────────────────────────────────────\n"
+                "OPEN ORDERS:\n"
+                "─────────────────────────────────────────────────────────────\n"
+            )
+            
+            open_orders = status.get('open_orders', [])
+            if open_orders:
+                for order in open_orders:
+                    order_id = order.get('id', 'N/A')
+                    symbol = order.get('symbol', 'N/A')
+                    side = order.get('side', 'N/A')
+                    order_type = order.get('type', 'N/A')
+                    amount = order.get('amount', 0)
+                    price = order.get('price', 0)
+                    diagnostic_report += f"  {order_id} | {symbol} | {side} {order_type} {amount:.6f} @ ${price:.2f}\n"
+            else:
+                diagnostic_report += "  No open orders\n"
+            
+            diagnostic_report += (
+                f"\nOpen Order Count: {status.get('order_count', 0)}\n\n"
+                "─────────────────────────────────────────────────────────────\n"
+                "RECENT TRADES (Last 10):\n"
+                "─────────────────────────────────────────────────────────────\n"
+            )
+            
+            recent_trades = status.get('recent_trades', [])[-10:]
+            if recent_trades:
+                for trade in recent_trades:
+                    trade_id = trade.get('trade_id', trade.get('id', 'N/A'))[:20]
+                    symbol = trade.get('symbol', 'N/A')
+                    side = trade.get('side', 'N/A')
+                    price = trade.get('price', 0)
+                    qty = trade.get('quantity', trade.get('amount', 0))
+                    ts = trade.get('datetime_utc', trade.get('timestamp', 'N/A'))[:19]
+                    diagnostic_report += f"  [{ts}] {trade_id} | {symbol} | {side} {qty:.6f} @ ${price:.2f}\n"
+            else:
+                diagnostic_report += "  No recent trades\n"
+            
+            if status.get('error'):
+                diagnostic_report += f"\n⚠️ ERROR: {status['error']}\n"
+            
+            diagnostic_report += (
+                "\n═══════════════════════════════════════════════════════════\n"
+                "FULL JSON (for debugging):\n"
+                "═══════════════════════════════════════════════════════════\n"
+                f"{json.dumps(status, indent=2, default=str)}\n"
+                "═══════════════════════════════════════════════════════════\n"
+            )
+            
+            return diagnostic_report
+        
         # Memory/admin fast paths
         if low.startswith("remember:"):
             fact = text.split(":", 1)[1].strip()
@@ -1453,6 +1556,32 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
         # CRITICAL FIX: Return the actual message content
         final_message = final_resp.choices[0].message
         assistant_response = final_message.content or "Command executed (no response from assistant)."
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # ANTI-HALLUCINATION VALIDATOR
+        # ═══════════════════════════════════════════════════════════════════════
+        # Prevents LLM from claiming trade execution without actual confirmation
+        from trade_result_validator import LLMResponseValidator
+        
+        # Extract tool results from message history
+        tool_results = [msg for msg in messages if msg.get('role') == 'tool']
+        
+        # Validate LLM response against tool results
+        is_valid, error_msg, corrected_response = LLMResponseValidator.validate_response(
+            assistant_response,
+            tool_results
+        )
+        
+        if not is_valid:
+            # LLM hallucinated trade execution - block and replace with safe response
+            logger.error(f"[LLM-HALLUCINATION] {error_msg}")
+            logger.error(f"[LLM-HALLUCINATION] Original response: {assistant_response[:200]}")
+            logger.error(f"[LLM-HALLUCINATION] Corrected to: {corrected_response[:200]}")
+            
+            # Use corrected response instead
+            assistant_response = corrected_response
+        else:
+            logger.debug(f"[VALIDATOR] ✓ Response validated - no hallucination detected")
         
         # Save to conversation history
         _add_to_conversation(session_id, "user", text)

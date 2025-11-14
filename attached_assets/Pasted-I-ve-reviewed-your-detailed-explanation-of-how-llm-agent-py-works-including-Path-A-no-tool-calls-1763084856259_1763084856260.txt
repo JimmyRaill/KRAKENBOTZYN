@@ -1,0 +1,186 @@
+I’ve reviewed your detailed explanation of how llm_agent.py works, including:
+
+Path A: no tool calls → free-generated response
+
+Path B: after tool calls → free-generated summary based on plain text tool output
+
+TRADING_STATUS coming from a status service that syncs every 5 minutes
+
+Anti-hallucination rules existing only in the system prompt, with zero code enforcement
+
+This has already led to a real bug where the LLM claimed a trade was “successfully executed” with specific size and price, even though that was never confirmed by the trading engine or Kraken.
+
+I want you to hard-refactor llm_agent.py and related pieces so that:
+
+The LLM is physically unable to hallucinate trade executions, orders, balances, or PnL.
+
+Any claim about trades or orders is backed by fresh, real data or clearly marked as “unconfirmed.”
+
+Concretely, implement the following changes:
+
+Add a strict “trade response validator” layer
+
+After the second LLM call (the “final response” phase), before returning assistant_response, run it through a validator that compares:
+
+The LLM response text
+
+The tool results (especially execute_trading_command, trade history, open orders, balances)
+
+The validator should:
+
+Detect if the LLM claims success (e.g. contains phrases like “successfully executed”, “trade executed”, “order placed”, “position opened”, etc.).
+
+Parse the tool results to see whether:
+
+There was a BRACKET OK / OK-type success
+
+There was a -ERR / failed result
+
+No trading command was actually run.
+
+If the LLM claims success but:
+
+The tool result shows failure, or
+
+No tool result indicates success, or
+
+No trade-related tool was called at all
+→ then:
+
+Log a [LLM-HALLUCINATION] error with details
+
+Replace the user-facing response with something like:
+
+“⚠️ Internal consistency error: I cannot confirm that this trade was executed. Please check your open orders and balances directly.”
+
+DO NOT allow the original hallucinated message to go through.
+
+Lock trade-related answers behind tools and fresh data
+
+For any user query that is about:
+
+“Did you place a trade?”
+
+“How many trades/orders today?”
+
+“What did you just do?”
+
+“What’s my balance / open orders / PnL?”
+
+Force the LLM to:
+
+Call the appropriate tool(s) (e.g. get_trade_history, get_open_orders, balances)
+
+Use the tool outputs as the sole source of truth
+
+Do NOT let it answer those questions purely from:
+
+TRADING_STATUS pre-fetched cache
+
+Conversation memory
+
+Assumptions
+
+If tool calls fail (API error, status service down), the LLM must be forced to say:
+
+“I can’t access fresh data right now, so I cannot confirm any executions or balances.”
+and not attempt to “fill in” anything.
+
+Kill the 5-minute status staleness for execution-sensitive queries
+
+For general “what’s going on?” summaries, status_service caching is fine.
+
+But for any question involving:
+
+“Did this order execute?”
+
+“What’s my current open position / order state?”
+
+The LLM must use real-time calls via the exchange wrapper / account_state rather than the 5-minute cached TRADING_STATUS.
+
+Implement a helper like get_realtime_trading_status() that:
+
+Directly fetches open orders and (in paper mode) uses the paper ledger as the source of truth.
+
+Ensure llm_agent uses realtime data for execution-related answers.
+
+Introduce a structured, machine-checked trade result format
+
+Change execute_trading_command (and related tool outputs) so they return structured JSON, not just strings like “BRACKET OK…” or “[BRACKET-ERR] …”.
+
+Example schema:
+
+{
+  "success": true,
+  "command": "bracket",
+  "symbol": "ZEC/USD",
+  "mode": "paper",
+  "order_ids": ["PAPER-91AB5879", "PAPER-C9F04C48"],
+  "error": null,
+  "raw_message": "BRACKET OK LONG …"
+}
+
+
+Wire this JSON into the tool result that the LLM sees. This way:
+
+The validator and other logic can reliably tell if a trade succeeded or failed.
+
+The LLM doesn’t have to infer success from a free-form string.
+
+Forbid “success” language without tool-confirmed success
+
+Add a simple, strict rule in code:
+
+The LLM is only allowed to say things like:
+
+“Successfully executed”
+
+“Order placed”
+
+“Position opened”
+
+if and only if at least one tool result for that turn has success == true in the structured JSON.
+
+If there’s no such success flag, automatically strip or replace that language in the response before it returns to the user.
+
+Add a DEBUG/DIAGNOSTIC mode for me
+
+Add a command like DIAGNOSTIC_DUMP_NOW that:
+
+Skips LLM “storytelling” and instead returns:
+
+Latest realtime balances
+
+Open orders
+
+Last N trades
+
+The last tool results used
+
+The current cached TRADING_STATUS
+
+All in structured form.
+
+This is for me to verify that the behavior is now consistent: engine vs LLM vs status.
+
+Confirm with logs
+
+Add logging around the new validator:
+
+Log every time the validator detects a mismatch between LLM claims and tool results.
+
+Log every time the LLM attempts to claim execution with no success flag.
+
+I should be able to search logs for [LLM-HALLUCINATION] and see if anything slips through.
+
+The goal is simple and non-negotiable:
+
+The LLM must not be able to say “trade executed” or anything similar unless:
+
+A tool actually ran, and
+
+That tool explicitly reported success, and
+
+The data is coming from fresh, real sources (exchange wrapper / paper ledger), not stale cached status.
+
+Implement these changes so that even if the LLM “wants” to hallucinate, the code will block or correct it before any response reaches me.
