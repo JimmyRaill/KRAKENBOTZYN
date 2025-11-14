@@ -1594,7 +1594,20 @@ def ask_llm(user_text: str, session_id: str = "default") -> str:
         from trade_result_validator import LLMResponseValidator
         
         # Extract tool results from message history
-        tool_results = [msg for msg in messages if msg.get('role') == 'tool']
+        # Handle both dict and ChatCompletionMessage objects
+        tool_results = []
+        for msg in messages:
+            # Check if it's a dict or a Pydantic model
+            if isinstance(msg, dict):
+                if msg.get('role') == 'tool':
+                    tool_results.append(msg)
+            elif hasattr(msg, 'role') and msg.role == 'tool':
+                # Convert Pydantic model to dict
+                tool_results.append({
+                    'role': msg.role,
+                    'content': msg.content,
+                    'name': getattr(msg, 'name', None),
+                })
         
         # Validate LLM response against tool results
         is_valid, error_msg, corrected_response = LLMResponseValidator.validate_response(
