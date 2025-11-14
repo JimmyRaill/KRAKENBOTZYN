@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
 
 from dotenv import load_dotenv
+from loguru import logger
 
 # --- .env (next to this file) ---
 ENV_PATH = Path(__file__).with_name(".env")
