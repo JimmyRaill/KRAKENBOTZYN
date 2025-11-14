@@ -32,7 +32,7 @@
       "amount": 0.03,
       "price": 507.66,
       "stopPrice": null,
-      "status": "open",
+      "status": "cancelled",
       "timestamp": 1763070828588,
       "datetime": "2025-11-13T21:53:48"
     },
@@ -45,11 +45,24 @@
       "amount": 0.03,
       "price": 0.0,
       "stopPrice": 492.73,
-      "status": "open",
+      "status": "cancelled",
       "timestamp": 1763070828590,
       "datetime": "2025-11-13T21:53:48"
+    },
+    {
+      "id": "PAPER-EB95C645",
+      "orderId": "PAPER-EB95C645",
+      "symbol": "BTC/USD",
+      "type": "market",
+      "side": "buy",
+      "amount": 0.00010027,
+      "price": 99678.5,
+      "stopPrice": null,
+      "status": "closed",
+      "timestamp": 1763078111822,
+      "datetime": "2025-11-13T23:55:11"
     }
   ],
   "starting_balance_usd": 10000.0,
-  "last_saved": 1763070828.5914912
+  "last_saved": 1763078111.8235142
 }

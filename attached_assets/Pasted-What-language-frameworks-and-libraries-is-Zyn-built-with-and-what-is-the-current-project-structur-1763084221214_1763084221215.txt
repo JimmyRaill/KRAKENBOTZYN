@@ -1,0 +1,49 @@
+What language, frameworks, and libraries is Zyn built with, and what is the current project structure?
+
+What is the main entrypoint for Zyn’s runtime logic, and how is it started in this Replit project?
+
+How does Zyn schedule evaluations and trading decisions over time, and where is that scheduler implemented in the code?
+
+How does Zyn distinguish between PAPER mode and LIVE mode, and where is that mode flag set, stored, and checked in the code?
+
+How does Zyn connect to Kraken’s API, and which files or functions handle authentication and API calls?
+
+How are API keys and sensitive credentials loaded and managed in this project, and are they ever logged or stored in plain text?
+
+What is the full flow for placing a trade, from signal generation to order submission to confirmation, step by step in code terms?
+
+Where is the trade execution confirmation logic implemented, and what conditions must be true before a trade is marked as executed or filled?
+
+How does Zyn fetch balances, open orders, and trade history from Kraken, and which functions or modules handle those operations?
+
+How does Zyn calculate position size, risk per trade, and maximum active risk, and where is that logic defined?
+
+How are stop-loss orders and take-profit orders created, attached, and managed in the code, and what Kraken endpoints are used for that?
+
+How does Zyn decide which symbols or markets to trade, and where is the list of tradable pairs or filters defined?
+
+What indicators and timeframes does Zyn currently use for entries and exits, and where are those indicators calculated in the code?
+
+How does Zyn log its decisions, errors, API responses, and trades, and where are those logs stored or printed?
+
+What error handling and retry logic exist around Kraken API calls, and how does Zyn behave when an API call fails or times out?
+
+Are there any known fallback responses or generic error messages that can be triggered instead of detailed diagnostics, and where are they defined?
+
+How does Zyn keep internal state between evaluations, such as open positions, pending orders, and strategy state, and where is that state stored?
+
+Does Zyn persist any data to disk or a database, and if so, what data is stored and in which files or tables?
+
+What unit tests or integration tests currently exist for Zyn, and what parts of the trading flow do they cover or fail to cover?
+
+How can we run a dry-run or simulation of the full trading pipeline using historical or mocked data inside this project?
+
+What current limitations, edge cases, or “to do” items are already noted in the code or comments for Zyn?
+
+Are there any parts of Zyn that still rely on assumptions or inferred state instead of direct Kraken API confirmation, and where are they located?
+
+How long does a typical evaluation loop take from start to finish, and what are the main performance bottlenecks if any?
+
+What is the safest way to fully disable all LIVE trading behavior in this project while still allowing PAPER mode and diagnostics to run?
+
+If you had to refactor one core module to make Zyn more reliable and easier to debug, which module would it be and why?
