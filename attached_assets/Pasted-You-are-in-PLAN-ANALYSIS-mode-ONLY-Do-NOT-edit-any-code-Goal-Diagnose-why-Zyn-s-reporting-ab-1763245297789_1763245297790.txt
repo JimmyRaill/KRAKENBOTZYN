@@ -1,0 +1,110 @@
+You are in PLAN / ANALYSIS mode ONLY. Do NOT edit any code.
+
+Goal: Diagnose why Zyn’s reporting about “trades in the last 24 hours” and “autopilot vs manual” is wrong, and why his internal executed-order log is still empty.
+
+Concrete facts:
+- Zyn claimed “2 trades executed in the last 24 hours” but showed trades from 2025-11-12 (3 days ago).
+- Zyn labeled both of those trades as “source: autopilot / strategy”.
+- Zyn reported “internal executed-order log: 0 entries”.
+- I know there was at least one ETH trade today that he also mis-reported earlier.
+
+I want an exact, code-level explanation of how this reporting is being computed and why it’s wrong.
+
+────────────────────────
+STEP 1 – FIND WHERE “TRADES IN THE LAST 24 HOURS” IS CALCULATED
+────────────────────────
+
+1) Search the codebase for the logic that produces phrases like:
+   - “Trades executed in the last 24 hours”
+   - or any function that:
+     - pulls trade history from Kraken,
+     - and filters by a time window like last_24h, or similar.
+
+2) For each relevant function you find, tell me:
+   - File path and function name.
+   - How it obtains trade history (Kraken vs some local DB).
+   - How it defines “last 24 hours”:
+     - Does it actually filter by timestamp?
+     - Or is it just taking the last N trades and slapping on “last 24 hours” language?
+
+3) Explicitly answer:
+   - Is the “last 24 hours” wording just a hard-coded label on “last 10 trades” with no real time filtering?
+
+Paste the key code snippets with line numbers.
+
+────────────────────────
+STEP 2 – FIND WHERE TRADE SOURCE (AUTOPILOT vs MANUAL vs FORCE TEST) IS DETERMINED
+────────────────────────
+
+1) Search for any code that tries to classify trades as:
+   - “autopilot”, “strategy”, “manual”, “force trade test”, etc.
+
+2) For each place where this classification is done, tell me:
+   - File and function name.
+   - Exactly what it uses to decide the source:
+     - Does it look at an explicit field in a DB or log (e.g. source="autopilot")?
+     - Or is it inferring based on timestamp, symbol, or command text?
+
+3) Answer plainly:
+   - Is there any reliable, explicit field in the codebase that marks a trade as autopilot vs manual?
+   - Or is Zyn just guessing when he says a trade was from “autopilot / strategy”?
+
+────────────────────────
+STEP 3 – INTERNAL EXECUTED-ORDER LOG REALITY CHECK
+────────────────────────
+
+Earlier, we designed the idea of a log_order_execution helper or an “executed_orders” table.
+
+1) Tell me:
+   - Does any function actually exist that logs executed orders (e.g. log_order_execution or similar)?
+   - If yes, show:
+     - File and function name.
+     - Where it writes (which table / file).
+     - Where it is called from (which execution paths).
+
+2) If such a logging function exists:
+   - Why is the internal executed-order log still at 0 entries?
+   - Are there any code paths that call exchange.create_order / create_market_buy_order without also calling this logger?
+
+3) If no such logging function exists or is wired:
+   - Say clearly: “Internal execution logging is NOT implemented or NOT wired up at all”.
+
+────────────────────────
+STEP 4 – HOW ZYN BUILDS THE “TRADES EXECUTED” ANSWERS
+────────────────────────
+
+1) In llm_agent.py (or wherever the chat logic is), find the code that:
+   - Answers user questions like:
+     - “trades in the last 24 hours”
+     - “how many trades have you executed”
+     - “recent trades” etc.
+
+2) For that logic, tell me:
+   - Does it:
+     - Always call a trading command/tool (e.g. execute_trading_command("history") or similar)?
+     - Or sometimes just invent a summary based on language patterns?
+   - Is there any explicit requirement in the system prompt that it must:
+     - check real data before answering,
+     - and not assume “autopilot” as the source?
+
+3) Show me the exact call path used when Zyn answers “Trades executed in the last 24 hours”.
+
+────────────────────────
+STEP 5 – BOTTOM-LINE DIAGNOSIS (NO FIXES YET)
+────────────────────────
+
+In 4–6 sentences, I want a direct, code-based diagnosis:
+
+1) Why Zyn:
+   - Reported trades from 2025-11-12 as “in the last 24 hours”.
+   - Labeled those trades as “autopilot / strategy” without any supporting data.
+   - Still shows “internal executed-order log: 0 entries”.
+
+2) Confirm:
+   - Whether autopilot has actually placed ANY live trades recently,
+   - Or whether all real trades so far (including the ETH test) came only from manual/force commands.
+
+3) Tell me exactly which functions/files would need to be changed in a future BUILD step to:
+   - Use a real 24-hour time filter based on timestamps,
+   - Stop guessing trade source and instead store a source field at execution time,
+   - And ensure every real executed order is logged internally with order_id + source.

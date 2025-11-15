@@ -1,0 +1,197 @@
+You are in BUILD MODE.
+
+Goal: Fix Zyn’s reporting so that:
+- “trades in the last 24 hours” is REAL (based on timestamps, not vibes),
+- trade “source” (autopilot vs command vs force_test) is based on a stored field, not a default guess,
+- and his answers about trades are ALWAYS grounded in:
+  - real Kraken history,
+  - telemetry_db trades table,
+  - and/or executed_orders log.
+
+Do NOT change strategy filters or risk settings. This is strictly about data truth and reporting.
+
+────────────────────────
+STEP 1 – FIX “TRADES IN THE LAST 24 HOURS” LOGIC
+────────────────────────
+
+Context from PLAN:
+- commands_addon.py currently counts evaluations, NOT executed trades.
+- telemetry_db.get_recent_trades() has NO time filtering.
+- There is a get_trading_stats(days=1) helper that already does proper timestamp-based stats.
+
+1) In commands_addon.py where you currently compute “trades executed in the last 24 hours”:
+
+- STOP using evaluation_log / decisions to infer trades.
+- STOP using any hard-coded text like “last 24 hours” unless there is a real time filter behind it.
+
+Instead:
+
+- Use a proper trading-stats function that actually respects timestamps (e.g. telemetry_db.get_trading_stats(days=1)).
+- If get_trading_stats(days=1) already exists and returns counts of real trades in the last day, use that.
+- If not, implement it in telemetry_db.py so it:
+  - Queries the trades table,
+  - Filters WHERE timestamp >= (now - 24h),
+  - Returns:
+    - total_trades_24h
+    - maybe autopilot_trades_24h
+    - command_trades_24h (if source field exists)
+
+Make sure the “trades in the last 24 hours” text is ONLY shown when the numbers are actually filtered by timestamp.
+
+────────────────────────
+STEP 2 – FIX TRADE SOURCE (“autopilot” vs “command” vs “force_test”)
+────────────────────────
+
+Context from PLAN:
+- telemetry_db.log_trade has default source="autopilot".
+- Old/manual paths never set source, so everything looks like “autopilot”.
+- There is currently NO reliable way to tell autopilot from manual just by reading the DB.
+
+1) In telemetry_db.py:
+
+- Change log_trade(source: str = "autopilot") so that:
+  - Either:
+    - (Preferred) source has NO default and must be explicitly passed by all callers, OR
+    - Default is source="unknown" instead of "autopilot".
+
+Be explicit: “autopilot” should ONLY be used when the call comes from autopilot.
+
+2) In all code paths that call log_trade (commands.py, commands_addon.py, autopilot, force test, etc.):
+
+- For autopilot-driven trades:
+  - Pass source="autopilot".
+
+- For manual commands (user-typed buy/sell/close commands):
+  - Pass source="command".
+
+- For force-trade tests (ENABLE_FORCE_TRADE):
+  - Pass source="force_test".
+
+3) Optionally (if easy):
+- For existing rows in the trades table where source="autopilot" but NO evidence it came from autopilot, leave them as-is but treat them as “unknown” in future reporting (see STEP 4).
+- Do NOT try to retroactively guess; just avoid lying going forward.
+
+────────────────────────
+STEP 3 – USE EXECUTION LOGS & TRADES TABLE AS SOURCE OF TRUTH
+────────────────────────
+
+Context:
+- executed_orders table exists but is still empty (no trades since logging was added).
+- log_order_execution is wired in commands.py but not yet used in reporting.
+
+1) Ensure that ALL real order placements (market/limit/triggers) do the following in commands.py and any autopilot execution plumbing:
+
+- After a successful Kraken order placement and confirmation (you have order_id and avg fill price):
+  - Call log_order_execution(...) or equivalent, writing to executed_orders.
+  - Also call log_trade(...) / record in trades table as appropriate.
+
+Make sure:
+- This only happens on SUCCESS (Kraken accepted the order).
+- It includes:
+  - symbol
+  - side
+  - quantity
+  - price
+  - order_id
+  - timestamp
+  - trading_mode (live/paper)
+  - source ("autopilot"/"command"/"force_test")
+
+2) In any reporting functions that talk about “trades”:
+
+- Prefer reading from:
+  - executed_orders (for internal executions), OR
+  - telemetry_db trades table (for summary),
+  - NOT from evaluation_log decisions.
+
+────────────────────────
+STEP 4 – FIX ZYN’S ANSWERS IN LLM_AGENT
+────────────────────────
+
+Context from PLAN:
+- llm_agent.py calls get_trade_history(limit=5) with NO time filter.
+- It then happily says “last 24 hours” even if trades are 3 days old.
+- It also reads source fields that were defaulted to “autopilot”.
+
+1) In llm_agent.py where Zyn:
+
+- Answers questions like:
+  - “trades in the last 24 hours”
+  - “how many trades have you executed”
+  - “recent trades”
+
+Update that logic so that:
+
+- For “last 24 hours”:
+  - It calls a function that actually enforces a 24h window:
+    - e.g. telemetry_db.get_trading_stats(days=1), OR
+    - account_state.get_trade_history(since=time.time()-86400, limit=N)
+  - It checks timestamps before using phrases like “today” or “last 24 hours”.
+
+- For generic “recent trades”:
+  - If no time window is specified, it can say “last N recorded trades” instead of implying a 24h window.
+
+2) When Zyn reports trade “source” to the user:
+
+- If source == "unknown" or is missing:
+  - He should NOT claim “autopilot / strategy” or “manual”.
+  - He should say “source unknown” or omit the label.
+
+- Only say “autopilot / strategy” when:
+  - source == "autopilot"
+- Only say “manual command” when:
+  - source == "command"
+- Only say “force trade test” when:
+  - source == "force_test"
+
+3) System prompt / instructions (wherever they live in llm_agent):
+
+- Add explicit rule:
+  - “Do NOT claim any time span (e.g., ‘in the last 24 hours’, ‘today’) unless you have filtered trades by timestamp.”
+  - “Do NOT claim a trade came from autopilot vs manual unless the source field explicitly indicates that.”
+
+────────────────────────
+STEP 5 – SMALL SANITY UTILITIES (OPTIONAL BUT USEFUL)
+────────────────────────
+
+Add (or verify) a debug/status command in commands_addon.py, something like:
+
+- `trades_24h_status`:
+  - Returns:
+    - total_trades_24h
+    - autopilot_trades_24h
+    - command_trades_24h
+    - force_test_trades_24h
+    - plus a list of those trades with timestamps and sources.
+
+Ensure this command uses the corrected timestamp filtering and source field.
+
+────────────────────────
+STEP 6 – FINAL CHECKS & RESTART
+────────────────────────
+
+Before restart, verify:
+
+- [ ] commands_addon “trades in last 24 hours” uses real time-based filtering from DB or Kraken, NOT evaluation_log.
+- [ ] telemetry_db.log_trade no longer defaults to source="autopilot"; callers explicitly set source.
+- [ ] All real order execution paths call both:
+      - log_order_execution (executed_orders table)
+      - log_trade (trades table) with the correct source.
+- [ ] llm_agent’s status / trade-reporting paths:
+      - Use timestamp-filtered queries for 24h claims.
+      - Use source field correctly and NEVER assume autopilot.
+
+Then:
+
+- Restart:
+  - Autopilot / worker process
+  - Chat/API server for Zyn.
+
+On startup, log something like:
+
+- "[SYSTEM] Trade reporting fixed: 24h stats now use real timestamps; trade source is explicit."
+- "[SYSTEM] All live executions now logged with order_id and source."
+
+Stop after implementing and restarting, and summarize:
+- What changed in commands_addon.py, telemetry_db.py, commands.py, and llm_agent.py.
+- How Zyn will now compute “trades in last 24 hours” and “autopilot vs manual” based on real data.

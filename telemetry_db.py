@@ -218,7 +218,7 @@ def log_trade(
     usd_amount: Optional[float] = None,
     order_id: Optional[str] = None,
     reason: Optional[str] = None,
-    source: str = "autopilot",
+    source: str = "unknown",  # CHANGED: No longer defaults to "autopilot" - callers must be explicit
     metadata: Optional[Dict[str, Any]] = None,
     mode: str = "live",
     stop_loss: Optional[float] = None,
@@ -511,6 +511,66 @@ def get_trading_stats(symbol: Optional[str] = None, days: int = 30) -> Dict[str,
         
         row = cursor.fetchone()
         return dict(row) if row else {}
+
+
+def get_trading_stats_24h() -> Dict[str, Any]:
+    """
+    Get REAL trading statistics for last 24 hours with SOURCE breakdown.
+    Uses actual timestamp filtering - no guessing, no vibes.
+    
+    Returns dict with:
+        - total_trades_24h: Total trade count
+        - autopilot_trades_24h: Trades from autopilot
+        - command_trades_24h: Trades from manual commands
+        - force_test_trades_24h: Trades from force tests
+        - unknown_trades_24h: Trades with unknown/unspecified source
+        - trades: List of trade dicts with timestamps and sources
+    """
+    cutoff = time.time() - (24 * 60 * 60)
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Get overall count
+        cursor.execute("""
+            SELECT COUNT(*) as total_trades
+            FROM trades
+            WHERE timestamp > ?
+        """, (cutoff,))
+        total = cursor.fetchone()['total_trades']
+        
+        # Get source breakdown
+        cursor.execute("""
+            SELECT 
+                source,
+                COUNT(*) as count
+            FROM trades
+            WHERE timestamp > ?
+            GROUP BY source
+        """, (cutoff,))
+        
+        source_counts = {row['source']: row['count'] for row in cursor.fetchall()}
+        
+        # Get actual trade list with timestamps
+        cursor.execute("""
+            SELECT 
+                symbol, side, price, quantity, usd_amount,
+                order_id, source, timestamp, reason
+            FROM trades
+            WHERE timestamp > ?
+            ORDER BY timestamp DESC
+        """, (cutoff,))
+        
+        trades = [dict(row) for row in cursor.fetchall()]
+        
+        return {
+            'total_trades_24h': total,
+            'autopilot_trades_24h': source_counts.get('autopilot', 0),
+            'command_trades_24h': source_counts.get('command', 0),
+            'force_test_trades_24h': source_counts.get('force_test', 0),
+            'unknown_trades_24h': source_counts.get('unknown', 0),
+            'trades': trades
+        }
 
 
 # Initialize database on import
