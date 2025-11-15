@@ -6,6 +6,7 @@ from typing import Optional
 import ccxt
 from dotenv import load_dotenv
 from exchange_manager import get_exchange, get_mode_str, is_paper_mode
+from evaluation_log import log_order_execution
 
 # Load .env from project root
 load_dotenv(dotenv_path=".env", override=True)
@@ -377,6 +378,20 @@ def handle(text: str) -> str:
                 return "[BUY-ERR] amount precision produced zero"
             order = ex.create_market_buy_order(sym, float(amt))
             oid = str(order.get("id") or order.get("orderId") or "<no-id>")
+            
+            # Log executed order for TRUTH VERIFICATION
+            fill_price = order.get("price") or order.get("average") or px
+            log_order_execution(
+                symbol=sym,
+                side="buy",
+                quantity=amt,
+                entry_price=fill_price,
+                order_id=oid,
+                trading_mode=get_mode_str().lower(),
+                source="command",
+                extra_info=f"market buy ~${usd:.2f}"
+            )
+            
             return f"BUY OK {sym} ~${usd:.2f} (qty≈{amt}) id={oid}"
         except Exception as e:
             return f"[BUY-ERR] {e}"
@@ -395,6 +410,20 @@ def handle(text: str) -> str:
                 return "[SELL-ERR] amount precision produced zero"
             order = ex.create_market_sell_order(sym, float(qf))
             oid = str(order.get("id") or order.get("orderId") or "<no-id>")
+            
+            # Log executed order for TRUTH VERIFICATION
+            fill_price = order.get("price") or order.get("average") or _last_price(ex, sym)
+            log_order_execution(
+                symbol=sym,
+                side="sell",
+                quantity=qf,
+                entry_price=fill_price,
+                order_id=oid,
+                trading_mode=get_mode_str().lower(),
+                source="command",
+                extra_info="market sell all"
+            )
+            
             return f"SELL OK {sym} qty={qf} id={oid}"
         except Exception as e:
             return f"[SELL-ERR] {e}"
@@ -740,6 +769,19 @@ def handle(text: str) -> str:
                 tid = str(tp_order.get("id") or tp_order.get("orderId") or "<no-id>")
                 sid = str(sl_order.get("id") or sl_order.get("orderId") or "<no-id>")
                 
+                # Log executed order for TRUTH VERIFICATION
+                # CRITICAL: Only log when entry was filled and we have ID + price
+                log_order_execution(
+                    symbol=sym,
+                    side="buy" if is_long else "sell",
+                    quantity=fill_size or amt_p,
+                    entry_price=fill_price or current_price,
+                    order_id=entry_id,
+                    trading_mode=get_mode_str().lower(),
+                    source="command",
+                    extra_info=f"bracket {side_str} TP=${tp_p} SL=${sl_p} tp_id={tid} sl_id={sid}"
+                )
+                
                 return (f"BRACKET OK {side_str} {sym} amt={amt_p}\n"
                        f"  Entry: {side_str} @ market, id={entry_id}\n"
                        f"  TP: {tp_p} id={tid}\n"
@@ -778,6 +820,94 @@ def handle(text: str) -> str:
             return _trade_history_text(ex, sym, limit)
         except Exception as e:
             return f"[HISTORY-ERR] {e}"
+    
+    # debug_trade <symbol> - Show complete lifecycle of trades for a symbol
+    m = re.fullmatch(r"(?i)debug[_ ]trade\s+([A-Za-z0-9:/\-\._]+)", s)
+    if m:
+        sym = _norm_sym(m.group(1))
+        try:
+            from evaluation_log import get_last_evaluations, get_executed_orders
+            from datetime import datetime, timedelta
+            
+            result_lines = [f"=== TRADE LIFECYCLE DEBUG: {sym} ===\n"]
+            
+            # 1. Check evaluation log for signals
+            evals = get_last_evaluations(limit=10, symbol=sym)
+            result_lines.append(f"📊 EVALUATIONS (last 10):")
+            if evals:
+                for ev in evals:
+                    decision = ev.get('decision', '?')
+                    reason = ev.get('reason', '?')
+                    ts = ev.get('timestamp_utc', '?')
+                    result_lines.append(f"  • {ts[:19]} | {decision}: {reason}")
+            else:
+                result_lines.append(f"  • No evaluations found")
+            
+            # 2. Check executed_orders table
+            result_lines.append(f"\n📝 EXECUTED ORDERS (last 24h):")
+            executed = get_executed_orders(limit=20, symbol=sym, since_hours=24)
+            if executed:
+                for order in executed:
+                    ts = order.get('timestamp_utc', '?')
+                    side = order.get('side', '?')
+                    qty = order.get('quantity', 0)
+                    price = order.get('entry_price', 0)
+                    order_id = order.get('order_id', '?')
+                    source = order.get('source', '?')
+                    result_lines.append(
+                        f"  • {ts[:19]} | {side.upper()} {qty:.6f} @ ${price:.2f} "
+                        f"| id={order_id} | source={source}"
+                    )
+            else:
+                result_lines.append(f"  • No executed orders found in database")
+            
+            # 3. Check Kraken trade history
+            result_lines.append(f"\n💰 KRAKEN TRADE HISTORY (last 20):")
+            trades = ex.fetch_my_trades(symbol=sym, limit=20)
+            if trades:
+                for t in trades:
+                    tid = str(t.get("id") or "?")
+                    side = t.get("side") or "?"
+                    amt = _safe_float(t.get("amount"), 0.0)
+                    px = _safe_float(t.get("price"), 0.0)
+                    timestamp = t.get("timestamp")
+                    time_str = ""
+                    if timestamp:
+                        try:
+                            dt = datetime.fromtimestamp(timestamp / 1000)
+                            time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        except:
+                            time_str = str(timestamp)
+                    result_lines.append(f"  • {time_str} | {side.upper()} {amt:.6f} @ ${px:.2f} | id={tid}")
+            else:
+                result_lines.append(f"  • No trades in Kraken history")
+            
+            # 4. Check current open orders
+            result_lines.append(f"\n📋 CURRENT OPEN ORDERS:")
+            opens = ex.fetch_open_orders(symbol=sym)
+            if opens:
+                for o in opens:
+                    oid = str(o.get("id") or "?")
+                    side = o.get("side") or "?"
+                    amt = _safe_float(o.get("amount"), 0.0)
+                    px = _safe_float(o.get("price"), 0.0)
+                    order_type = o.get("type") or "?"
+                    result_lines.append(f"  • {order_type} {side.upper()} {amt:.6f} @ ${px:.2f} | id={oid}")
+            else:
+                result_lines.append(f"  • No open orders")
+            
+            # 5. Summary
+            result_lines.append(f"\n📈 SUMMARY:")
+            result_lines.append(f"  • Signal generated: {'YES' if evals and any(e.get('decision') in ['BUY', 'LONG', 'SELL', 'SELL_ALL'] for e in evals) else 'NO'}")
+            result_lines.append(f"  • Order sent to Kraken: {'YES' if executed else 'NO'}")
+            result_lines.append(f"  • Kraken order IDs: {', '.join(set(o.get('order_id', '?') for o in executed)) if executed else 'NONE'}")
+            result_lines.append(f"  • Fills in trade history: {'YES' if trades else 'NO'}")
+            result_lines.append(f"  • Current open orders: {len(opens) if opens else 0}")
+            
+            return "\n".join(result_lines)
+            
+        except Exception as e:
+            return f"[DEBUG-TRADE-ERR] {e}"
 
     # cancel <order_id> [symbol]
     m = re.fullmatch(r"(?i)cancel\s+([A-Za-z0-9\-_]+)(?:\s+([A-Za-z0-9:/\-\._]+))?", s)

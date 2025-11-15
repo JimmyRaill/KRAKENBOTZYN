@@ -72,6 +72,37 @@ def init_evaluation_log_db():
         VALUES (1, ?, 0)
     """, (datetime.utcnow().isoformat(),))
     
+    # Create executed_orders table for TRUTH VERIFICATION
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS executed_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp_utc TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            entry_price REAL NOT NULL,
+            order_id TEXT NOT NULL,
+            trading_mode TEXT NOT NULL,
+            source TEXT NOT NULL,
+            extra_info TEXT DEFAULT ''
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_executed_orders_timestamp 
+        ON executed_orders(timestamp_utc DESC)
+    """)
+    
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_executed_orders_symbol 
+        ON executed_orders(symbol, timestamp_utc DESC)
+    """)
+    
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_executed_orders_order_id 
+        ON executed_orders(order_id)
+    """)
+    
     conn.commit()
     conn.close()
     logger.info(f"[EVAL-LOG] Database initialized at {DB_PATH}")
@@ -154,6 +185,112 @@ def log_evaluation(
         
     except Exception as e:
         logger.error(f"[EVAL-LOG] Failed to log evaluation: {e}")
+
+
+def log_order_execution(
+    symbol: str,
+    side: str,
+    quantity: float,
+    entry_price: float,
+    order_id: str,
+    trading_mode: str,
+    source: str,
+    extra_info: str = ""
+):
+    """
+    Log a successfully executed order for later verification.
+    
+    CRITICAL: This function MUST ONLY be called when:
+    - A real Kraken order was sent AND
+    - We have a concrete order ID from the Kraken response
+    
+    Args:
+        symbol: Trading pair (e.g., "BTC/USD")
+        side: "buy" or "sell"
+        quantity: Filled amount
+        entry_price: Average fill price
+        order_id: Order ID from Kraken response
+        trading_mode: "live" or "paper"
+        source: "autopilot", "command", "force_trade_test", etc.
+        extra_info: Optional additional context
+    
+    This creates a permanent record that the LLM can query to verify
+    whether an order actually executed. NO ASSUMPTIONS ALLOWED.
+    """
+    try:
+        conn = _get_connection()
+        cursor = conn.cursor()
+        
+        timestamp_utc = datetime.utcnow().isoformat()
+        
+        cursor.execute("""
+            INSERT INTO executed_orders (
+                timestamp_utc, symbol, side, quantity, entry_price,
+                order_id, trading_mode, source, extra_info
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            timestamp_utc, symbol, side, quantity, entry_price,
+            order_id, trading_mode, source, extra_info
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(
+            f"[ORDER-EXECUTED] {symbol} {side.upper()} {quantity:.6f} @ ${entry_price:.2f} "
+            f"(order_id={order_id}, mode={trading_mode}, source={source})"
+        )
+        
+    except Exception as e:
+        logger.error(f"[ORDER-LOG] CRITICAL: Failed to log executed order: {e}")
+        # Print to stderr so this is visible even if logging fails
+        import sys
+        print(f"❌ CRITICAL: Failed to log order execution: {e}", file=sys.stderr)
+
+
+def get_executed_orders(limit: int = 50, symbol: Optional[str] = None, since_hours: int = 24) -> List[Dict[str, Any]]:
+    """
+    Get executed orders from the database (TRUTH VERIFICATION).
+    
+    Args:
+        limit: Max number of rows to return
+        symbol: Filter by symbol if provided
+        since_hours: Only return orders from last N hours (default: 24)
+    
+    Returns:
+        List of executed order dictionaries
+    """
+    try:
+        conn = _get_connection()
+        cursor = conn.cursor()
+        
+        cutoff_time = (datetime.utcnow() - timedelta(hours=since_hours)).isoformat()
+        
+        if symbol:
+            cursor.execute("""
+                SELECT *
+                FROM executed_orders
+                WHERE symbol = ? AND timestamp_utc >= ?
+                ORDER BY timestamp_utc DESC
+                LIMIT ?
+            """, (symbol, cutoff_time, limit))
+        else:
+            cursor.execute("""
+                SELECT *
+                FROM executed_orders
+                WHERE timestamp_utc >= ?
+                ORDER BY timestamp_utc DESC
+                LIMIT ?
+            """, (cutoff_time, limit))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [dict(row) for row in rows]
+        
+    except Exception as e:
+        logger.error(f"[ORDER-LOG] Failed to get executed orders: {e}")
+        return []
 
 
 def get_last_evaluations(limit: int = 20, symbol: Optional[str] = None) -> List[Dict[str, Any]]:

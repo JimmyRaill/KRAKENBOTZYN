@@ -1,0 +1,198 @@
+You are in BUILD MODE.
+
+Goal: Fix the execution reporting so the bot NEVER claims “order placed successfully” unless:
+- A real Kraken order was actually sent AND
+- There is a concrete order id / trade in either:
+  - the Kraken API response, or
+  - evaluation_log / trade history.
+
+Also:
+- Make sure autopilot and commands record execution events in a consistent way.
+- Make it impossible for the LLM to “assume” an order happened without proof.
+- Do NOT change strategy thresholds or risk settings here – this is about TRUTH and WIRING, not aggressiveness.
+
+────────────────────────
+PART 1 – RECORD EXECUTED ORDERS IN ONE PLACE
+────────────────────────
+
+Files to touch:
+- commands.py
+- autopilot.py (or wherever autopilot calls the execution/bracket logic)
+- evaluation_log.py (or a similar telemetry DB module)
+
+1) Add a helper to record executed orders
+
+In evaluation_log.py (or the equivalent logging module), add a helper function like:
+
+    def log_order_execution(symbol: str,
+                            side: str,
+                            quantity: float,
+                            entry_price: float,
+                            order_id: str,
+                            trading_mode: str,
+                            source: str,
+                            extra_info: str = ""):
+        """
+        Log a successfully executed order for later verification.
+        `source` could be 'autopilot', 'force_trade_test', 'manual_command', etc.
+        """
+        # You can either:
+        # - Insert into the existing evaluations table with decision='EXECUTED_ORDER'
+        # OR
+        # - Create a small 'executed_orders' table if you already have one.
+        #
+        # Keep it simple: we just need a reliable source of truth.
+
+Make sure this NEVER throws silently. If DB logging fails, print a clear error and move on.
+
+2) Hook this helper into the real execution points:
+
+- In commands.py, wherever you:
+  - Successfully receive a Kraken response from create_market_buy_order / create_order / open_position_with_brackets,
+  - AND the order is confirmed as placed,
+  
+  add a call to log_order_execution(...) with:
+
+    - symbol
+    - side ("buy" or "sell")
+    - quantity (filled amount)
+    - entry_price (average fill price, if available)
+    - order_id (from Kraken response)
+    - trading_mode ("live" or "paper")
+    - source="command" or "force_trade_test"
+
+- In autopilot.py, where the strategy-driven orders are placed (the path that runs from TradeSignal → execution):
+
+  After a successful bracket open (entry order confirmed):
+    - Get the order id and fill price from the Kraken response.
+    - Call log_order_execution(...) with source="autopilot".
+
+Important:
+- ONLY call log_order_execution when the Kraken call actually succeeded and you have an order id.
+- Do NOT log “executed order” if the trade failed due to min size, risk, or Kraken error.
+
+────────────────────────
+PART 2 – STOP LYING: MAKE LLM EXECUTION CLAIMS DEPEND ON REAL DATA
+────────────────────────
+
+Files:
+- llm_agent.py
+- trade_result_validator.py (or similar validation layer)
+- commands.py (for a “show real trades” command, if not already present)
+
+2.1 Trade history command MUST use Kraken / DB, not guesses
+
+In commands.py:
+
+- Ensure you have a command handler that can return REAL trade history, for example via ccxt.fetch_my_trades(...).
+- If it already exists (e.g., a "history" or "trades" command), verify:
+  - It actually calls ex.fetch_my_trades (where ex is the same exchange object used for orders).
+  - It returns a machine-usable structure (JSON) as well as a readable text summary.
+
+If needed, add or improve a command like:
+
+    # Pseudocode
+    def _cmd_recent_trades(ex, symbol_filter=None, limit=20):
+        trades = ex.fetch_my_trades(symbol=symbol_filter, limit=limit)
+        # Return both raw and formatted
+
+Make **no assumptions**: this must reflect EXACTLY what Kraken reports.
+
+2.2 llm_agent MUST anchor “did you trade?” answers to tools
+
+In llm_agent.py:
+
+- Find the code where the model handles:
+  - Questions about “how many trades did you place”, “did you trade X/USD”, “did the order execute”, etc.
+- Ensure that for these question types, it *always* triggers a tool call (execute_trading_command) to either:
+  - Fetch trade history, OR
+  - Fetch evaluation_log + executed_orders logs.
+
+You do NOT need NLP magic. At minimum:
+
+- When the user asks:
+  - About “trades”, “orders placed”, “executed”, “how many trades”, etc.
+- The agent must:
+  - Call the trading tool with a command that hits the trade history path (e.g., "history", "trades", “trade_history”).
+
+Then, the agent must base its answer **only** on:
+
+- Tool result’s `ok` flag and data, AND/OR
+- Executed orders logged via log_order_execution.
+
+2.3 Validator must never let the LLM claim success when tools fail
+
+In trade_result_validator.py (or equivalent):
+
+- You already have logic to correct hallucinated “success” if the tool returns `"ok": false`.
+
+Double-check and tighten this:
+
+- If a tool result has `"ok": false` OR no trade data:
+  - The validator MUST NOT allow the model to say “order placed successfully”.
+  - It should override with something like:
+    - “The command failed with error: <actual error>”
+    - or
+    - “I could not find any matching trades in Kraken history.”
+
+No more generic “internal error” or “cannot confirm execution status” without context.
+
+2.4 Remove any hardcoded “success” language not driven by tools
+
+Search llm_agent.py for phrases like:
+
+- "order was placed successfully"
+- "trade executed"
+- "I placed a trade"
+- “the order went through”
+
+Replace them so they are ONLY used in branches that are explicitly conditioned on:
+
+- `ok == true` in tool result, AND/OR
+- There is a matching entry in `executed_orders` log or trade history.
+
+If the tool / history doesn’t prove it, the agent must say:
+- “I attempted to trade, but there is no record of a real order from Kraken. So I must assume the trade did NOT execute.”
+
+────────────────────────
+PART 3 – EXPLICIT LIFECYCLE ANSWERS FOR A GIVEN TRADE
+────────────────────────
+
+Add a dedicated debug/diagnostic command in commands.py, something like:
+
+    "debug_trade <symbol> <timestamp_or_id>"
+
+Behavior:
+
+- Given a symbol (and optionally timestamp or order id):
+  - Look up:
+    - evaluation_log entries related to that symbol in a recent time window,
+    - executed_orders logs for that symbol,
+    - Kraken trade history for that symbol.
+  - Return a structured result that says clearly:
+    - “Signal generated: YES/NO”
+    - “Order sent to Kraken: YES/NO”
+    - “Kraken order id: <id> or NONE”
+    - “Fill(s) in trade history: YES/NO”
+    - “Current position / open orders: ...”
+
+This gives the LLM and the user a SINGLE source of truth to debug cases like ALGO/USD.
+
+────────────────────────
+PART 4 – FINAL CHECKS & RESTART
+────────────────────────
+
+Before you restart:
+
+- [ ] Verify that:
+      - log_order_execution is called ONLY after successful Kraken responses.
+      - No code path logs “EXECUTED” without order_id and price.
+- [ ] Verify that:
+      - The "recent trades" / "history" command uses ccxt.fetch_my_trades from the same exchange object as live trading.
+- [ ] Verify that:
+      - Validator enforces that any claim of success must align with tool results.
+
+Then:
+
+- Restart BOTH:
+  - A
