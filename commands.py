@@ -379,18 +379,33 @@ def handle(text: str) -> str:
             order = ex.create_market_buy_order(sym, float(amt))
             oid = str(order.get("id") or order.get("orderId") or "<no-id>")
             
-            # Log executed order for TRUTH VERIFICATION
-            fill_price = order.get("price") or order.get("average") or px
-            log_order_execution(
-                symbol=sym,
-                side="buy",
-                quantity=amt,
-                entry_price=fill_price,
-                order_id=oid,
-                trading_mode=get_mode_str().lower(),
-                source="command",
-                extra_info=f"market buy ~${usd:.2f}"
+            # Log executed order for TRUTH VERIFICATION - use ACTUAL fill data from exchange
+            # CRITICAL: NEVER fall back to requested amounts - only log exchange-confirmed fills
+            actual_filled = _safe_float(order.get("filled"), None)
+            actual_avg_price = _safe_float(order.get("average") or order.get("price"), None)
+            order_status = order.get("status", "unknown")
+            remaining = _safe_float(order.get("remaining"), None)
+            
+            # STRICT: Only log if fully filled (status closed/filled AND remaining=0 AND we have actual fill data)
+            # Never log partial fills or use requested quantity fallbacks
+            is_fully_filled = (
+                order_status in ["closed", "filled"] and
+                (remaining is None or remaining == 0) and
+                actual_filled is not None and actual_filled > 0 and
+                actual_avg_price is not None
             )
+            
+            if is_fully_filled:
+                log_order_execution(
+                    symbol=sym,
+                    side="buy",
+                    quantity=actual_filled,
+                    entry_price=actual_avg_price,
+                    order_id=oid,
+                    trading_mode=get_mode_str().lower(),
+                    source="command",
+                    extra_info=f"market buy ~${usd:.2f} status={order_status}"
+                )
             
             return f"BUY OK {sym} ~${usd:.2f} (qty≈{amt}) id={oid}"
         except Exception as e:
@@ -411,18 +426,33 @@ def handle(text: str) -> str:
             order = ex.create_market_sell_order(sym, float(qf))
             oid = str(order.get("id") or order.get("orderId") or "<no-id>")
             
-            # Log executed order for TRUTH VERIFICATION
-            fill_price = order.get("price") or order.get("average") or _last_price(ex, sym)
-            log_order_execution(
-                symbol=sym,
-                side="sell",
-                quantity=qf,
-                entry_price=fill_price,
-                order_id=oid,
-                trading_mode=get_mode_str().lower(),
-                source="command",
-                extra_info="market sell all"
+            # Log executed order for TRUTH VERIFICATION - use ACTUAL fill data from exchange
+            # CRITICAL: NEVER fall back to requested amounts - only log exchange-confirmed fills
+            actual_filled = _safe_float(order.get("filled"), None)
+            actual_avg_price = _safe_float(order.get("average") or order.get("price"), None)
+            order_status = order.get("status", "unknown")
+            remaining = _safe_float(order.get("remaining"), None)
+            
+            # STRICT: Only log if fully filled (status closed/filled AND remaining=0 AND we have actual fill data)
+            # Never log partial fills or use requested quantity fallbacks
+            is_fully_filled = (
+                order_status in ["closed", "filled"] and
+                (remaining is None or remaining == 0) and
+                actual_filled is not None and actual_filled > 0 and
+                actual_avg_price is not None
             )
+            
+            if is_fully_filled:
+                log_order_execution(
+                    symbol=sym,
+                    side="sell",
+                    quantity=actual_filled,
+                    entry_price=actual_avg_price,
+                    order_id=oid,
+                    trading_mode=get_mode_str().lower(),
+                    source="command",
+                    extra_info=f"market sell all status={order_status}"
+                )
             
             return f"SELL OK {sym} qty={qf} id={oid}"
         except Exception as e:
@@ -770,17 +800,33 @@ def handle(text: str) -> str:
                 sid = str(sl_order.get("id") or sl_order.get("orderId") or "<no-id>")
                 
                 # Log executed order for TRUTH VERIFICATION
-                # CRITICAL: Only log when entry was filled and we have ID + price
-                log_order_execution(
-                    symbol=sym,
-                    side="buy" if is_long else "sell",
-                    quantity=fill_size or amt_p,
-                    entry_price=fill_price or current_price,
-                    order_id=entry_id,
-                    trading_mode=get_mode_str().lower(),
-                    source="command",
-                    extra_info=f"bracket {side_str} TP=${tp_p} SL=${sl_p} tp_id={tid} sl_id={sid}"
+                # CRITICAL: Use ACTUAL fill data from entry_order, not requested amounts
+                # fill_price and fill_size were already extracted from entry_order above (lines 540-558)
+                entry_status = entry_order.get("status", "unknown")
+                entry_remaining = _safe_float(entry_order.get("remaining"), None)
+                
+                # STRICT: Only log if entry was FULLY filled (status closed/filled AND remaining=0)
+                # Never log if we don't have actual exchange-confirmed fill data
+                is_entry_filled = (
+                    entry_status in ["closed", "filled"] and
+                    (entry_remaining is None or entry_remaining == 0) and
+                    fill_size is not None and fill_size > 0 and
+                    fill_price is not None
                 )
+                
+                if is_entry_filled:
+                    log_order_execution(
+                        symbol=sym,
+                        side="buy" if is_long else "sell",
+                        quantity=fill_size,  # Already validated above as actual fill size from entry_order
+                        entry_price=fill_price,  # Already validated as actual fill price from entry_order
+                        order_id=entry_id,
+                        trading_mode=get_mode_str().lower(),
+                        source="command",
+                        extra_info=f"bracket {side_str} TP=${tp_p} SL=${sl_p} tp_id={tid} sl_id={sid} status={entry_status}"
+                    )
+                # NOTE: TP/SL fills are NOT logged here - they're limit orders that execute later
+                # Future enhancement: Add monitoring system to log TP/SL executions when they fill
                 
                 return (f"BRACKET OK {side_str} {sym} amt={amt_p}\n"
                        f"  Entry: {side_str} @ market, id={entry_id}\n"
