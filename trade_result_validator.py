@@ -164,23 +164,33 @@ class LLMResponseValidator:
         any_error = any(result.get('error') is not None for result in trade_tools)
         
         if any_error and llm_claims_success:
-            # Tool failed but LLM claims success
-            error = f"LLM claimed success but tool showed failure: {trade_tools[0].get('error', 'unknown error')}"
+            # Tool failed but LLM claims success - surface the actual error
+            actual_error = trade_tools[0].get('error', 'unknown error')
+            error = f"LLM claimed success but tool showed failure: {actual_error}"
             logger.error(f"[LLM-HALLUCINATION] {error}")
-            corrected = (
-                "⚠️ The trade execution encountered an error. "
-                f"Details: {trade_tools[0].get('raw_message', 'Check logs for details')}"
-            )
+            
+            # Surface the actual error message to user instead of hiding it
+            corrected = f"⚠️ The command failed with error:\n\n{actual_error}"
             return False, error, corrected
         
         if not any_success and llm_claims_success:
             # No tool confirmed success but LLM claims it
+            # Check if there's an error message we can surface
+            first_result = trade_tools[0] if trade_tools else {}
+            actual_error = first_result.get('error')
+            
             error = "LLM claimed success but no tool result confirmed execution"
             logger.error(f"[LLM-HALLUCINATION] {error}")
-            corrected = (
-                "⚠️ I cannot confirm the execution status. "
-                "Please verify your open orders with the 'open' command."
-            )
+            
+            if actual_error:
+                # Surface the actual error instead of generic message
+                corrected = f"⚠️ The command failed with error:\n\n{actual_error}"
+            else:
+                # Fallback to generic message if no error available
+                corrected = (
+                    "⚠️ I cannot confirm the execution status. "
+                    "Please verify your open orders with the 'open' command."
+                )
             return False, error, corrected
         
         # Validation passed - LLM claim matches tool results
