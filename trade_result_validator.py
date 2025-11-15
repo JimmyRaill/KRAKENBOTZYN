@@ -142,6 +142,7 @@ class LLMResponseValidator:
     # Patterns that indicate query/diagnostic language (NOT trade claims)
     # Used to EXCLUDE responses from validation even if they match success patterns
     QUERY_INDICATORS = [
+        # Query/fetch/check language
         r'\b(let me|i will|i\'ll)\s+(query|check|show|look|fetch|retrieve)\b',
         r'\bquery\s+(for|to|the)\b',
         r'\bcheck\s+(your|the|my)\s+(balance|orders|position|history)\b',
@@ -149,8 +150,23 @@ class LLMResponseValidator:
         r'\blook(ing)?\s+at\s+(your|the|my)\s+(balance|orders|position|history|evaluations|trades)\b',
         r'\bfetch(ing|ed)?\s+(your|the|my)\s+(balance|data|information)\b',
         r'\bretriev(e|ing|ed)\s+(your|the|my)\s+(balance|data)\b',
-        r'\bhere\s+(is|are)\s+your\s+(balance|orders|position|history)\b',
+        
+        # Status/report presentation language
+        r'\bhere\s+(is|are)\s+(your|the)\s+(balance|orders|position|history|status|diagnostic)\b',
+        r'\bhere[\'\u2019]s\s+(the|your)\s+(detailed|current|latest)\b',
         r'\b(balance|open\s+orders|evaluation|history)\s+(shows|indicates)\b',
+        
+        # Diagnostic/status report language
+        r'\bdiagnostic\s+(and|status|report|information)\b',
+        r'\btrading\s+status\b',
+        r'\bcurrent\s+mode\b',
+        r'\bstatus\s+report\b',
+        r'\b(detailed|complete)\s+(status|diagnostic|report)\b',
+        
+        # Market data presentation (not execution)
+        r'\bcurrent\s+price\s+(of|for|is)\b',
+        r'\bmarket\s+price\b',
+        r'\bprice\s+(data|information|quote)\b',
     ]
     
     # Error/failure patterns (EXPANDED for Kraken-specific errors)
@@ -268,20 +284,24 @@ class LLMResponseValidator:
         
         Returns False if response clearly contains query/diagnostic language,
         even if it matches success patterns (to avoid false positives).
+        
+        PRIORITY: Query/diagnostic indicators take precedence over success patterns.
+        If the response contains diagnostic language, it's NOT a trade claim.
         """
         text_lower = text.lower()
         
         # Check if response contains query/diagnostic language
         has_query_language = any(re.search(pattern, text_lower) for pattern in cls.QUERY_INDICATORS)
         
+        # PRIORITY FIX: If it contains query/diagnostic language, it's NOT a trade claim
+        # This prevents false positives on status reports that happen to mention trading
+        if has_query_language:
+            return False
+        
         # Check if response claims trade success
         has_success_claim = any(re.search(pattern, text_lower) for pattern in cls.SUCCESS_PATTERNS)
         
-        # If it's clearly a query/diagnostic response, don't validate as trade
-        if has_query_language and not has_success_claim:
-            return False
-        
-        # Only validate if there's an explicit success claim
+        # Only validate if there's an explicit success claim AND no query language
         return has_success_claim
     
     @classmethod
