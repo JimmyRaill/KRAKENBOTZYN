@@ -335,12 +335,31 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
     Returns normalized format: {currency: {free, used, total, usd_value, last_updated}}
     
     CRITICAL:
-    - LIVE mode: Fetches from Kraken API
+    - LIVE mode: Fetches from Kraken API with asset normalization (ZUSD→USD, XXBT→BTC, etc.)
     - PAPER mode: Fetches from paper ledger
     """
     mode = get_mode_str()
     now = time.time()
     now_iso = datetime.now(tz=timezone.utc).isoformat()
+    
+    # CRITICAL: Kraken asset key normalization mapping
+    # Kraken uses ZUSD, XXBT, XETH, XZEC, etc. - we need to normalize to USD, BTC, ETH, ZEC
+    KRAKEN_ASSET_MAP = {
+        'ZUSD': 'USD',
+        'XXBT': 'BTC',
+        'XBT': 'BTC',
+        'XETH': 'ETH',
+        'XZEC': 'ZEC',
+        'XXRP': 'XRP',
+        'XLTC': 'LTC',
+        'XXDG': 'DOGE',
+        'XXMR': 'XMR',
+        'XREP': 'REP',
+        'ZEUR': 'EUR',
+        'ZGBP': 'GBP',
+        'ZCAD': 'CAD',
+        'ZJPY': 'JPY'
+    }
     
     if mode == "live":
         # LIVE MODE: Fetch from Kraken API
@@ -348,10 +367,20 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
             ex = get_exchange()
             balances_raw = ex.fetch_balance()
             
+            logger.debug(f"[ACCOUNT-STATE] Raw balances from Kraken: {list(balances_raw.keys())}")
+            
             balances = {}
-            for currency, balance in balances_raw.items():
-                if currency in ('free', 'used', 'total', 'info'):
+            for currency_raw, balance in balances_raw.items():
+                # CRITICAL: Skip metadata keys and non-dict values
+                if currency_raw in ('free', 'used', 'total', 'info', 'timestamp', 'datetime'):
                     continue
+                
+                # CRITICAL: Skip non-dict values (e.g. scalar metadata)
+                if not isinstance(balance, dict):
+                    continue
+                
+                # CRITICAL FIX: Normalize Kraken asset codes (ZUSD→USD, XXBT→BTC, etc.)
+                currency = KRAKEN_ASSET_MAP.get(currency_raw, currency_raw)
                 
                 free = balance.get('free', 0.0) or 0.0
                 used = balance.get('used', 0.0) or 0.0
@@ -383,6 +412,20 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
                     'last_updated': now_iso
                 }
             
+            # SANITY CHECK: Warn if balances are empty but we can fetch trade history
+            if not balances:
+                try:
+                    trades = ex.fetch_my_trades(limit=5)
+                    if trades:
+                        logger.warning(
+                            f"[ACCOUNT-STATE] ⚠️ CRITICAL INCONSISTENCY: "
+                            f"Trade history shows {len(trades)} trades but balances are EMPTY! "
+                            f"This indicates a mapping issue with Kraken asset keys."
+                        )
+                except Exception:
+                    pass
+            
+            logger.info(f"[ACCOUNT-STATE] LIVE mode fetched {len(balances)} currencies: {list(balances.keys())}")
             return balances
         
         except Exception as e:

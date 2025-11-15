@@ -57,28 +57,32 @@ def _last_price(ex, symbol: str) -> float:
     raise RuntimeError("no valid price for " + symbol)
 
 def _balances_text(ex) -> str:
-    bal = ex.fetch_balance()
-    lines = ["Balances (free):"]
-    free = bal.get("free")
-    printed = 0
-    if isinstance(free, dict):
-        for k, v in free.items():
-            fv = _safe_float(v, 0.0)
-            if fv and fv > 0:
-                lines.append(f"  {k}: {fv}")
-                printed += 1
-    if printed == 0:
-        # fall back to totals
-        for k, obj in bal.items():
-            if isinstance(obj, dict):
-                tot = _safe_float(obj.get("total"), 0.0)
-                if tot and tot > 0:
-                    lines.append(f"  {k}: {tot}")
-                    printed += 1
-    if printed == 0:
-        usd = _safe_float((bal.get("USD") or {}).get("total"), 0.0)
-        lines.append(f"  USD: {usd}")
-    return "\n".join(lines)
+    # CRITICAL: Use account_state.get_balances() which handles Kraken asset normalization
+    from account_state import get_balances
+    
+    try:
+        balances = get_balances()
+        
+        if not balances:
+            return "Balances: (empty - check your account or mode)"
+        
+        lines = ["Balances:"]
+        for currency, bal in sorted(balances.items()):
+            total = bal.get('total', 0.0)
+            usd_value = bal.get('usd_value', 0.0)
+            if total > 0:
+                if currency == 'USD':
+                    lines.append(f"  {currency}: ${total:.2f}")
+                else:
+                    lines.append(f"  {currency}: {total:.8f} (${usd_value:.2f})")
+        
+        # Calculate total equity
+        total_equity = sum(bal.get('usd_value', 0) for bal in balances.values())
+        lines.append(f"\nTotal Portfolio Value: ${total_equity:.2f}")
+        
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[BAL-ERR] {e}"
 
 def _free_coin_qty(ex, symbol: str) -> float:
     base = _norm_sym(symbol).split("/")[0].replace("-", "")

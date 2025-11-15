@@ -1,0 +1,18 @@
+Zyn’s live balance/equity reporting is wrong and needs to be fixed. In LIVE mode, when I ask for realtime balances, open orders, and trade history, here’s what happens:
+	•	Balances tool returns an EMPTY JSON object {} and Zyn then tells me my portfolio balance is $0.00.
+	•	Open orders come back correctly as empty when I have none.
+	•	Trade history comes back with multiple real trades (ETH/USD and ZEC/USD buys and sells), which proves the API keys are valid and data is flowing.
+
+In reality, my Kraken account currently has around $500 USD, so the balance/equity logic is clearly broken or reading from the wrong source.
+
+I need you to:
+	1.	Trace the exact code path used in LIVE mode to get balances and equity when I call whatever tool backs “Fetch my realtime balances using tools and show the raw tool output” and “What’s my current portfolio balance?”. Start from the command handler (e.g. execute_trading_command(‘bal’)) down through account_state and into ccxt/kraken. Identify exactly where {} is being produced.
+	2.	Inspect what ccxt’s fetch_balance() actually returns from Kraken in LIVE mode for my account (don’t print secrets, just structure). Kraken uses weird asset keys like ZUSD, XXBT, XETH, etc. If you’re not mapping those to USD, BTC, ETH, ZEC properly, that would explain why the balances object is ending up empty.
+	3.	Implement a robust mapping layer so that Kraken’s asset keys are normalized into clean symbols (e.g. ZUSD→USD, XXBT→BTC, XETH→ETH, etc.), and make sure account_state.get_balances() returns a non-empty dict that reflects the real account, not {}.
+	4.	Make sure the function that computes “portfolio balance” / “equity = $0.00” is reading from this normalized, non-empty balance structure and not from a stale cache, paper_ledger, or an uninitialized status service. Equity should be derived from the real LIVE balances, not hard-coded or defaulted to zero.
+	5.	Add a simple sanity check: if trade history in LIVE mode shows recent trades but balances are empty or equity is zero, log a clear warning so this inconsistency can’t silently exist again.
+	6.	After the fix, test in LIVE mode by calling the same tools Zyn uses and verify that:
+	•	The raw balance tool output is non-empty and matches my real Kraken account (approx $500 USD).
+	•	Zyn’s spoken answer to “What’s my current portfolio balance?” matches that tool output and no longer says $0.00 unless that’s actually true.
+
+The goal: when in LIVE mode, Zyn’s balance and equity must reflect my real Kraken account, not an empty object, not paper data, and not zero.
