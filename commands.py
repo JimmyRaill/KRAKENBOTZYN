@@ -927,12 +927,52 @@ def handle(text: str) -> str:
         except Exception as e:
             return f"[HISTORY-ERR] {e}"
     
+    # reconcile_tp_sl - Manually trigger TP/SL fill reconciliation
+    if s.lower() in ("reconcile_tp_sl", "reconcile tp sl", "check tp sl"):
+        try:
+            from reconciliation_service import reconcile_tp_sl_fills
+            trading_mode = get_mode_str()
+            result = reconcile_tp_sl_fills(trading_mode)
+            
+            pending_count = result['pending_count']
+            filled_count = result['filled_count']
+            errors = result.get('errors', [])
+            
+            result_lines = [
+                f"=== TP/SL RECONCILIATION RESULTS ({trading_mode}) ===",
+                f"📊 Pending orders checked: {pending_count}",
+                f"✅ Fills logged: {filled_count}",
+            ]
+            
+            if errors:
+                result_lines.append(f"\n⚠️ Errors ({len(errors)}):")
+                for err in errors[:5]:  # Show first 5 errors
+                    result_lines.append(f"  • {err}")
+            
+            if filled_count > 0:
+                fills = result.get('fills_logged', [])
+                result_lines.append(f"\n💰 New fills logged:")
+                for fill in fills:
+                    result_lines.append(
+                        f"  • {fill['type'].upper()} {fill['symbol']} "
+                        f"{fill['quantity']:.6f} @ ${fill['price']:.2f}"
+                    )
+            elif pending_count > 0:
+                result_lines.append(f"\n⏳ All {pending_count} pending orders still open (no fills yet)")
+            else:
+                result_lines.append(f"\n✅ No pending TP/SL orders to check")
+            
+            return "\n".join(result_lines)
+            
+        except Exception as e:
+            return f"[RECONCILE-ERR] {e}"
+    
     # debug_trade <symbol> - Show complete lifecycle of trades for a symbol
     m = re.fullmatch(r"(?i)debug[_ ]trade\s+([A-Za-z0-9:/\-\._]+)", s)
     if m:
         sym = _norm_sym(m.group(1))
         try:
-            from evaluation_log import get_last_evaluations, get_executed_orders
+            from evaluation_log import get_last_evaluations, get_executed_orders, get_pending_child_orders
             from datetime import datetime, timedelta
             
             result_lines = [f"=== TRADE LIFECYCLE DEBUG: {sym} ===\n"]
@@ -949,23 +989,76 @@ def handle(text: str) -> str:
             else:
                 result_lines.append(f"  • No evaluations found")
             
-            # 2. Check executed_orders table
+            # 2. Check executed_orders table (including TP/SL fills)
             result_lines.append(f"\n📝 EXECUTED ORDERS (last 24h):")
             executed = get_executed_orders(limit=20, symbol=sym, since_hours=24)
             if executed:
-                for order in executed:
-                    ts = order.get('timestamp_utc', '?')
-                    side = order.get('side', '?')
-                    qty = order.get('quantity', 0)
-                    price = order.get('entry_price', 0)
-                    order_id = order.get('order_id', '?')
-                    source = order.get('source', '?')
-                    result_lines.append(
-                        f"  • {ts[:19]} | {side.upper()} {qty:.6f} @ ${price:.2f} "
-                        f"| id={order_id} | source={source}"
-                    )
+                entry_orders = [o for o in executed if o.get('order_type', 'entry') == 'entry']
+                tp_orders = [o for o in executed if o.get('order_type') == 'tp']
+                sl_orders = [o for o in executed if o.get('order_type') == 'sl']
+                
+                if entry_orders:
+                    result_lines.append(f"  ENTRY orders:")
+                    for order in entry_orders:
+                        ts = order.get('timestamp_utc', '?')
+                        side = order.get('side', '?')
+                        qty = order.get('quantity', 0)
+                        price = order.get('entry_price', 0)
+                        order_id = order.get('order_id', '?')
+                        source = order.get('source', '?')
+                        result_lines.append(
+                            f"    • {ts[:19]} | {side.upper()} {qty:.6f} @ ${price:.2f} "
+                            f"| id={order_id} | source={source}"
+                        )
+                
+                if tp_orders:
+                    result_lines.append(f"  TP orders (filled):")
+                    for order in tp_orders:
+                        ts = order.get('timestamp_utc', '?')
+                        side = order.get('side', '?')
+                        qty = order.get('quantity', 0)
+                        price = order.get('entry_price', 0)
+                        order_id = order.get('order_id', '?')
+                        parent = order.get('parent_order_id', '?')
+                        result_lines.append(
+                            f"    • {ts[:19]} | TP {side.upper()} {qty:.6f} @ ${price:.2f} "
+                            f"| id={order_id} | parent={parent}"
+                        )
+                
+                if sl_orders:
+                    result_lines.append(f"  SL orders (filled):")
+                    for order in sl_orders:
+                        ts = order.get('timestamp_utc', '?')
+                        side = order.get('side', '?')
+                        qty = order.get('quantity', 0)
+                        price = order.get('entry_price', 0)
+                        order_id = order.get('order_id', '?')
+                        parent = order.get('parent_order_id', '?')
+                        result_lines.append(
+                            f"    • {ts[:19]} | SL {side.upper()} {qty:.6f} @ ${price:.2f} "
+                            f"| id={order_id} | parent={parent}"
+                        )
             else:
                 result_lines.append(f"  • No executed orders found in database")
+            
+            # 2.5. Check pending TP/SL orders
+            result_lines.append(f"\n⏳ PENDING TP/SL ORDERS (awaiting fill):")
+            pending = get_pending_child_orders(trading_mode=get_mode_str().lower(), status="pending")
+            pending_for_symbol = [p for p in pending if p.get('symbol') == sym]
+            if pending_for_symbol:
+                for order in pending_for_symbol:
+                    order_type = order.get('order_type', '?')
+                    order_id = order.get('order_id', '?')
+                    side = order.get('side', '?')
+                    qty = order.get('quantity', 0)
+                    limit_price = order.get('limit_price', 0)
+                    parent = order.get('parent_order_id', '?')
+                    result_lines.append(
+                        f"  • {order_type.upper()} {side.upper()} {qty:.6f} @ ${limit_price:.2f} "
+                        f"| id={order_id} | parent={parent}"
+                    )
+            else:
+                result_lines.append(f"  • No pending TP/SL orders")
             
             # 3. Check Kraken trade history
             result_lines.append(f"\n💰 KRAKEN TRADE HISTORY (last 20):")
@@ -1005,9 +1098,10 @@ def handle(text: str) -> str:
             # 5. Summary
             result_lines.append(f"\n📈 SUMMARY:")
             result_lines.append(f"  • Signal generated: {'YES' if evals and any(e.get('decision') in ['BUY', 'LONG', 'SELL', 'SELL_ALL'] for e in evals) else 'NO'}")
-            result_lines.append(f"  • Order sent to Kraken: {'YES' if executed else 'NO'}")
-            result_lines.append(f"  • Kraken order IDs: {', '.join(set(o.get('order_id', '?') for o in executed)) if executed else 'NONE'}")
-            result_lines.append(f"  • Fills in trade history: {'YES' if trades else 'NO'}")
+            result_lines.append(f"  • Entry orders logged: {len([o for o in executed if o.get('order_type', 'entry') == 'entry']) if executed else 0}")
+            result_lines.append(f"  • TP fills logged: {len([o for o in executed if o.get('order_type') == 'tp']) if executed else 0}")
+            result_lines.append(f"  • SL fills logged: {len([o for o in executed if o.get('order_type') == 'sl']) if executed else 0}")
+            result_lines.append(f"  • Pending TP/SL: {len(pending_for_symbol)}")
             result_lines.append(f"  • Current open orders: {len(opens) if opens else 0}")
             
             return "\n".join(result_lines)
