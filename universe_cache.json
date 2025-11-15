@@ -1,0 +1,165 @@
+{
+  "last_scan": "2025-11-15T19:21:07.706761",
+  "assets": [
+    {
+      "symbol": "ADA/USD",
+      "base": "ADA",
+      "quote": "USD",
+      "volume_24h": 3349724.834167013,
+      "price": 0.508644,
+      "volatility": 0.09414518723387005,
+      "liquidity_score": 10.705579247259926,
+      "rank": 1
+    },
+    {
+      "symbol": "ALGO/USD",
+      "base": "ALGO",
+      "quote": "USD",
+      "volume_24h": 1035070.5645081176,
+      "price": 0.16493,
+      "volatility": 0.09209501466822755,
+      "liquidity_score": 9.88595334372424,
+      "rank": 2
+    },
+    {
+      "symbol": "ASTER/USD",
+      "base": "ASTER",
+      "quote": "USD",
+      "volume_24h": 1047908.7643262185,
+      "price": 1.1338,
+      "volatility": 0.14729229140941966,
+      "liquidity_score": 9.844929557045472,
+      "rank": 3
+    },
+    {
+      "symbol": "AAVE/USD",
+      "base": "AAVE",
+      "quote": "USD",
+      "volume_24h": 921471.9130105682,
+      "price": 181.76,
+      "volatility": 0.11710708965330445,
+      "liquidity_score": 9.778347535277392,
+      "rank": 4
+    },
+    {
+      "symbol": "AERO/USD",
+      "base": "AERO",
+      "quote": "USD",
+      "volume_24h": 922037.5845796813,
+      "price": 0.8688,
+      "volatility": 0.20191422297775885,
+      "liquidity_score": 9.726434545170608,
+      "rank": 5
+    },
+    {
+      "symbol": "AB/USD",
+      "base": "AB",
+      "quote": "USD",
+      "volume_24h": 431531.7324053187,
+      "price": 0.0069,
+      "volatility": 0.08781493868450391,
+      "liquidity_score": 9.278883314055536,
+      "rank": 6
+    },
+    {
+      "symbol": "ARB/USD",
+      "base": "ARB",
+      "quote": "USD",
+      "volume_24h": 337940.9991926467,
+      "price": 0.2444,
+      "volatility": 0.11399974820596756,
+      "liquidity_score": 9.07903662155678,
+      "rank": 7
+    },
+    {
+      "symbol": "0G/USD",
+      "base": "0G",
+      "quote": "USD",
+      "volume_24h": 263189.86814238614,
+      "price": 1.314,
+      "volatility": 0.24686804823791125,
+      "liquidity_score": 8.83263621692149,
+      "rank": 8
+    },
+    {
+      "symbol": "APT/USD",
+      "base": "APT",
+      "quote": "USD",
+      "volume_24h": 230450.4415073758,
+      "price": 2.9449,
+      "volatility": 0.10650485715852961,
+      "liquidity_score": 8.818375939419969,
+      "rank": 9
+    },
+    {
+      "symbol": "ALCX/USD",
+      "base": "ALCX",
+      "quote": "USD",
+      "volume_24h": 247869.80146051588,
+      "price": 11.91,
+      "volatility": 0.32984563715042303,
+      "liquidity_score": 8.770440284323957,
+      "rank": 10
+    },
+    {
+      "symbol": "1INCH/USD",
+      "base": "1INCH",
+      "quote": "USD",
+      "volume_24h": 155088.2759942828,
+      "price": 0.1893,
+      "volatility": 0.14990450648136863,
+      "liquidity_score": 8.505821715931887,
+      "rank": 11
+    },
+    {
+      "symbol": "AR/USD",
+      "base": "AR",
+      "quote": "USD",
+      "volume_24h": 152080.84189750484,
+      "price": 4.59,
+      "volatility": 0.24317077258253728,
+      "liquidity_score": 8.449865880955523,
+      "rank": 12
+    },
+    {
+      "symbol": "AKT/USD",
+      "base": "AKT",
+      "quote": "USD",
+      "volume_24h": 135889.2543638978,
+      "price": 0.582,
+      "volatility": 0.12351308485329109,
+      "liquidity_score": 8.432857015604583,
+      "rank": 13
+    },
+    {
+      "symbol": "AI16Z/USD",
+      "base": "AI16Z",
+      "quote": "USD",
+      "volume_24h": 132542.83636817842,
+      "price": 0.0271,
+      "volatility": 0.5466931592392846,
+      "liquidity_score": 8.30530701317191,
+      "rank": 14
+    },
+    {
+      "symbol": "AKE/USD",
+      "base": "AKE",
+      "quote": "USD",
+      "volume_24h": 114589.16581828758,
+      "price": 0.0005359,
+      "volatility": 0.27668767135085476,
+      "liquidity_score": 8.242175458169562,
+      "rank": 15
+    },
+    {
+      "symbol": "ALLO/USD",
+      "base": "ALLO",
+      "quote": "USD",
+      "volume_24h": 110561.5793154402,
+      "price": 0.2185,
+      "volatility": 0.5414187643020594,
+      "liquidity_score": 8.178800311215904,
+      "rank": 16
+    }
+  ]
+}

@@ -1,0 +1,218 @@
+You are now in BUILD MODE.
+
+Goal: Perform a deep, full-system AUDIT + FIX pass over the entire trading bot stack, then RESTART BOTH WORKFLOWS.
+
+I want you to:
+- Systematically scan for bugs, broken logic, miswired pieces, bad error handling, unused or half-implemented tools.
+- Fix anything that is clearly wrong, inconsistent, or misleading.
+- Ensure all components (files, workers, tools, commands, autopilot, LLM agent, strategies, risk management, universe scanner, safety monitor, logging, DB) work together coherently for their intended purposes.
+- Then restart BOTH workflows (autopilot/worker and chat/API server).
+
+You are allowed to MODIFY CODE in this prompt. This is NOT just analysis. If you find a real bug or bad wiring, fix it.
+
+Focus files/modules (non-exhaustive, but MUST include all of these if present):
+- autopilot.py
+- strategy_orchestrator.py
+- regime_detector.py
+- risk_manager.py
+- trading_config.py
+- bracket_order_manager.py OR bracket logic in commands.py
+- commands.py
+- exchange_manager.py
+- paper_exchange_wrapper.py
+- account_state.py
+- evaluation_log.py / telemetry_db.py
+- safety_monitor.py (or equivalent)
+- crypto_universe.py
+- llm_agent.py
+- trade_result_validator.py (or similar validation logic)
+- Any tools / workers for chat, autopilot, or SMS/notifications
+
+────────────────────────
+SECTION 1 – STATIC & STRUCTURAL AUDIT
+────────────────────────
+
+1) Search for obvious structural issues:
+   - Unused, half-implemented, or dead code paths that are clearly wrong for production.
+   - TODO/XXX markers where critical logic was never finished.
+   - Broad `except Exception` blocks that swallow errors without logging or re-raising.
+   - Inconsistent naming that causes bugs (like the `long` vs `buy` mismatch you already found).
+
+2) For each CRITICAL component, verify:
+
+   a) autopilot.py
+      - The main loop (`run_forever` / `loop_once`) is:
+        - Referencing the correct exchange object (PaperExchangeWrapper in live/paper modes).
+        - Respecting env flags (KRAKEN_VALIDATE_ONLY, ENABLE_CRYPTO_UNIVERSE, AUTO_TRADE_TEST, etc.).
+      - Strategy call → signal → execution flow is consistent:
+        - strategy_orchestrator returns a TradeSignal with clear fields (action, reason, regime, etc.).
+        - Actions are normalized consistently (e.g., 'long' → 'buy', 'short' → 'sell').
+        - Execution checks use the normalized action (no more mismatched `action=="buy"` vs `action=="long"`).
+
+   b) commands.py
+      - All command handlers:
+        - Correctly parse user commands and symbol arguments.
+        - Use the same get_exchange() / exchange wrapper as autopilot (no rogue ccxt instances).
+        - Surface REAL Kraken errors rather than generic or misleading messages.
+      - Bracket logic:
+        - Entry, TP, SL placement are consistent and use the same exchange.
+        - Rollback logic:
+          - Closes position AND cancels TP on failure where appropriate.
+        - Force trade test:
+          - Uses the same bracket pipeline as autopilot.
+          - Correctly respects ENABLE_FORCE_TRADE and LIVE/PAPER mode.
+
+   c) exchange_manager.py + paper_exchange_wrapper.py
+      - Single source of truth for mode (paper vs live).
+      - No code creates ccxt.kraken() directly except through ExchangeManager.
+      - All order calls (market, limit, stop) go through the wrapper.
+      - Validate mode flag is respected correctly (no accidental validate/dry-run when LIVE is expected).
+
+   d) account_state.py + evaluation_log.py
+      - Balance fetching:
+        - Correctly parses Kraken’s balance structure (X/Z prefixes, USD vs ZUSD).
+        - Computes equity_usd consistently, using correct quote currency conversion.
+      - Evaluation logging:
+        - No schema mismatches (column names correct).
+        - No silent failures on log_evaluation (wrap and log errors).
+        - DB queries used elsewhere match the schema.
+
+   e) crypto_universe.py
+      - CryptoUniverseScanner:
+        - Filters spot USD markets correctly (no derivatives / leverage tokens for now).
+        - min_volume_24h and max_assets are applied logically.
+        - Handles API errors with retries/logs, not silent failure.
+      - Autopilot’s symbol selection logic integrates with this cleanly when ENABLE_CRYPTO_UNIVERSE=1.
+
+   f) safety_monitor.py
+      - Checks for:
+        - Naked positions (positions without SL).
+        - Orphan orders (TP without position).
+      - Logs clearly what was found.
+      - Its configuration: if it’s currently warning-only, confirm that. If it attempts auto-fixes, confirm behavior is safe and idempotent.
+
+   g) llm_agent.py + trade_result_validator.py
+      - Tools:
+        - execute_trading_command tool description accurately describes what it does (including force trades, evaluations, status).
+        - Commands like `bal`, `open`, `debug status`, `show evaluations`, `force trade test`, etc. always call the trading tool, not hallucinated data.
+      - Validator:
+        - If tool says `"ok": false`, the user sees the REAL `error` message.
+        - No generic “cannot confirm execution status” remains for tool failures.
+        - Never reports success when tools fail.
+      - System prompt:
+        - Clearly instructs the model to defer to tools for trading data and not make up any trading results.
+
+3) Fix any structural or wiring bugs you find:
+   - Mismatched action names.
+   - Wrong env flag usage.
+   - Code paths that can never execute but are supposed to.
+   - Misordered logic (e.g., risk checks being bypassed unintentionally).
+
+────────────────────────
+SECTION 2 – RUNTIME & LOGIC CONSISTENCY AUDIT
+────────────────────────
+
+Run through a series of sanity checks in code (not manual chat):
+
+1) Simulate several strategy evaluation cycles with mocked data:
+   - Construct fake OHLCV + indicators for:
+     - NO_TRADE regime.
+     - RANGE regime with a valid long entry.
+     - Strong trend regime with a valid long entry.
+   - Verify that:
+     - strategy_orchestrator returns the expected TradeSignal.
+     - autopilot logs these correctly in evaluation_log (HOLD, SKIP, LONG, etc.).
+     - For a valid LONG signal:
+       - The execution path calls the bracket logic when risk/trade limits allow.
+       - If symbol meets min-size constraints, the code reaches open_position_with_brackets (or equivalent).
+
+2) Run a dry-run (validate mode) pipeline:
+   - With KRAKEN_VALIDATE_ONLY=1:
+     - Ensure orders are routed as “paper” and NEVER hit real Kraken.
+     - Force trade test in validate mode:
+       - Must NOT place real orders.
+       - Must clearly say it’s simulate-only / validate-only.
+
+3) Run a forced LIVE pipeline test (with very small size) in code:
+   - Confirm:
+     - The entire call chain (autopilot OR force-trade handler) flows through:
+       - get_exchange() → PaperExchangeWrapper(_is_paper=False) → ccxt.kraken.
+     - All errors from Kraken are logged and surfaced correctly.
+
+4) Risk / limits:
+   - Confirm:
+     - Risk per trade pct and max_active_risk_pct are applied exactly once (no double-scaling).
+     - Kraken min cost / min amount logic is correct:
+       - If the calculated size is too small:
+         - It is bumped up to min size OR the trade is rejected with a clear message; no silent infinite retries.
+
+If you find inconsistencies in runtime logic, fix them.
+
+────────────────────────
+SECTION 3 – ERROR HANDLING & MESSAGING
+────────────────────────
+
+1) Search all code for:
+   - Vague messages like:
+     - "cannot confirm execution status"
+     - "something went wrong"
+   - Replace them, where appropriate, with:
+     - Actual tool / API error content (from Kraken or internal checks).
+     - Clear, actionable error descriptions.
+
+2) Make sure:
+   - Every exception that affects trading or state is:
+     - Logged with enough context (symbol, side, amount, price, mode).
+     - Either:
+       - Properly handled and recovered from, OR
+       - Propagated up with a clear error.
+
+3) Ensure there are NO paths where:
+   - A trade partially succeeds but the system silently believes it failed.
+   - A position is opened but not reflected in state.
+   - Bracket orders are partially placed and never cleaned up.
+
+────────────────────────
+SECTION 4 – FINAL INTEGRATION CHECKS
+────────────────────────
+
+Before you restart workflows:
+
+1) Ensure:
+   - Autopilot:
+     - Uses symbols = CryptoUniverseScanner output when ENABLE_CRYPTO_UNIVERSE=1.
+     - Falls back to SYMBOLS env-var list on scanner failure.
+   - Commands:
+     - Use the same symbol normalization logic as autopilot (`_norm_sym`) so chat commands and autopilot agree on symbol naming.
+
+2) Confirm:
+   - There are NO code paths using a different API key or different ccxt client than the main ExchangeManager.
+   - Balances reported to the user (via `bal` and `debug status`) reflect the **same account** used for order placement.
+
+3) Confirm:
+   - evaluation_log queries in any analytics/status commands use correct column names and don’t crash on NULLs or missing fields.
+
+Fix any issues you find.
+
+────────────────────────
+SECTION 5 – RESTART BOTH WORKFLOWS
+────────────────────────
+
+After all fixes are applied and saved:
+
+1) Restart the AUTOPILOT / WORKER process:
+   - Stop any existing background loop (run_forever / scheduler).
+   - Start it cleanly with the updated code and environment variables.
+
+2) Restart the CHAT/API SERVER:
+   - Stop the FastAPI/HTTP server that exposes /api/command (and any other endpoints).
+   - Start it fresh so it’s running the updated llm_agent, command handling, and validators.
+
+3) On startup, log clearly:
+   - "[SYSTEM] Autopilot started – mode={paper|live}, universe={static|scanner}, risk_per_trade_pct=..., max_active_risk_pct=..."
+   - "[SYSTEM] API server started – tools and validators wired."
+
+Then stop. In your BUILD summary, describe:
+- Which files you changed.
+- The most important bugs you found and fixed.
+- Confirmation that both workflows were restarted successfully.
