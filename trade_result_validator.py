@@ -167,6 +167,30 @@ class LLMResponseValidator:
         r'\bcurrent\s+price\s+(of|for|is)\b',
         r'\bmarket\s+price\b',
         r'\bprice\s+(data|information|quote)\b',
+        
+        # Interrogative/question starters (asking about trades, not claiming execution)
+        r'\bhow\s+many\s+(trades?|orders?|positions?)\b',
+        r'\bshow\s+(me|us)\s+(the\s+)?(last|recent|all)\s+\d+\s+(trades?|orders?|positions?)\b',
+        r'\bgive\s+(me|us)\s+(the\s+)?(exact\s+)?(number|count|list)\b',
+        r'\bwhat\s+(are|is)\s+(the\s+)?(number|count|total)\s+of\b',
+        r'\blist\s+(all|the)\s+(trades?|orders?|positions?)\b',
+        r'\btell\s+me\s+(about|the\s+number)\b',
+        
+        # Historical/retrospective language (asking about past data)
+        r'\bin\s+the\s+last\s+\d+\s+(hours?|days?|minutes?)\b',
+        r'\btrade\s+history\b',
+        r'\bfrom\s+(kraken|exchange|the\s+exchange)\b',
+        r'\blast\s+\d+\s+(trades?|orders?|entries|executions)\b',
+        r'\brecent\s+(trades?|orders?|history)\b',
+        r'\bhistorical\s+(trades?|orders?|data)\b',
+        
+        # Data presentation headers/labels (NOT execution claims)
+        r'\bsummary\s+of\s+(requested\s+)?information\b',
+        r'\bnumber\s+of\s+(trades?|orders?|positions?)\s+in\s+(kraken|trade\s+history)\b',
+        r'\bentries\s+from\s+(your|the)\s+(internal|executed|order)\s+log\b',
+        r'\b(executed|placed)\s+(trades?|orders?)\s+in\s+the\s+last\b',  # "Executed trades in the last 24h" as a header
+        r'\b\d+\s+entries\b',  # "0 entries", "5 entries"
+        r'\b(zero|no)\s+(trades?|orders?|entries)\b',  # "No trades", "Zero entries"
     ]
     
     # Error/failure patterns (EXPANDED for Kraken-specific errors)
