@@ -191,18 +191,53 @@ def _ensure_min_cost(ex, symbol: str, amount: float, price: float) -> float:
     return amount
 
 def _create_stop_market(ex, symbol: str, side: str, amount: float, stop_px: float):
-    """Native stop-market using ccxt unified create_order with stopPrice."""
+    """
+    Native stop-market using ccxt unified create_order with stopPrice.
+    Logs full Kraken errors for debugging bracket failures.
+    """
     amt = _safe_float(ex.amount_to_precision(symbol, amount), None)
     stp = _safe_float(ex.price_to_precision(symbol, stop_px), None)
     if amt is None or amt <= 0 or stp is None or stp <= 0:
         raise ValueError("bad stop params")
+    
     params = {"stopPrice": stp, "trigger": "last"}  # Kraken via ccxt
-    return ex.create_order(symbol, "market", side, float(amt), None, params)
+    
+    # Log attempt with full details
+    print(f"[SL-CREATE-ATTEMPT] {symbol} | side={side} | amount={amt} | stop_price={stp} | params={params}")
+    
+    try:
+        order = ex.create_order(symbol, "market", side, float(amt), None, params)
+        order_id = order.get("id") or order.get("orderId") or "unknown"
+        print(f"[SL-CREATE-SUCCESS] {symbol} stop-loss order placed | id={order_id}")
+        return order
+    except Exception as e:
+        # Log FULL Kraken error (not truncated)
+        print(f"[SL-CREATE-ERROR] {symbol} stop-loss FAILED | Error type: {type(e).__name__}")
+        print(f"[SL-CREATE-ERROR] Full error: {repr(e)}")
+        
+        # Try to log to evaluation_log for forensics
+        try:
+            from evaluation_log import log_evaluation
+            log_evaluation(
+                symbol=symbol,
+                decision="SL_ORDER_FAILED",
+                reason=f"Stop-loss order creation failed: {side} {amt} @ stop ${stp}",
+                error_message=f"{type(e).__name__}: {str(e)}"
+            )
+        except Exception as log_err:
+            print(f"[SL-CREATE-ERROR] Could not log to evaluation_log: {log_err}")
+        
+        # Re-raise the original exception (preserves Kraken error message)
+        raise
 
 
 def _place_tp_and_sl_with_retry(ex, sym, fill_size, tp_p, sl_p, side, max_retries=3, delay_sec=2):
     """
     Place TP and SL orders with retry logic.
+    
+    CRITICAL: If TP succeeds but SL fails, this function raises an exception BUT
+    the caller can still access the tp_order via exception handling by checking
+    if it was assigned before the SL failure.
     
     Args:
         ex: Exchange instance
@@ -218,21 +253,35 @@ def _place_tp_and_sl_with_retry(ex, sym, fill_size, tp_p, sl_p, side, max_retrie
         (tp_order, sl_order) on success
     
     Raises:
-        Exception if all retries fail
+        Exception if all retries fail (preserves original Kraken error)
     """
     import time
     
     last_err = None
+    tp_order = None  # Track TP order across retries
+    
     for attempt in range(1, max_retries + 1):
         try:
             if side == 'long':
                 # LONG: Sell TP and SL
+                # Create TP first (limit order, rarely fails)
                 tp_order = ex.create_limit_sell_order(sym, float(fill_size), float(tp_p))
+                tp_id = tp_order.get("id") or tp_order.get("orderId") or "unknown"
+                print(f"[BRACKET-RETRY] TP order placed: {tp_id} @ ${tp_p}")
+                
+                # Create SL (stop-market, more likely to fail due to trigger price issues)
                 sl_order = _create_stop_market(ex, sym, "sell", float(fill_size), float(sl_p))
+                sl_id = sl_order.get("id") or sl_order.get("orderId") or "unknown"
+                print(f"[BRACKET-RETRY] SL order placed: {sl_id} @ stop ${sl_p}")
             else:
                 # SHORT: Buy TP and SL
                 tp_order = ex.create_limit_buy_order(sym, float(fill_size), float(tp_p))
+                tp_id = tp_order.get("id") or tp_order.get("orderId") or "unknown"
+                print(f"[BRACKET-RETRY] TP order placed: {tp_id} @ ${tp_p}")
+                
                 sl_order = _create_stop_market(ex, sym, "buy", float(fill_size), float(sl_p))
+                sl_id = sl_order.get("id") or sl_order.get("orderId") or "unknown"
+                print(f"[BRACKET-RETRY] SL order placed: {sl_id} @ stop ${sl_p}")
             
             # Success!
             if attempt > 1:
@@ -241,14 +290,34 @@ def _place_tp_and_sl_with_retry(ex, sym, fill_size, tp_p, sl_p, side, max_retrie
         
         except Exception as e:
             last_err = e
-            if attempt < max_retries:
+            
+            # If TP was created but SL failed, we have a problem
+            if tp_order:
+                tp_id = tp_order.get("id") or tp_order.get("orderId")
+                print(f"⚠️  [BRACKET-RETRY] Attempt {attempt}/{max_retries}: TP created ({tp_id}) but SL failed: {e}")
+                
+                # Cancel the TP order before retrying (prevent orphans during retries)
+                if tp_id and attempt < max_retries:
+                    try:
+                        print(f"[BRACKET-RETRY] Canceling TP {tp_id} before retry")
+                        ex.cancel_order(tp_id, sym)
+                        tp_order = None  # Reset for next attempt
+                    except Exception as cancel_err:
+                        print(f"[BRACKET-RETRY] Failed to cancel TP {tp_id}: {cancel_err}")
+            else:
                 print(f"⚠️  [BRACKET-RETRY] Attempt {attempt}/{max_retries} failed for {sym} TP/SL: {e}")
+            
+            if attempt < max_retries:
                 print(f"    Retrying in {delay_sec}s...")
                 time.sleep(delay_sec)
             else:
                 print(f"❌ [BRACKET-RETRY] All {max_retries} attempts failed for {sym} TP/SL")
+                # If TP exists on final failure, attach it to exception for caller to handle
+                if tp_order:
+                    # Store tp_order in exception for rollback handler to access
+                    last_err.tp_order = tp_order
     
-    # All retries exhausted
+    # All retries exhausted - raise with tp_order attached if it exists
     raise last_err
 
 # ----------------- public router -----------------
@@ -499,16 +568,71 @@ def handle(text: str) -> str:
                             return f"[BRACKET-ERR] Entry filled at ${fill_price:.2f} but SL ${sl_p:.2f} is not below - position closed for safety (slippage detected)"
                     
                     # Create protective orders using ACTUAL fill size with retry logic
+                    tp_order = None
+                    sl_order = None
                     try:
                         tp_order, sl_order = _place_tp_and_sl_with_retry(
                             ex, sym, fill_size, tp_p, sl_p, side='long', 
                             max_retries=3, delay_sec=2
                         )
                     except Exception as protect_err:
-                        # ROLLBACK: Close position if all retries fail
-                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed after retries, closing position: {protect_err}")
-                        ex.create_market_sell_order(sym, float(fill_size))
-                        return f"[BRACKET-ERR] Entry executed but TP/SL failed after 3 retries - position closed for safety: {protect_err}"
+                        # ROLLBACK: TP/SL creation failed - must cleanup completely
+                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed after retries: {protect_err}")
+                        
+                        # Track rollback success for accurate reporting
+                        tp_canceled = False
+                        position_closed = False
+                        rollback_errors = []
+                        
+                        # Step 1: Cancel TP order if it was created (prevents orphan TP)
+                        # Check both local tp_order and exception-attached tp_order
+                        tp_to_cancel = tp_order or getattr(protect_err, 'tp_order', None)
+                        if tp_to_cancel:
+                            tp_id = tp_to_cancel.get("id") or tp_to_cancel.get("orderId")
+                            if tp_id:
+                                try:
+                                    print(f"[BRACKET-ROLLBACK] Canceling orphan TP order {tp_id} for {sym}")
+                                    ex.cancel_order(tp_id, sym)
+                                    print(f"[BRACKET-ROLLBACK] ✅ TP order {tp_id} canceled successfully")
+                                    tp_canceled = True
+                                except Exception as cancel_err:
+                                    err_msg = f"Failed to cancel TP {tp_id}: {repr(cancel_err)}"
+                                    print(f"[BRACKET-ROLLBACK] ⚠️ {err_msg}")
+                                    rollback_errors.append(err_msg)
+                        
+                        # Step 2: Close position (market-sell the entry)
+                        try:
+                            print(f"[BRACKET-ROLLBACK] Closing {sym} position with market sell of {fill_size}")
+                            ex.create_market_sell_order(sym, float(fill_size))
+                            print(f"[BRACKET-ROLLBACK] ✅ Position closed successfully")
+                            position_closed = True
+                        except Exception as close_err:
+                            err_msg = f"CRITICAL: Failed to close position {sym}: {repr(close_err)}"
+                            print(f"[BRACKET-ROLLBACK] 🚨 {err_msg}")
+                            rollback_errors.append(err_msg)
+                            
+                            # Log critical failure to evaluation_log for alerting
+                            try:
+                                from evaluation_log import log_evaluation
+                                log_evaluation(
+                                    symbol=sym,
+                                    decision="ROLLBACK_FAILED",
+                                    reason="Bracket rollback could not close position - MANUAL INTERVENTION REQUIRED",
+                                    error_message=err_msg
+                                )
+                            except:
+                                pass
+                        
+                        # Build truthful error message based on actual outcomes
+                        rollback_status = []
+                        if tp_to_cancel:
+                            rollback_status.append(f"TP cancel: {'✅ SUCCESS' if tp_canceled else '❌ FAILED'}")
+                        rollback_status.append(f"Position close: {'✅ SUCCESS' if position_closed else '❌ FAILED'}")
+                        
+                        rollback_summary = ", ".join(rollback_status)
+                        error_details = " | ".join(rollback_errors) if rollback_errors else "See logs"
+                        
+                        return f"[BRACKET-ERR] Bracket FAILED for {sym}: Entry filled, TP placed, SL failed after 3 retries. Rollback: {rollback_summary}. Errors: {error_details}. Original error: {protect_err}"
                 else:
                     # SHORT: Market sell entry
                     entry_order = ex.create_market_sell_order(sym, float(amt_p))
@@ -547,16 +671,71 @@ def handle(text: str) -> str:
                             return f"[BRACKET-ERR] Entry filled at ${fill_price:.2f} but SL ${sl_p:.2f} is not above - position closed for safety (slippage detected)"
                     
                     # Create protective orders using ACTUAL fill size with retry logic
+                    tp_order = None
+                    sl_order = None
                     try:
                         tp_order, sl_order = _place_tp_and_sl_with_retry(
                             ex, sym, fill_size, tp_p, sl_p, side='short', 
                             max_retries=3, delay_sec=2
                         )
                     except Exception as protect_err:
-                        # ROLLBACK: Close position if all retries fail
-                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed after retries, closing position: {protect_err}")
-                        ex.create_market_buy_order(sym, float(fill_size))
-                        return f"[BRACKET-ERR] Entry executed but TP/SL failed after 3 retries - position closed for safety: {protect_err}"
+                        # ROLLBACK: TP/SL creation failed - must cleanup completely
+                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed after retries: {protect_err}")
+                        
+                        # Track rollback success for accurate reporting
+                        tp_canceled = False
+                        position_closed = False
+                        rollback_errors = []
+                        
+                        # Step 1: Cancel TP order if it was created (prevents orphan TP)
+                        # Check both local tp_order and exception-attached tp_order
+                        tp_to_cancel = tp_order or getattr(protect_err, 'tp_order', None)
+                        if tp_to_cancel:
+                            tp_id = tp_to_cancel.get("id") or tp_to_cancel.get("orderId")
+                            if tp_id:
+                                try:
+                                    print(f"[BRACKET-ROLLBACK] Canceling orphan TP order {tp_id} for {sym}")
+                                    ex.cancel_order(tp_id, sym)
+                                    print(f"[BRACKET-ROLLBACK] ✅ TP order {tp_id} canceled successfully")
+                                    tp_canceled = True
+                                except Exception as cancel_err:
+                                    err_msg = f"Failed to cancel TP {tp_id}: {repr(cancel_err)}"
+                                    print(f"[BRACKET-ROLLBACK] ⚠️ {err_msg}")
+                                    rollback_errors.append(err_msg)
+                        
+                        # Step 2: Close position (market-buy to cover short)
+                        try:
+                            print(f"[BRACKET-ROLLBACK] Closing {sym} SHORT position with market buy of {fill_size}")
+                            ex.create_market_buy_order(sym, float(fill_size))
+                            print(f"[BRACKET-ROLLBACK] ✅ Position closed successfully")
+                            position_closed = True
+                        except Exception as close_err:
+                            err_msg = f"CRITICAL: Failed to close SHORT position {sym}: {repr(close_err)}"
+                            print(f"[BRACKET-ROLLBACK] 🚨 {err_msg}")
+                            rollback_errors.append(err_msg)
+                            
+                            # Log critical failure to evaluation_log for alerting
+                            try:
+                                from evaluation_log import log_evaluation
+                                log_evaluation(
+                                    symbol=sym,
+                                    decision="ROLLBACK_FAILED",
+                                    reason="Bracket rollback could not close SHORT position - MANUAL INTERVENTION REQUIRED",
+                                    error_message=err_msg
+                                )
+                            except:
+                                pass
+                        
+                        # Build truthful error message based on actual outcomes
+                        rollback_status = []
+                        if tp_to_cancel:
+                            rollback_status.append(f"TP cancel: {'✅ SUCCESS' if tp_canceled else '❌ FAILED'}")
+                        rollback_status.append(f"Position close: {'✅ SUCCESS' if position_closed else '❌ FAILED'}")
+                        
+                        rollback_summary = ", ".join(rollback_status)
+                        error_details = " | ".join(rollback_errors) if rollback_errors else "See logs"
+                        
+                        return f"[BRACKET-ERR] Bracket FAILED for {sym}: Entry filled, TP placed, SL failed after 3 retries. Rollback: {rollback_summary}. Errors: {error_details}. Original error: {protect_err}"
                 
                 tid = str(tp_order.get("id") or tp_order.get("orderId") or "<no-id>")
                 sid = str(sl_order.get("id") or sl_order.get("orderId") or "<no-id>")
@@ -805,15 +984,32 @@ def handle(text: str) -> str:
             # Log to evaluation_log for forensic analysis
             try:
                 from evaluation_log import log_evaluation
-                log_evaluation(
-                    symbol=symbol,
-                    decision="FORCE_TRADE_TEST",
-                    reason=f"Force trade test executed via ENABLE_FORCE_TRADE flag",
-                    trading_mode=mode,
-                    position_size=test_qty_p,
-                    price=current_price,
-                    error_message=f"Bracket result: {bracket_result}"
-                )
+                
+                # Determine success/failure and log appropriately
+                is_success = "BRACKET OK" in bracket_result
+                
+                if is_success:
+                    log_evaluation(
+                        symbol=symbol,
+                        decision="FORCE_TRADE_TEST_SUCCESS",
+                        reason=f"Force trade test completed successfully with full bracket (entry + TP + SL)",
+                        trading_mode=mode,
+                        position_size=test_qty_p,
+                        price=current_price,
+                        error_message=None
+                    )
+                else:
+                    # Extract error message from bracket result
+                    error_msg = bracket_result if "[BRACKET-ERR]" in bracket_result else f"Bracket result: {bracket_result}"
+                    log_evaluation(
+                        symbol=symbol,
+                        decision="FORCE_TRADE_TEST_FAIL",
+                        reason=f"Force trade test failed - bracket did not complete",
+                        trading_mode=mode,
+                        position_size=test_qty_p,
+                        price=current_price,
+                        error_message=error_msg
+                    )
             except Exception as log_err:
                 print(f"[FORCE-TRADE-TEST] Warning: Failed to log: {log_err}")
             

@@ -1,0 +1,232 @@
+You are now in BUILD MODE.
+
+Goal: Fix the bracket (TP/SL) behavior so that:
+- Stop-loss orders are created reliably (or at least we see the REAL Kraken error).
+- If bracket creation fails, rollback fully cleans up (no orphan TP orders).
+- User-facing messages clearly describe what actually happened (no vague “cannot confirm” or misleading “insufficient funds” when a trade actually executed).
+
+You ALREADY confirmed in PLAN MODE that:
+- Entry and TP orders *did* execute on ETH/USD.
+- SL failed after 3 retries.
+- Rollback sold the ETH but left the TP order orphaned.
+- Safety monitor logged that orphan TP.
+
+Now implement the following, step by step.
+
+────────────────────────
+A) IMPROVE STOP-LOSS CREATION & ERROR LOGGING
+────────────────────────
+
+Files to modify:
+- commands.py (bracket handler + retry logic)
+- (and if needed) the helper that creates SL orders: `_create_stop_market` or whatever name you currently use.
+
+A1) Make `_create_stop_market` log and surface the REAL Kraken error
+
+1. Locate `_create_stop_market` in commands.py (or its dedicated module).
+2. Wrap the core `exchange.create_order(...)` call with:
+   - Detailed logging of:
+     - symbol
+     - side
+     - amount
+     - stop_price
+     - raw params passed to ccxt.kraken
+   - A try/except that:
+     - On exception, logs the FULL error object (not truncated) to stdout and/or evaluation_log.
+     - Re-raises the exception so the caller (retry logic) can handle it.
+
+Example structure (pseudo-code, adapt to your actual signature):
+
+    def _create_stop_market(exchange, symbol, side, amount, stop_price):
+        params = {...}  # your existing params
+        print(f"[SL-CREATE-ATTEMPT] symbol={symbol}, side={side}, amount={amount}, stop_price={stop_price}, params={params}")
+        try:
+            order = exchange.create_order(
+                symbol=symbol,
+                type='stop-loss',   # or whatever is currently used
+                side=side,
+                amount=amount,
+                params=params,
+            )
+            print(f"[SL-CREATE-SUCCESS] {symbol} stop-loss id={order.get('id') or order}")
+            return order
+        except Exception as e:
+            print(f"[SL-CREATE-ERROR] {symbol} stop-loss failed: {repr(e)}")
+            # optionally log_evaluation(..., error_message=str(e))
+            raise
+
+3. Do NOT silently swallow the SL error anywhere in this path. It must:
+   - be logged,
+   - bubble up to the retry logic,
+   - then to the bracket handler.
+
+A2) Verify `_place_tp_and_sl_with_retry` correctly passes and returns TP + SL
+
+1. Locate `_place_tp_and_sl_with_retry` in commands.py.
+2. Confirm it:
+   - Attempts TP + SL up to `max_retries`.
+   - Returns **both** `tp_order` and `sl_order` on success.
+3. Ensure that:
+   - The exception from `_create_stop_market` is not modified or replaced with generic text.
+   - On final failure after all retries, the raised exception preserves the original Kraken error text as much as possible (do not squash it into “insufficient funds” or similar generic message).
+
+────────────────────────
+B) FIX ROLLBACK: ALSO CANCEL TP ON FAILURE
+────────────────────────
+
+Right now the rollback flow is:
+- Entry: ✅
+- TP: ✅
+- SL: ❌ → after 3 retries, exception
+- Rollback: market-sell the ETH
+- PROBLEM: TP order is left open on Kraken with no matching SL.
+
+You must change this so that rollback also cancels the TP order if it was already created.
+
+B1) Capture and pass TP order ID through the call stack
+
+1. In `_place_tp_and_sl_with_retry`, ensure:
+   - On success, it returns BOTH `tp_order` and `sl_order`.
+   - The `tp_order` dict includes the Kraken order ID (e.g. `tp_order["id"]`).
+
+2. In the main bracket handler (where you call `_place_tp_and_sl_with_retry`):
+   - Store both TP and SL orders when the function returns:
+
+        tp_order, sl_order = _place_tp_and_sl_with_retry(...)
+
+   - Keep the TP order ID in a local variable, e.g.:
+
+        tp_id = tp_order.get("id") or tp_order.get("orderId")
+
+B2) On SL failure, cancel TP in rollback
+
+1. Find the `except Exception as protect_err:` block in the bracket handler (currently doing:
+
+    print(f"[BRACKET-ROLLBACK] ...")
+    ex.create_market_sell_order(sym, float(fill_size))
+    return "[BRACKET-ERR] ..."
+
+2. Modify this rollback so it ALSO attempts to cancel the TP order if it exists:
+
+   - Pseudo-code:
+
+        except Exception as protect_err:
+            print(f"[BRACKET-ROLLBACK] TP/SL creation failed after retries, closing position: {protect_err}")
+            # 1) Cancel TP if it was placed
+            if tp_id:
+                try:
+                    print(f"[BRACKET-ROLLBACK] Canceling orphan TP order {tp_id} for {sym}")
+                    ex.cancel_order(tp_id, sym)
+                except Exception as cancel_err:
+                    print(f"[BRACKET-ROLLBACK] Failed to cancel TP {tp_id}: {repr(cancel_err)}")
+            # 2) Close position (market-sell)
+            try:
+                ex.create_market_sell_order(sym, float(fill_size))
+            except Exception as close_err:
+                print(f"[BRACKET-ROLLBACK] FAILED TO CLOSE POSITION {sym}: {repr(close_err)}")
+            # 3) Return explicit error text including REAL Kraken error
+            return f"[BRACKET-ERR] Entry filled, TP placed, SL FAILED after retries, TP canceled (if possible), position closed: {protect_err}"
+
+3. The goal: after rollback:
+   - No naked TP orders left on the book.
+   - If TP cancellation fails, that’s logged explicitly.
+
+────────────────────────
+C) MAKE THE USER-FACING MESSAGE HONEST & CLEAR
+────────────────────────
+
+We don’t want vague “cannot confirm” or misleading “insufficient funds” when:
+- A real trade **was** executed,
+- But the bracket failed to be fully protected.
+
+C1) Standardize the bracket error text
+
+1. In the bracket handler’s `except` block and in the force trade handler response:
+
+   - Replace the old generic message:
+
+        "[BRACKET-ERR] Entry executed but TP/SL failed after 3 retries - position closed for safety: {protect_err}"
+
+     with something clearer, like:
+
+        "[BRACKET-ERR] Bracket FAILED: entry filled on {sym}, TP placed, SL could not be created after retries. Position closed by rollback and TP canceled where possible. Kraken error: {protect_err}"
+
+2. Make sure this string is what gets put into:
+   - `error` field in the JSON response from commands.py, and
+   - Any `error_message` field you log into evaluation_log.
+
+C2) Do NOT fabricate “insufficient funds” unless Kraken actually said that
+
+1. Make sure you are not manually constructing any message that says:
+   - “insufficient funds”
+   - or “cannot confirm execution status”
+   unless it comes directly from:
+   - the actual Kraken error message string, or
+   - the trade_result_validator using the real `error` from the tool result.
+
+2. In particular:
+   - The validator (`trade_result_validator.py`) should:
+     - Take the `error` string from the tool result,
+     - Pass it through as-is in the corrected message,
+     - Not replace it with generic “cannot confirm” text.
+
+If you previously hardcoded a generic “cannot confirm execution status” branch, REMOVE or disable that logic so the user always sees the real error (like EOrder:Insufficient funds, invalid trigger price, etc.).
+
+────────────────────────
+D) OPTIONAL: LOG A CLEAN FORCE-TRADE EVAL ENTRY
+────────────────────────
+
+Not strictly required, but **recommended** to keep debugging clean:
+
+1. In the force trade handler in commands.py (where you already attempt to call bracket handler):
+
+   - On success (entry + TP + SL all good):
+     - Log an evaluation with decision="FORCE_TRADE_TEST_SUCCESS".
+
+   - On bracket error / rollback:
+     - Log an evaluation with decision="FORCE_TRADE_TEST_FAIL" and:
+       - `error_message` = full bracket error string
+       - `position_size`, `price`, `trading_mode="live"`
+
+This way we can easily query `evaluations` later to see a clean history of test runs.
+
+────────────────────────
+E) DO NOT CHANGE STRATEGY OR RISK LOGIC IN THIS PASS
+────────────────────────
+
+In this build step, DO NOT:
+- Change ADX / RSI / Bollinger thresholds.
+- Touch regime detection or NO_TRADE logic.
+- Change risk-per-trade or max_active_risk.
+- Touch autopilot scheduling.
+
+Only modify:
+- `_create_stop_market`
+- `_place_tp_and_sl_with_retry` (if needed)
+- Bracket handler rollback logic in commands.py
+- Error message strings related to bracket failure and force trade reports
+- (Optionally) evaluation logging for force trade tests.
+
+────────────────────────
+F) FINAL CHECKLIST BEFORE YOU STOP
+────────────────────────
+
+Before you stop editing, verify:
+
+- [ ] `_create_stop_market` logs full Kraken errors and re-raises them.
+- [ ] `_place_tp_and_sl_with_retry` returns both TP and SL orders on success and propagates the real exception on failure.
+- [ ] Bracket rollback:
+      - Cancels TP if it was created,
+      - Then attempts to close the position via market order,
+      - Logs any failure to cancel TP or close position.
+- [ ] The error string returned to the caller clearly states:
+      - Entry filled,
+      - TP placed,
+      - SL failed,
+      - Rollback actions (close position, cancel TP).
+- [ ] No generic “cannot confirm execution status” remains in the code path for bracket errors.
+- [ ] For force trade tests, the JSON result surface the REAL error from Kraken / bracket logic.
+
+After all that is implemented, stop and summarize in the build output:
+- Which files and functions you changed,
+- The new rollback behavior in a 2–3 sentence description.
