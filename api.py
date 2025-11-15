@@ -1708,29 +1708,14 @@ def set_trading_mode_endpoint(request: TradingModeRequest):
 @app.post("/api/restart-workflows")
 def restart_workflows_endpoint():
     """
-    Restart both autopilot and chat workflows by exiting the chat process.
-    Replit will automatically restart it, and the mode change will take effect.
+    Notify user that workflows need manual restart.
+    Replit doesn't support programmatic workflow restarts, so we guide the user.
     """
-    try:
-        # Schedule exit after returning response to client
-        import signal
-        import threading
-        
-        def delayed_exit():
-            import time
-            time.sleep(1)  # Give response time to send
-            os.kill(os.getpid(), signal.SIGTERM)
-        
-        # Start exit timer in background
-        threading.Thread(target=delayed_exit, daemon=True).start()
-        
-        return {
-            "status": "success",
-            "message": "Chat workflow restarting... Reload the page in 3 seconds.",
-            "note": "Autopilot will pick up any mode changes on its next cycle (5 min)"
-        }
-    except Exception as e:
-        return {"status": "error", "message": f"Failed to restart: {str(e)}"}
+    return {
+        "status": "success",
+        "message": "⚠️ Mode changed! Please manually restart both workflows using the Shell tab or workflow controls.",
+        "note": "Autopilot will automatically pick up the mode change on its next 5-minute cycle."
+    }
 
 @app.get("/api/equity_history")
 def get_equity_history(hours: int = 24):

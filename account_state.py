@@ -367,6 +367,11 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
             ex = get_exchange()
             balances_raw = ex.fetch_balance()
             
+            # CRITICAL: Handle None response from exchange
+            if balances_raw is None:
+                logger.error(f"[ACCOUNT-STATE] fetch_balance() returned None")
+                return {}
+            
             logger.debug(f"[ACCOUNT-STATE] Raw balances from Kraken: {list(balances_raw.keys())}")
             
             balances = {}
