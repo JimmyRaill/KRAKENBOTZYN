@@ -63,6 +63,10 @@ def _balances_text(ex) -> str:
     try:
         balances = get_balances()
         
+        # CRITICAL: Handle None response
+        if balances is None:
+            return "Balances: ERROR - get_balances() returned None"
+        
         if not balances:
             return "Balances: (empty - check your account or mode)"
         

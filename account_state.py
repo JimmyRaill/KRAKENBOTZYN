@@ -344,8 +344,7 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
     
     if mode == "live":
         # LIVE MODE: Fetch from Kraken API
-        # NOTE: CCXT automatically normalizes Kraken codes (ZUSD→USD, XXBT→BTC, etc.)
-        # We don't need to do manual mapping - just skip metadata keys
+        # NOTE: CCXT normalizes top-level keys (ZUSD→USD, XXBT→BTC) but we verify
         try:
             ex = get_exchange()
             balances_raw = ex.fetch_balance()
@@ -355,12 +354,13 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
                 logger.error(f"[ACCOUNT-STATE] fetch_balance() returned None in LIVE mode")
                 return {}
             
-            # DETAILED LOGGING: Show exactly what CCXT returned (already normalized by CCXT)
-            logger.info(f"[ACCOUNT-STATE] LIVE mode - CCXT fetch_balance() keys: {list(balances_raw.keys())}")
+            # DETAILED LOGGING: Show exactly what CCXT returned
+            all_keys = list(balances_raw.keys())
+            logger.info(f"[ACCOUNT-STATE] LIVE mode - Raw keys from CCXT: {all_keys}")
             
-            # Log first few currency balances for debugging (CCXT already normalized ZUSD→USD, XXBT→BTC)
-            sample_currencies = {k: v for k, v in balances_raw.items() if isinstance(v, dict) and k not in ('free', 'used', 'total', 'info')}
-            logger.info(f"[ACCOUNT-STATE] LIVE mode - Sample balances (CCXT normalized): {dict(list(sample_currencies.items())[:3])}")
+            # Log sample of what CCXT returned for debugging
+            sample_items = list(balances_raw.items())[:5]
+            logger.info(f"[ACCOUNT-STATE] LIVE mode - First 5 items: {sample_items}")
             
             balances = {}
             for currency, balance in balances_raw.items():
@@ -370,6 +370,7 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
                 
                 # CRITICAL: Skip non-dict values (e.g. scalar metadata)
                 if not isinstance(balance, dict):
+                    logger.debug(f"[ACCOUNT-STATE] Skipping non-dict key '{currency}': {type(balance)}")
                     continue
                 
                 free = balance.get('free', 0.0) or 0.0
