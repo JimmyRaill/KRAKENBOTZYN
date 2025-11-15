@@ -339,6 +339,11 @@ def handle(text: str) -> str:
         from commands_addon import _debug_status
         return _debug_status()
     
+    # 24h trades status command (timestamp-filtered, source-attributed)
+    if s.lower() in ("trades 24h", "trades_24h", "show trades 24h", "24h trades"):
+        from commands_addon import _trades_24h_status
+        return _trades_24h_status()
+    
     # Force trade test command
     if s.lower().startswith("force trade test"):
         from commands_addon import _force_trade_test

@@ -116,6 +116,54 @@ def _debug_status() -> str:
         return f"[DEBUG-STATUS-ERR] {e}\n{traceback.format_exc()}"
 
 
+def _trades_24h_status() -> str:
+    """
+    Show REAL trades executed in last 24 hours with full source attribution.
+    Uses timestamp filtering - no guessing, no vibes.
+    """
+    try:
+        from telemetry_db import get_trading_stats_24h
+        from datetime import datetime
+        
+        stats = get_trading_stats_24h()
+        
+        lines = [
+            "=== TRADES IN LAST 24 HOURS (TIMESTAMP FILTERED) ===",
+            "",
+            f"📊 Total Trades: {stats['total_trades_24h']}",
+            f"  └─ Autopilot: {stats['autopilot_trades_24h']}",
+            f"  └─ Manual Commands: {stats['command_trades_24h']}",
+            f"  └─ Force Tests: {stats['force_test_trades_24h']}",
+            f"  └─ Unknown Source: {stats['unknown_trades_24h']}",
+            ""
+        ]
+        
+        if stats['trades']:
+            lines.append("📜 Trade Details:")
+            for t in stats['trades']:
+                timestamp = datetime.fromtimestamp(t['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+                side = t['side'].upper()
+                qty = t.get('quantity', 0)
+                price = t.get('price', 0)
+                usd = t.get('usd_amount', 0)
+                source = t.get('source', 'unknown')
+                reason = t.get('reason', 'N/A')
+                
+                lines.append(f"  [{timestamp}] {side} {t['symbol']}")
+                lines.append(f"    Amount: {qty:.4f} @ ${price:.2f} = ${usd:.2f}")
+                lines.append(f"    Source: {source}")
+                lines.append(f"    Reason: {reason}")
+                lines.append("")
+        else:
+            lines.append("No trades executed in last 24 hours.")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        import traceback
+        return f"[TRADES-24H-ERR] {e}\n{traceback.format_exc()}"
+
+
 def _force_trade_test(symbol: str = "ETH/USD") -> str:
     """
     DEVELOPER ONLY: Execute a tiny LIVE trade to verify order placement pipeline.
