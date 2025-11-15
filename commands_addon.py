@@ -37,16 +37,17 @@ def _debug_status() -> str:
         last_evals = get_last_evaluations(limit=1)
         last_eval = last_evals[0] if last_evals else None
         
-        # Get evaluations from last 24 hours
+        # Get REAL trades from last 24 hours (not evaluations!)
+        from telemetry_db import get_trading_stats_24h
+        stats_24h = get_trading_stats_24h()
+        
+        # Get evaluations from last 24 hours for diagnostics
         all_evals = get_last_evaluations(limit=1000)
         cutoff_time = datetime.utcnow() - timedelta(hours=24)
         evals_24h = [
             e for e in all_evals 
             if datetime.fromisoformat(e['timestamp_utc'].replace('Z', '+00:00')) > cutoff_time
         ]
-        
-        # Count trades (decision='LONG' or 'SHORT', not 'HOLD')
-        trades_24h = [e for e in evals_24h if e.get('decision') not in ('HOLD', 'SKIP', 'ERROR')]
         
         # Build response
         lines = [
@@ -77,28 +78,36 @@ def _debug_status() -> str:
         
         lines.extend([
             "",
-            "📈 Last 24 Hours:",
+            "📈 Last 24 Hours (REAL trades, not evaluations):",
             f"  Total Evaluations: {len(evals_24h)}",
-            f"  Trades Placed: {len(trades_24h)} ({mode} mode)",
+            f"  Total Trades Executed: {stats_24h['total_trades_24h']}",
+            f"    └─ Autopilot: {stats_24h['autopilot_trades_24h']}",
+            f"    └─ Manual Commands: {stats_24h['command_trades_24h']}",
+            f"    └─ Force Tests: {stats_24h['force_test_trades_24h']}",
+            f"    └─ Unknown Source: {stats_24h['unknown_trades_24h']}",
             ""
         ])
         
-        # Show breakdown by symbol
-        if evals_24h:
+        # Show actual trades breakdown by symbol
+        if stats_24h['trades']:
             symbols = {}
-            for e in evals_24h:
-                sym = e.get('symbol', 'UNKNOWN')
+            for t in stats_24h['trades']:
+                sym = t.get('symbol', 'UNKNOWN')
                 if sym not in symbols:
-                    symbols[sym] = {'total': 0, 'hold': 0, 'trade': 0}
-                symbols[sym]['total'] += 1
-                if e.get('decision') in ('HOLD', 'SKIP'):
-                    symbols[sym]['hold'] += 1
-                elif e.get('decision') not in ('ERROR',):
-                    symbols[sym]['trade'] += 1
+                    symbols[sym] = []
+                symbols[sym].append(t)
             
-            lines.append("By Symbol:")
-            for sym, counts in symbols.items():
-                lines.append(f"  {sym}: {counts['total']} evals, {counts['trade']} trades, {counts['hold']} holds")
+            lines.append("Trades by Symbol (last 24h):")
+            for sym, sym_trades in symbols.items():
+                lines.append(f"  {sym}: {len(sym_trades)} trades")
+                for t in sym_trades[:3]:  # Show first 3 trades per symbol
+                    side = t['side'].upper()
+                    price = t.get('price', 0)
+                    qty = t.get('quantity', 0)
+                    source = t.get('source', 'unknown')
+                    lines.append(f"    └─ {side} {qty:.4f} @ ${price:.2f} (source: {source})")
+        else:
+            lines.append("No trades executed in last 24 hours.")
         
         return "\n".join(lines)
         
