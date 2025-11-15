@@ -36,9 +36,14 @@ class TradeResult:
         Parse command result string into structured format.
         Handles both success and error cases.
         """
-        # Check for error patterns
+        # Check for error patterns (EXPANDED for Kraken-specific errors)
         has_error = any(pattern in result_str for pattern in [
-            '-ERR', 'failed', 'FAIL', 'Error', 'error'
+            '-ERR', 'failed', 'FAIL', 'Error', 'error',
+            'EOrder:', 'EGeneral:', 'EService:', 'EFunding:', 'ETAPI:',  # Kraken error codes
+            'Insufficient funds', 'insufficient', 'Invalid',
+            'Order could not be created', 'cannot', 'unable to',
+            'Minimum order size', 'Position size', 'Rate limit',
+            'API rate limit', 'Invalid nonce', 'Invalid signature'
         ])
         
         # Determine command type first (needed for success detection)
@@ -65,10 +70,17 @@ class TradeResult:
         if is_query_command:
             has_success = not has_error  # Queries succeed if they don't error
         else:
-            # Trading commands need explicit success keywords
-            has_success = any(pattern in result_str for pattern in [
-                'BRACKET OK', 'OK', 'SUCCESS', 'executed', 'FILLED'
-            ]) and not has_error
+            # Trading commands need EXPLICIT success keywords AND order IDs
+            # STRICT: Must have both success marker AND order ID (or be an error)
+            has_success_keyword = any(pattern in result_str for pattern in [
+                'BRACKET OK', 'BUY OK', 'SELL OK', 'LIMIT BUY OK', 'LIMIT SELL OK',
+                'STOP BUY OK', 'STOP SELL OK', 'CANCEL OK', 'OK', 'SUCCESS', 'executed', 'FILLED'
+            ])
+            has_order_id = bool(re.search(r'(PAPER-[A-F0-9]+|O[A-Z0-9]{5,}|id=\S+)', result_str))
+            
+            # Success ONLY if we have success keyword AND no error
+            # Order ID is bonus verification but not strictly required for all commands
+            has_success = has_success_keyword and not has_error
         
         # Extract order IDs
         order_ids = re.findall(r'(PAPER-[A-F0-9]+|O[A-Z0-9]{5,})', result_str)
@@ -107,7 +119,7 @@ class LLMResponseValidator:
         r'\bfilled.*order\b',
     ]
     
-    # Error/failure patterns
+    # Error/failure patterns (EXPANDED for Kraken-specific errors)
     ERROR_PATTERNS = [
         r'-ERR',
         r'\bfailed\b',
@@ -115,6 +127,19 @@ class LLMResponseValidator:
         r'\bcannot\b',
         r'\bunable to\b',
         r'\binsufficient\b',
+        r'EOrder:',
+        r'EGeneral:',
+        r'EService:',
+        r'EFunding:',
+        r'ETAPI:',
+        r'Insufficient funds',
+        r'Order could not be created',
+        r'\bInvalid\b',
+        r'Minimum order size',
+        r'Position size',
+        r'Rate limit',
+        r'Invalid nonce',
+        r'Invalid signature',
     ]
     
     @classmethod
