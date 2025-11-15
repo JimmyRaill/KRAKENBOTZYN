@@ -1708,32 +1708,29 @@ def set_trading_mode_endpoint(request: TradingModeRequest):
 @app.post("/api/restart-workflows")
 def restart_workflows_endpoint():
     """
-    Restart both autopilot and chat workflows.
-    Uses pkill -HUP to send hangup signal to Python processes, triggering Replit workflow restart.
+    Restart both autopilot and chat workflows by exiting the chat process.
+    Replit will automatically restart it, and the mode change will take effect.
     """
     try:
-        # Send HUP signal to Python processes (Replit auto-restarts workflows)
-        # Using pkill (available in Replit) instead of killall
-        result = subprocess.run(
-            ["pkill", "-HUP", "python"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        # Schedule exit after returning response to client
+        import signal
+        import threading
         
-        # pkill returns 0 if processes were signaled, 1 if no processes matched
-        # Either way, Replit will restart the workflows automatically
+        def delayed_exit():
+            import time
+            time.sleep(1)  # Give response time to send
+            os.kill(os.getpid(), signal.SIGTERM)
+        
+        # Start exit timer in background
+        threading.Thread(target=delayed_exit, daemon=True).start()
+        
         return {
             "status": "success",
-            "message": "Workflows restarting... (autopilot + chat)",
-            "note": "Replit will automatically restart both workflows in a few seconds"
+            "message": "Chat workflow restarting... Reload the page in 3 seconds.",
+            "note": "Autopilot will pick up any mode changes on its next cycle (5 min)"
         }
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "message": "Restart command timed out"}
-    except FileNotFoundError:
-        return {"status": "error", "message": "pkill command not found in system"}
     except Exception as e:
-        return {"status": "error", "message": f"Failed to restart workflows: {str(e)}"}
+        return {"status": "error", "message": f"Failed to restart: {str(e)}"}
 
 @app.get("/api/equity_history")
 def get_equity_history(hours: int = 24):
