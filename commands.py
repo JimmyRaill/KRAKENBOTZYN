@@ -199,6 +199,58 @@ def _create_stop_market(ex, symbol: str, side: str, amount: float, stop_px: floa
     params = {"stopPrice": stp, "trigger": "last"}  # Kraken via ccxt
     return ex.create_order(symbol, "market", side, float(amt), None, params)
 
+
+def _place_tp_and_sl_with_retry(ex, sym, fill_size, tp_p, sl_p, side, max_retries=3, delay_sec=2):
+    """
+    Place TP and SL orders with retry logic.
+    
+    Args:
+        ex: Exchange instance
+        sym: Symbol
+        fill_size: Filled quantity
+        tp_p: Take-profit price
+        sl_p: Stop-loss price
+        side: 'long' or 'short'
+        max_retries: Maximum retry attempts (default 3)
+        delay_sec: Delay between retries in seconds (default 2)
+    
+    Returns:
+        (tp_order, sl_order) on success
+    
+    Raises:
+        Exception if all retries fail
+    """
+    import time
+    
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if side == 'long':
+                # LONG: Sell TP and SL
+                tp_order = ex.create_limit_sell_order(sym, float(fill_size), float(tp_p))
+                sl_order = _create_stop_market(ex, sym, "sell", float(fill_size), float(sl_p))
+            else:
+                # SHORT: Buy TP and SL
+                tp_order = ex.create_limit_buy_order(sym, float(fill_size), float(tp_p))
+                sl_order = _create_stop_market(ex, sym, "buy", float(fill_size), float(sl_p))
+            
+            # Success!
+            if attempt > 1:
+                print(f"✅ [BRACKET-RETRY] Success on attempt {attempt} for {sym} TP/SL")
+            return tp_order, sl_order
+        
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries:
+                print(f"⚠️  [BRACKET-RETRY] Attempt {attempt}/{max_retries} failed for {sym} TP/SL: {e}")
+                print(f"    Retrying in {delay_sec}s...")
+                time.sleep(delay_sec)
+            else:
+                print(f"❌ [BRACKET-RETRY] All {max_retries} attempts failed for {sym} TP/SL")
+    
+    # All retries exhausted
+    raise last_err
+
 # ----------------- public router -----------------
 
 def handle(text: str) -> str:
@@ -446,15 +498,17 @@ def handle(text: str) -> str:
                             ex.create_market_sell_order(sym, float(fill_size))
                             return f"[BRACKET-ERR] Entry filled at ${fill_price:.2f} but SL ${sl_p:.2f} is not below - position closed for safety (slippage detected)"
                     
-                    # Create protective orders using ACTUAL fill size
+                    # Create protective orders using ACTUAL fill size with retry logic
                     try:
-                        tp_order = ex.create_limit_sell_order(sym, float(fill_size), float(tp_p))
-                        sl_order = _create_stop_market(ex, sym, "sell", float(fill_size), float(sl_p))
+                        tp_order, sl_order = _place_tp_and_sl_with_retry(
+                            ex, sym, fill_size, tp_p, sl_p, side='long', 
+                            max_retries=3, delay_sec=2
+                        )
                     except Exception as protect_err:
-                        # ROLLBACK: Close position if protective orders fail
-                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed, closing position: {protect_err}")
+                        # ROLLBACK: Close position if all retries fail
+                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed after retries, closing position: {protect_err}")
                         ex.create_market_sell_order(sym, float(fill_size))
-                        return f"[BRACKET-ERR] Entry executed but TP/SL failed - position closed for safety: {protect_err}"
+                        return f"[BRACKET-ERR] Entry executed but TP/SL failed after 3 retries - position closed for safety: {protect_err}"
                 else:
                     # SHORT: Market sell entry
                     entry_order = ex.create_market_sell_order(sym, float(amt_p))
@@ -492,15 +546,17 @@ def handle(text: str) -> str:
                             ex.create_market_buy_order(sym, float(fill_size))
                             return f"[BRACKET-ERR] Entry filled at ${fill_price:.2f} but SL ${sl_p:.2f} is not above - position closed for safety (slippage detected)"
                     
-                    # Create protective orders using ACTUAL fill size
+                    # Create protective orders using ACTUAL fill size with retry logic
                     try:
-                        tp_order = ex.create_limit_buy_order(sym, float(fill_size), float(tp_p))
-                        sl_order = _create_stop_market(ex, sym, "buy", float(fill_size), float(sl_p))
+                        tp_order, sl_order = _place_tp_and_sl_with_retry(
+                            ex, sym, fill_size, tp_p, sl_p, side='short', 
+                            max_retries=3, delay_sec=2
+                        )
                     except Exception as protect_err:
-                        # ROLLBACK: Close position if protective orders fail
-                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed, closing position: {protect_err}")
+                        # ROLLBACK: Close position if all retries fail
+                        print(f"[BRACKET-ROLLBACK] TP/SL creation failed after retries, closing position: {protect_err}")
                         ex.create_market_buy_order(sym, float(fill_size))
-                        return f"[BRACKET-ERR] Entry executed but TP/SL failed - position closed for safety: {protect_err}"
+                        return f"[BRACKET-ERR] Entry executed but TP/SL failed after 3 retries - position closed for safety: {protect_err}"
                 
                 tid = str(tp_order.get("id") or tp_order.get("orderId") or "<no-id>")
                 sid = str(sl_order.get("id") or sl_order.get("orderId") or "<no-id>")
@@ -588,5 +644,222 @@ def handle(text: str) -> str:
             )
         except Exception as e:
             return f"[DEBUG-ERR] {e}"
+
+    # debug status
+    if s.lower() in ("debug status", "status"):
+        try:
+            from account_state import get_balances
+            from evaluation_log import get_last_evaluations
+            from exchange_manager import ExchangeManager
+            from datetime import datetime, timezone, timedelta
+            import json
+            
+            # 1. Current mode
+            mode = get_mode_str()
+            manager = ExchangeManager()
+            validate_mode = manager._validate_mode
+            
+            # 2. Symbols
+            symbols_str = os.getenv("SYMBOLS", "ZEC/USD")
+            symbols = [s.strip().upper() for s in symbols_str.split(",")]
+            
+            # 3. Equity
+            balances = get_balances()
+            equity_usd = 0.0
+            if balances:
+                for curr, bal_data in balances.items():
+                    if isinstance(bal_data, dict):
+                        equity_usd += bal_data.get('usd_value', 0)
+            
+            # 4. Last evaluation
+            last_evals = get_last_evaluations(limit=1)
+            last_eval = last_evals[0] if last_evals else None
+            
+            # 5. Evaluation counts (last 24h)
+            now = datetime.now(timezone.utc)
+            cutoff = now - timedelta(hours=24)
+            
+            all_evals_24h = get_last_evaluations(limit=500)
+            evals_24h = [
+                e for e in all_evals_24h 
+                if e.get('timestamp_utc') and datetime.fromisoformat(e['timestamp_utc'].replace('Z', '+00:00')) > cutoff
+            ]
+            
+            eval_counts = {
+                "total": len(evals_24h),
+                "by_symbol": {}
+            }
+            for e in evals_24h:
+                sym = e.get('symbol', 'unknown')
+                eval_counts['by_symbol'][sym] = eval_counts['by_symbol'].get(sym, 0) + 1
+            
+            # 6. Trades (last 24h) - only for LIVE mode
+            trades_24h = {"total": 0, "by_symbol": {}}
+            if mode == "live":
+                try:
+                    # Fetch trades from last 24h
+                    since_ms = int(cutoff.timestamp() * 1000)
+                    all_trades = ex.fetch_my_trades(since=since_ms, limit=100)
+                    
+                    trades_24h["total"] = len(all_trades)
+                    for trade in all_trades:
+                        sym = trade.get('symbol', 'unknown')
+                        trades_24h['by_symbol'][sym] = trades_24h['by_symbol'].get(sym, 0) + 1
+                except Exception as trades_err:
+                    trades_24h = {"error": str(trades_err)}
+            
+            # Build result
+            result = {
+                "mode": mode,
+                "validate_mode": validate_mode,
+                "symbols": symbols,
+                "equity_usd": round(equity_usd, 2),
+                "balances": balances,
+                "last_evaluation": last_eval,
+                "eval_counts_last_24h": eval_counts,
+                "trades_last_24h": trades_24h
+            }
+            
+            return json.dumps(result, indent=2)
+        
+        except Exception as e:
+            import traceback
+            return f"[DEBUG-STATUS-ERR] {e}\n{traceback.format_exc()}"
+    
+    # show evaluations [symbol] [limit]
+    m = re.fullmatch(r"(?i)show\s+evaluations(?:\s+([A-Za-z0-9:/\-\._]+))?(?:\s+(\d+))?", s)
+    if m:
+        try:
+            from evaluation_log import get_last_evaluations
+            import json
+            
+            symbol = m.group(1).upper() if m.group(1) else None
+            limit = int(m.group(2)) if m.group(2) else 20
+            
+            # Cap at 100
+            if limit > 100:
+                limit = 100
+            
+            evals = get_last_evaluations(limit=limit, symbol=symbol)
+            
+            return json.dumps({"evaluations": evals}, indent=2)
+        
+        except Exception as e:
+            import traceback
+            return f"[SHOW-EVAL-ERR] {e}\n{traceback.format_exc()}"
+    
+    # force trade test [symbol]
+    m = re.fullmatch(r"(?i)force\s+trade\s+test(?:\s+([A-Za-z0-9:/\-\._]+))?", s)
+    if m:
+        try:
+            import json
+            from datetime import datetime, timezone
+            
+            # 1. Check ENABLE_FORCE_TRADE flag
+            enable_force_trade = os.getenv("ENABLE_FORCE_TRADE", "0").strip().lower() in ("1", "true", "yes", "on")
+            
+            if not enable_force_trade:
+                return json.dumps({
+                    "ok": False,
+                    "error": "ENABLE_FORCE_TRADE is not enabled in .env. Set ENABLE_FORCE_TRADE=1 to allow force trade tests."
+                }, indent=2)
+            
+            # 2. Determine mode
+            mode = get_mode_str()
+            
+            # 3. Get symbol (default ETH/USD)
+            symbol = m.group(1).upper() if m.group(1) else "ETH/USD"
+            symbol = _norm_sym(symbol)
+            
+            # 4. Calculate small test size ($10-15)
+            current_price = _last_price(ex, symbol)
+            test_notional = 12.0  # $12 test trade
+            test_qty = test_notional / current_price
+            
+            # Apply exchange precision
+            test_qty_p = _safe_float(ex.amount_to_precision(symbol, test_qty), test_qty)
+            
+            # Ensure minimum order size
+            market = ex.market(symbol) or {}
+            min_amt = _safe_float((market.get("limits") or {}).get("amount", {}).get("min"), 0)
+            if min_amt and test_qty_p < min_amt:
+                test_qty_p = min_amt * 1.05  # 5% above minimum
+            
+            # 5. Calculate bracket prices (simple 2% SL, 3% TP)
+            entry_price = current_price
+            sl_price = entry_price * 0.98  # 2% below
+            tp_price = entry_price * 1.03  # 3% above
+            
+            # Apply precision
+            sl_price_p = _safe_float(ex.price_to_precision(symbol, sl_price), sl_price)
+            tp_price_p = _safe_float(ex.price_to_precision(symbol, tp_price), tp_price)
+            
+            # 6. Execute bracket order
+            timestamp_utc = datetime.now(timezone.utc).isoformat()
+            
+            bracket_cmd = f"bracket {symbol} {test_qty_p:.6f} tp {tp_price_p} sl {sl_price_p}"
+            print(f"[FORCE-TRADE-TEST] Executing: {bracket_cmd}")
+            
+            bracket_result = handle(bracket_cmd)
+            
+            # Log to evaluation_log for forensic analysis
+            try:
+                from evaluation_log import log_evaluation
+                log_evaluation(
+                    symbol=symbol,
+                    decision="FORCE_TRADE_TEST",
+                    reason=f"Force trade test executed via ENABLE_FORCE_TRADE flag",
+                    trading_mode=mode,
+                    position_size=test_qty_p,
+                    price=current_price,
+                    error_message=f"Bracket result: {bracket_result}"
+                )
+            except Exception as log_err:
+                print(f"[FORCE-TRADE-TEST] Warning: Failed to log: {log_err}")
+            
+            # Parse result
+            success = "BRACKET OK" in bracket_result or "ok" in bracket_result.lower()
+            
+            # Extract order IDs if available (simple regex)
+            entry_id = "N/A"
+            tp_id = "N/A"
+            sl_id = "N/A"
+            
+            import re as regex
+            entry_match = regex.search(r'Entry.*?id=([^\s\n]+)', bracket_result)
+            tp_match = regex.search(r'TP.*?id=([^\s\n]+)', bracket_result)
+            sl_match = regex.search(r'SL.*?id=([^\s\n]+)', bracket_result)
+            
+            if entry_match:
+                entry_id = entry_match.group(1)
+            if tp_match:
+                tp_id = tp_match.group(1)
+            if sl_match:
+                sl_id = sl_match.group(1)
+            
+            result = {
+                "ok": success,
+                "mode": mode,
+                "symbol": symbol,
+                "side": "buy",
+                "quantity": test_qty_p,
+                "entry_price": current_price,
+                "entry_order_id": entry_id,
+                "take_profit_order_id": tp_id,
+                "stop_loss_order_id": sl_id,
+                "note": "Force trade test executed using ENABLE_FORCE_TRADE",
+                "timestamp_utc": timestamp_utc,
+                "full_result": bracket_result
+            }
+            
+            return json.dumps(result, indent=2)
+        
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "ok": False,
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }, indent=2)
 
     return HELP

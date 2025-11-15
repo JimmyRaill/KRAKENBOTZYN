@@ -1,0 +1,239 @@
+You are in PLAN / ANALYSIS mode only. 
+DO NOT EDIT ANY FILES YET.
+Your job right now is to fully understand and EXPLAIN how my trading bot “Zyn” works and why it behaves the way it does.
+
+I don’t want a fluffy story or reassurance. 
+I want: file paths, function names, code snippets, and REAL data from logs or the database.
+If something is missing or not implemented, explicitly say “NOT IMPLEMENTED” and propose exactly what needs to be added (but do NOT add it yet).
+
+================================
+CONTEXT / SYMPTOMS (READ CAREFULLY)
+================================
+
+Zyn is a Kraken trading bot with:
+- PAPER and LIVE modes
+- A scheduler / autopilot that evaluates every X minutes
+- Strategy logic with indicators (RSI, ADX, Bollinger, volume, etc.)
+- Risk management (max risk per trade, active risk limits, position sizing)
+- Supposed use of stop losses and take profits (bracket orders)
+- A UI/dashboard and chat interface
+
+Main problems I’ve seen over time:
+1) Bot sometimes places NO trades for long periods in LIVE mode, even when it “says” it’s running.
+2) In the past, it has made real trades while I thought it was in PAPER (mode confusion).
+3) Stop losses and take profits have NOT always been set or honored correctly.
+4) Dashboard/tracking (balances, open pnl, open orders, performance metrics) has been inaccurate or out of sync with Kraken.
+5) When I ask it “why no trades”, the explanations feel hand-wavy, not backed by clear logs or thresholds.
+
+Your job in PLAN mode is to give me a **forensic-level understanding** and a **clear, concrete fix plan**, before we touch code.
+
+=======================
+STEP 1 – ARCHITECTURE MAP
+=======================
+
+Answer these with file paths + function names + 1–3 line explanations:
+
+- Where is the main scheduler / autopilot loop defined?
+  - File path:
+  - Function name:
+  - What triggers it (cron, background task, loop, etc.) and how often?
+
+- Where is the main STRATEGY evaluation function defined (the function that decides TRADE vs NO_TRADE)?
+  - File path:
+  - Function name:
+  - Which symbols/pairs does it evaluate, and where is that list defined?
+
+- Where is mode handling (PAPER vs LIVE) implemented?
+  - Where does it read mode from (env vars, config, DB, UI toggle)?
+  - Where is mode stored/passed into the rest of the system?
+  - Where are API keys for PAPER vs LIVE read and used?
+
+- Where is the UI/chat interface logic that talks to Zyn’s backend?
+  - File(s) and main handler(s) for commands like “status”, “show logs”, etc.
+
+Paste the relevant code snippets (short but complete) for each of these.
+
+=================================
+STEP 2 – FULL TRADE PIPELINE (LIVE)
+=================================
+
+I want the **exact call chain** from “scheduler tick” to “order placed on Kraken” in LIVE mode.
+
+List the functions in order, with file paths, like this:
+
+1) [file.py] function_a() – scheduler tick  
+2) [file.py] function_b() – fetch candles/market data  
+3) [file.py] function_c() – compute indicators  
+4) [file.py] function_d() – decide trade / build order object  
+5) [file.py] function_e() – risk checks / position sizing  
+6) [file.py] function_f() – send order to Kraken  
+7) [file.py] function_g() – handle Kraken response / log / update DB & dashboard  
+
+For each step, paste the core part of the function so I can see what it does.
+
+If PAPER and LIVE share most of the same path, explain **exactly** where they diverge.
+
+====================================
+STEP 3 – MODE CONFUSION (PAPER vs LIVE)
+====================================
+
+I need to know if there’s any way the bot can be in a “half-paper, half-live” state.
+
+Answer with references to actual code:
+
+- Where is the current mode stored at runtime? (enum, string, config object, DB row, etc.)
+- How does the chat/UI toggle actually change mode under the hood?
+- Where do we pick which Kraken API keys to use?
+- Is there ANY place where:
+  - mode is assumed or hardcoded,
+  - or default mode is PAPER,
+  - or LIVE/PAPER is not passed down, so a deeper function “thinks” it’s in a different mode?
+
+Show me any code that:
+- gates order placement on mode,
+- chooses which client/session to use based on mode,
+- or sets flags like “VALIDATE_ONLY”, “SAFE_MODE”, etc.
+
+If there is any way the code could:
+- show PAPER metrics but send LIVE orders,
+- or use LIVE balance with PAPER evals, etc,
+point that out clearly as a design flaw.
+
+=======================================
+STEP 4 – STRATEGY FILTERS AND NO_TRADE
+=======================================
+
+I want the **exact logic** where Zyn decides “NO_TRADE”.
+
+- Find the code where regime / decision is set (e.g. "NO_TRADE", "RANGE", "TREND", etc.)
+  - Paste the entire decision block (if/else, match, etc.) with conditions.
+
+- List all the filters that can prevent a trade:
+  - ADX / trend filters
+  - RSI thresholds
+  - Bollinger-band position thresholds
+  - Volume/volatility/spread filters
+  - Time-of-day or session filters
+  - Risk filters (active risk, exposure, min balance, etc.)
+
+For each filter, answer:
+
+- What is the threshold or rule RIGHT NOW (actual numbers from code/config)?
+- Under what exact condition does it block a trade?
+- Do these filters differ in PAPER vs LIVE?
+
+Don’t summarize as “conservative” or “aggressive”. I want actual conditions like:
+- “BLOCK: RSI >= 45”
+- “BLOCK: price_position_in_bb > 0.4”
+etc.
+
+=================================
+STEP 5 – RISK, SIZING, KRAKEN LIMITS
+=================================
+
+- Where is max risk per trade defined? (file, function, or config)
+- Where is active risk across open trades computed and checked?
+- Where is position size (volume) for each order calculated?
+
+Show me:
+- The exact formulas,
+- How equity/balance is fetched (and from which account in LIVE vs PAPER),
+- How you ensure Kraken min order size and step size are respected.
+
+If there is ANY chance the bot keeps trying to place orders that are below Kraken’s minimums (and thus fail), call that out.
+
+====================================
+STEP 6 – LOGGING, EVAL HISTORY, ERRORS
+====================================
+
+Right now, I do NOT trust explanations without logs.
+
+Tell me, with specifics:
+
+- Where are evaluation logs stored? (DB table, file, etc.)
+- What fields are stored per evaluation? (timestamp, symbol, RSI, ADX, decision, reason, etc.)
+- Is there a function that returns the last N evaluations for the UI/chat?
+
+If yes:
+- Show me the schema (fields),
+- Show me a real example of the last 10 evaluations for a LIVE session.
+
+If no:
+- Mark evaluation logging as NOT IMPLEMENTED.
+
+Error logging:
+- Where do we log:
+  - Kraken API errors,
+  - exceptions during eval,
+  - exceptions during order placement,
+  - dashboard sync failures?
+- Are there any broad try/except blocks that swallow errors without logging?
+  - If yes, identify them and explain the risk.
+
+=================================
+STEP 7 – STOP LOSS / TAKE PROFIT
+=================================
+
+This has been a problem before, so I want clarity:
+
+- Where in the code are stop loss and take profit levels calculated and attached to orders?
+- Does the bot:
+  - Place bracket orders in one call?
+  - Or place a main order first and then add SL/TP with follow-up calls?
+
+Show:
+- The function(s) that build the SL/TP,
+- How those values are derived (percent, ATR multiple, etc.),
+- Where in the call chain they are actually sent to Kraken.
+
+If in some code paths SL/TP are optional or skipped, point that out.
+
+================================
+STEP 8 – DASHBOARD / METRICS SYNC
+================================
+
+The UI/dashboard has previously shown inaccurate balances / PnL / positions.
+
+Explain:
+
+- Where does the dashboard get:
+  - current balance / equity,
+  - open positions / open orders,
+  - realized/unrealized PnL,
+  - trade history / performance metrics?
+
+For each data source:
+- Is it pulled directly from Kraken every time?
+- Or read from a local DB/cache?
+- Is there any cron/job responsible for syncing this data?
+
+If there is any obvious way for dashboard values to drift from Kraken’s actual state, point it out.
+
+========================================
+STEP 9 – ROOT-CAUSE ANALYSIS & FIX PLAN
+========================================
+
+ONLY AFTER answering all of the above, give me:
+
+1) A list of the **most likely real reasons** Zyn has:
+   - gone long stretches with no trades in LIVE mode,
+   - possibly mixed PAPER/LIVE behavior,
+   - missed SL/TP placement in some trades,
+   - shown inaccurate dashboard metrics.
+
+2) For each root cause, propose a **specific change** to fix it, including:
+   - File path
+   - Function name
+   - Short description of the change (1–3 sentences)
+
+Important: This is a PLAN ONLY. 
+Do NOT implement the changes yet in this mode. 
+The output I want is:
+- hard evidence,
+- clear explanations,
+- and a precise to-do list I can then tell you to implement in Build mode.
+
+Avoid vague language like “everything is working fine” or “Zyn is perfectly healthy”.
+If something can’t be proven from code/logs, say so directly and mark it as UNKNOWN or NOT IMPLEMENTED.
+
+Focus on clarity, proof, and a concrete fix plan.

@@ -1266,6 +1266,25 @@ def loop_once(ex, symbols: List[str]) -> None:
                 except Exception:
                     pass
 
+    # SAFETY MONITOR - Check for naked positions after all trading
+    try:
+        from safety_monitor import check_naked_positions
+        safety_result = check_naked_positions(ex)
+        
+        if safety_result.get("naked_found", 0) > 0:
+            print(f"🚨 [SAFETY-MONITOR] Found {safety_result['naked_found']} naked position(s)")
+            print(f"    Emergency actions taken: {len(safety_result.get('emergency_actions', []))}")
+            for action in safety_result.get('emergency_actions', []):
+                print(f"    - {action}")
+        
+        if safety_result.get("errors"):
+            print(f"⚠️ [SAFETY-MONITOR] Errors: {safety_result['errors']}")
+    
+    except Exception as safety_err:
+        print(f"[SAFETY-MONITOR-ERR] Safety check failed: {safety_err}")
+        import traceback
+        traceback.print_exc()
+
     # open orders preview
     try:
         open_txt = run_command("open")

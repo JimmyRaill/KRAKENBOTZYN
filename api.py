@@ -1745,3 +1745,98 @@ def get_equity_history(hours: int = 24):
             return {"history": history}
     except Exception as e:
         return {"history": [], "error": str(e)}
+
+
+@app.get("/api/evaluations")
+def get_evaluations(
+    limit: int = Query(default=20, ge=1, le=100),
+    symbol: Optional[str] = Query(default=None)
+):
+    """
+    Get evaluation history from evaluation_log.db.
+    
+    Args:
+        limit: Number of evaluations to return (1-100, default 20)
+        symbol: Optional symbol filter (e.g., "BTC/USD")
+    
+    Returns:
+        JSON list of evaluation records with fields:
+        id, timestamp_utc, symbol, price, rsi, atr, volume, decision, reason,
+        regime, adx, bb_position, trading_mode, etc.
+    """
+    try:
+        from evaluation_log import get_last_evaluations
+        
+        # Normalize symbol if provided
+        symbol_normalized = symbol.upper() if symbol else None
+        
+        evaluations = get_last_evaluations(limit=limit, symbol=symbol_normalized)
+        
+        return {
+            "count": len(evaluations),
+            "limit": limit,
+            "symbol_filter": symbol_normalized,
+            "evaluations": evaluations
+        }
+    
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+        )
+
+
+@app.get("/api/mode")
+def get_trading_mode():
+    """
+    Get current trading mode and status.
+    
+    Returns:
+        JSON with:
+        - mode: "live" or "paper"
+        - validate_mode: True/False (Kraken validate flag)
+        - symbols: List of trading symbols
+        - last_evaluation_utc: Timestamp of last evaluation
+    """
+    try:
+        from exchange_manager import get_mode_str, is_paper_mode
+        from evaluation_log import get_last_evaluations
+        
+        # Get mode using safe helper functions
+        mode = get_mode_str()
+        validate_mode = is_paper_mode()  # Use helper instead of accessing private attribute
+        
+        # Get symbols from env
+        symbols_str = os.getenv("SYMBOLS", "ZEC/USD")
+        symbols = [s.strip().upper() for s in symbols_str.split(",")]
+        
+        # Get last evaluation timestamp
+        last_eval_timestamp = None
+        try:
+            last_evals = get_last_evaluations(limit=1)
+            if last_evals:
+                last_eval_timestamp = last_evals[0].get('timestamp_utc')
+        except Exception as eval_err:
+            # If evaluation_log.db doesn't exist yet, return None
+            print(f"[API-MODE] Could not fetch last evaluation: {eval_err}")
+        
+        return {
+            "mode": mode,
+            "validate_mode": validate_mode,
+            "symbols": symbols,
+            "last_evaluation_utc": last_eval_timestamp
+        }
+    
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+        )

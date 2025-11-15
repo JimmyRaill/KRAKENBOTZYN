@@ -1,0 +1,349 @@
+You are now in BUILD MODE for my Kraken trading bot “Zyn”.
+
+Use ONLY the architecture and findings you already produced in your last PLAN MODE analysis dated November 15, 2025. Do not invent new structures or refactor large areas of the codebase.
+
+Your job in this pass is to implement a tight, focused set of changes that:
+
+1. Make Zyn SAFER around stop-loss / take-profit (SL/TP)
+2. Make Zyn more TRANSPARENT (easy to see mode, status, and evaluations)
+3. Make it EASY to verify that LIVE trading actually works (force-trade test path)
+4. Do NOT change the core strategy logic or thresholds, EXCEPT where explicitly stated
+
+If something is unclear, follow the PLAN analysis you already wrote. Do not revert or contradict that analysis.
+
+────────────────────────────────
+SECTION A – DEBUG / STATUS COMMANDS
+────────────────────────────────
+
+Goal: I want to be able to query “What is Zyn doing right now?” from the chat/UI and get a clear, structured answer.
+
+A1) Add a debug_status command at the command layer
+
+• File: commands.py  
+• Task:
+  - Implement a new command handler (e.g. cmd_debug_status()).
+  - Wire it into the main handle() function so that when I issue a command like "debug status" it invokes this handler.
+
+The debug_status command should:
+
+1. Determine current mode:
+   - Use the existing mode utilities (e.g. get_mode_str() or whatever you already have) to return "live" or "paper".
+   - Also include the raw _validate_mode from the ExchangeManager (True/False) so I can see if Kraken is in validate mode.
+
+2. Fetch symbols:
+   - Read from env SYMBOLS (e.g. "BTC/USD,ETH/USD,ZEC/USD") and return as a list.
+
+3. Compute equity:
+   - Use your existing account_state.get_balances() helper.
+   - Aggregate USD-equivalent balances into a single equity_usd number.
+   - Include the raw balances object too (so I can see currency breakdowns).
+
+4. Fetch last evaluation:
+   - Use evaluation_log.get_last_evaluations(limit=1) to get the latest record (LIVE session).
+   - Return an object like:
+
+     "last_evaluation": {
+       "timestamp_utc": ...,
+       "symbol": ...,
+       "price": ...,
+       "rsi": ...,
+       "atr": ...,
+       "adx": ...,
+       "bb_position": ...,
+       "decision": ...,
+       "reason": ...,
+       "regime": ...,
+       "trading_mode": ...
+     }
+
+5. Evaluation counts in last 24h:
+   - Query evaluations table for the last 24 hours (UTC).
+   - Return:
+
+     "eval_counts_last_24h": {
+       "total": <int>,
+       "by_symbol": { "BTC/USD": <int>, "ETH/USD": <int>, ... }
+     }
+
+6. Trades in last 24h (LIVE):
+   - Use ex.fetch_my_trades() in LIVE mode with a limit and/or time filter.
+   - Return:
+
+     "trades_last_24h": {
+       "total": <int>,
+       "by_symbol": { "BTC/USD": <int>, ... }
+     }
+
+   - It’s okay if this is approximate, as long as it’s consistent and uses the LIVE client when mode is live.
+
+Return from cmd_debug_status() a structured Python dict, NOT just formatted text. The UI/chat layer can pretty-print it.
+
+A2) Ensure /api/command can carry debug status
+
+• File: api.py  
+• Task:
+  - Ensure the existing /api/command endpoint can accept "debug status" and pass it into commands.handle().
+  - If it already does this, no change is needed apart from the new handler.
+
+────────────────────────────────
+SECTION B – EVALUATION HISTORY EXPOSURE
+────────────────────────────────
+
+Goal: I want to SEE the exact evaluation logs that Zyn is using, so I can understand “no trades” behavior.
+
+B1) Add an API endpoint for evaluations
+
+• File: api.py  
+• New endpoint: GET /api/evaluations  
+• Behavior:
+  - Accept query parameters:
+      - limit (int, default 20, max 100)
+      - symbol (optional string)
+  - Call evaluation_log.get_last_evaluations(limit=limit, symbol=symbol_or_none)
+  - Return a JSON list of evaluation records exactly as stored in evaluation_log.db, including fields like:
+      id, timestamp_utc, symbol, price, rsi, atr, volume, decision, reason, regime, adx, bb_position, trading_mode, etc.
+
+B2) Add a simple command wrapper
+
+• File: commands.py  
+• Task:
+  - Implement a simple command like "show evaluations" or "show evaluations BTC/USD 10" that:
+      - Parses optional symbol and limit from the command string (keep parsing simple, doesn’t need to be perfect).
+      - Calls evaluation_log.get_last_evaluations(...).
+      - Returns a structured dict like:
+
+        {
+          "evaluations": [ ... list of evaluation objects ... ]
+        }
+
+This is for chat usage; the UI can hit /api/evaluations directly.
+
+────────────────────────────────
+SECTION C – FORCE-TRADE TEST PATH (LIVE PIPELINE VERIFICATION)
+────────────────────────────────
+
+Goal: I want a deliberate, controlled way to verify that LIVE order placement (with brackets) works end-to-end, without relying on random market setups.
+
+Use the design you described in PLAN mode with ENABLE_FORCE_TRADE.
+
+C1) Implement or finalize ENABLE_FORCE_TRADE behavior
+
+• Env flag: ENABLE_FORCE_TRADE  
+  - Only when ENABLE_FORCE_TRADE=1 should any force-trade test be allowed.
+  - When it is missing or 0/false, the force-trade command MUST refuse to run.
+
+• File: commands.py (or whichever file currently parses commands like “Force trade test on ETH/USD”)  
+• Task:
+  - Add a command handler, e.g. cmd_force_trade_test(symbol: str).
+
+Behavior:
+
+1. Check env:
+   - Read ENABLE_FORCE_TRADE from env.
+   - If not enabled: return a clear structured error:
+
+     { "ok": False, "error": "ENABLE_FORCE_TRADE is not enabled in .env" }
+
+2. Determine mode:
+   - If mode is "paper", you can either:
+       - Refuse and say force test only makes sense in LIVE, or
+       - Explicitly state that the test will run in PAPER and not hit real Kraken.
+   - Prefer explicit behavior; don’t silently fall back.
+
+3. Place a very small test trade:
+   - Default symbol: ETH/USD if none is provided.
+   - Use a small notional size (around $10–$15) respecting Kraken min cost/amount.
+   - Use the existing bracket order pipeline:
+       - Call the same internal function used for normal trades, e.g. bracket_order_manager.open_position_with_brackets(...).
+       - This ensures SL/TP logic is exercised exactly like real trades.
+
+4. Logging:
+   - Log at least:
+       - timestamp_utc
+       - mode (live/paper)
+       - symbol
+       - side
+       - quantity
+       - entry_price (if available)
+       - Kraken order IDs for entry, TP, and SL
+       - full Kraken response payloads (or trimmed versions) into either:
+           - evaluation_log error_message field, OR
+           - a separate log file/table if more appropriate.
+   - The point is: after I run a force trade, I can inspect logs and see the entire path.
+
+5. Return value:
+   - A structured dict like:
+
+     {
+       "ok": True,
+       "mode": "live",
+       "symbol": "ETH/USD",
+       "side": "buy",
+       "quantity": <float>,
+       "entry_order_id": "...",
+       "take_profit_order_id": "...",
+       "stop_loss_order_id": "...",
+       "note": "Force trade test executed using ENABLE_FORCE_TRADE"
+     }
+
+────────────────────────────────
+SECTION D – SL/TP SAFETY MONITOR
+────────────────────────────────
+
+Goal: I never want a naked live position (no stop) to slip through because of network errors, rate limits, or partial failures. You already proposed a safety monitor in PLAN mode; now implement it.
+
+D1) Create a safety_monitor.py with core logic
+
+• File: safety_monitor.py (NEW)  
+• Implement:
+
+def check_naked_positions(exchange) -> dict:
+    """
+    Verify that all open positions have an associated protective stop-loss.
+    Returns a summary dict with counts and any actions taken.
+    """
+    # Pseudocode intent:
+    # 1. Fetch all open positions OR infer from open orders + past trades.
+    # 2. Fetch all open stop orders (orders whose type/params indicate stop-loss).
+    # 3. For each open position:
+    #       - If there is no matching stop-loss order:
+    #           - Either place an emergency stop at a fixed % below current price (e.g. 5-10%)
+    #             OR flatten the position with a market order (safer default).
+    #       - Log any corrective actions taken.
+    # 4. Return a summary dict: {"checked": N, "naked_found": X, "emergency_actions": [...]}.
+
+Important constraints:
+
+- Initially, you can implement a conservative version:
+  - For LIVE mode, if you detect a naked position:
+    - Default behavior: CLOSE the position immediately with a market order.
+    - This is safer than trying to guess a stop level.
+  - For PAPER mode, you can simulate the same logic to keep behavior consistent, but safety is most critical in LIVE.
+
+- Log ALL actions:
+  - Use prints + a log entry (e.g. to evaluation_log or a dedicated safety log) with details:
+    - which symbol,
+    - quantity,
+    - whether it had a stop,
+    - and what action you took.
+
+D2) Hook the safety monitor into the main loop
+
+• File: autopilot.py  
+• Task:
+  - In loop_once(...) or an equivalent central place where one cycle of evaluation + trading is done:
+    - After handling signals/orders for all symbols in that iteration, call:
+
+      safety_monitor.check_naked_positions(ex)
+
+    - Ensure this call happens for LIVE mode at minimum; it can also run in PAPER for testing.
+
+The goal: every loop, Zyn should scan for naked positions and either:
+- confirm all good, or
+- close/fix them and log what happened.
+
+────────────────────────────────
+SECTION E – BRACKET ORDER ROBUSTNESS (RETRIES)
+────────────────────────────────
+
+Goal: Reduce risk of SL/TP failures due to transient Kraken/network issues.
+
+E1) Add retry logic for TP/SL placement
+
+• File: bracket_order_manager.py  
+• Focus on the portion where:
+  - Entry order is placed (market buy),
+  - Then TP and SL are created as two more orders.
+
+You already have rollback logic that closes the position if TP/SL creation fails. Keep that, but add a small retry layer before rollback.
+
+Implement something like:
+
+def _place_tp_and_sl_with_retry(exchange, sym, fill_size, tp_p, sl_p, max_retries=3, delay_sec=2):
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            tp_order = exchange.create_limit_sell_order(sym, float(fill_size), float(tp_p))
+            sl_order = _create_stop_market(exchange, sym, "sell", float(fill_size), float(sl_p))
+            return tp_order, sl_order
+        except Exception as e:
+            last_err = e
+            print(f"[BRACKET-RETRY] Attempt {attempt} failed for {sym} TP/SL: {e}")
+            time.sleep(delay_sec)
+    raise last_err
+
+Then in the main bracket logic:
+
+- Replace the direct TP/SL creation with a call to this function.
+- If this function raises after all retries:
+  - Fall back to your existing rollback behavior:
+      - log,
+      - close position with market sell,
+      - return an appropriate error string.
+
+Do NOT change the existing successful behavior; only add retries and clearer logs.
+
+────────────────────────────────
+SECTION F – MODE VISIBILITY (NO RUNTIME TOGGLE YET)
+────────────────────────────────
+
+Goal: Reduce confusion around PAPER vs LIVE by making the current mode extremely obvious and queryable. For now, we are NOT implementing a full runtime mode toggle; I just want visibility.
+
+F1) Simple mode status endpoint
+
+• File: api.py  
+• New endpoint: GET /api/mode  
+• Behavior:
+  - Read the current mode using get_mode_str() or equivalent.
+  - Also expose _validate_mode from the ExchangeManager.
+  - Optionally include:
+      - the SYMBOLS in use,
+      - timestamp of the last evaluation (from evaluations table).
+
+Return JSON like:
+
+{
+  "mode": "live",
+  "validate_mode": false,
+  "symbols": ["BTC/USD", "ETH/USD", "ZEC/USD"],
+  "last_evaluation_utc": "2025-11-15T13:18:38"
+}
+
+This will let the UI show a big LIVE/PAPER badge without guessing.
+
+NOTE: Do NOT implement the runtime mode toggle in this pass. That’s a separate change. It’s enough for now that mode is clearly visible via /api/mode and debug_status.
+
+────────────────────────────────
+SECTION G – WHAT NOT TO CHANGE
+────────────────────────────────
+
+Do NOT do any of the following in this build pass:
+
+- Do NOT change core strategy thresholds (ATR, ADX, RSI, Bollinger levels, etc.), except where already implemented via the AGGRESSIVE_RANGE_TRADING flag.
+- Do NOT refactor major files or rename core functions.
+- Do NOT change the way PAPER vs LIVE modes work internally (no new API key scheme in this pass).
+- Do NOT implement P&L tracking, performance metrics, or WebSockets yet. Those are future tasks.
+
+Focus ONLY on:
+
+1. debug_status command
+2. /api/evaluations + evaluations command
+3. Force trade test path (ENABLE_FORCE_TRADE)
+4. SL/TP safety monitor (safety_monitor.check_naked_positions)
+5. Bracket TP/SL retry logic
+6. /api/mode endpoint
+
+────────────────────────────────
+FINAL CHECKLIST BEFORE YOU STOP
+────────────────────────────────
+
+Before you stop editing, verify:
+
+- [ ] debug_status command is wired and returns a structured dict with mode, equity, last evaluation, eval counts, and trades last 24h.
+- [ ] /api/evaluations returns JSON array of evaluation records.
+- [ ] Force trade test command exists, checks ENABLE_FORCE_TRADE, and uses the real bracket pipeline to place a small test trade, logging IDs and responses.
+- [ ] safety_monitor.check_naked_positions(exchange) exists and is called from the main loop, closing or protecting any naked positions it finds (at least in LIVE mode).
+- [ ] TP/SL placement in bracket_order_manager.py uses a retry function before rollback.
+- [ ] /api/mode returns the current mode and validate flag.
+
+Once all of that is implemented, stop and summarize exactly what you changed (file + functions), so I can review.
