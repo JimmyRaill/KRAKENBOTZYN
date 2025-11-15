@@ -58,6 +58,9 @@ except ImportError:
 # EVALUATION LOGGING - Full transparency layer
 from evaluation_log import log_evaluation
 
+# RECONCILIATION SERVICE - TP/SL fill monitoring
+from reconciliation_service import run_reconciliation_cycle
+
 # Advanced feature imports with individual toggles
 MULTI_STRATEGY_ENABLED = False
 PATTERN_RECOGNITION_ENABLED = False
@@ -1439,9 +1442,23 @@ def run_forever() -> None:
         eq0 = 0.0
     global _DAY_START_EQUITY
     _DAY_START_EQUITY = eq0
+    
+    # Reconciliation tracking - run every 60s
+    last_reconciliation_time = 0
+    reconciliation_interval = 60  # seconds
 
     while True:
         loop_once(ex, symbols)
+        
+        # Run reconciliation cycle for TP/SL fill monitoring
+        current_time = time.time()
+        if current_time - last_reconciliation_time >= reconciliation_interval:
+            try:
+                run_reconciliation_cycle()
+                last_reconciliation_time = current_time
+            except Exception as e:
+                logger.error(f"[RECONCILE] Error in cycle: {e}")
+        
         time.sleep(iv)
 
 if __name__ == "__main__":
