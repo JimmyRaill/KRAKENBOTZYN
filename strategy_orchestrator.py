@@ -366,11 +366,12 @@ class StrategyOrchestrator:
                 )
         
         # No signal - price too high in range or RSI not favorable
+        rsi_display = f"{rsi:.1f}" if rsi else "N/A"
         return TradeSignal(
             action='hold',
             regime=regime_result.regime,
             confidence=0.0,
-            reason=f"RANGE but no setup (price at {price_position_pct:.0f}% of band, RSI={rsi:.1f if rsi else 'N/A'})",
+            reason=f"RANGE but no setup (price at {price_position_pct:.0f}% of band, RSI={rsi_display})",
             entry_price=price,
             htf_aligned=htf.htf_aligned,
             dominant_trend=htf.dominant_trend,
