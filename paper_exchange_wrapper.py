@@ -182,7 +182,11 @@ class PaperExchangeWrapper:
     def create_market_sell_order(self, symbol: str, amount: float, params: Optional[dict] = None):
         """Create market sell order (paper or live)"""
         if not self._is_paper:
-            return self._exchange.create_market_sell_order(symbol, amount, params)
+            # CRITICAL: Don't pass params if None - ccxt crashes with "'NoneType' object is not iterable"
+            if params is None:
+                return self._exchange.create_market_sell_order(symbol, amount)
+            else:
+                return self._exchange.create_market_sell_order(symbol, amount, params)
         
         # Paper mode: close position
         try:
@@ -234,7 +238,11 @@ class PaperExchangeWrapper:
     def create_limit_buy_order(self, symbol: str, amount: float, price: float, params: Optional[dict] = None):
         """Create limit buy order (paper or live)"""
         if not self._is_paper:
-            return self._exchange.create_limit_buy_order(symbol, amount, price, params)
+            # CRITICAL: Don't pass params if None - ccxt crashes with "'NoneType' object is not iterable"
+            if params is None:
+                return self._exchange.create_limit_buy_order(symbol, amount, price)
+            else:
+                return self._exchange.create_limit_buy_order(symbol, amount, price, params)
         
         # Paper mode: store as open limit order
         try:
@@ -270,7 +278,11 @@ class PaperExchangeWrapper:
     def create_limit_sell_order(self, symbol: str, amount: float, price: float, params: Optional[dict] = None):
         """Create limit sell order (paper or live)"""
         if not self._is_paper:
-            return self._exchange.create_limit_sell_order(symbol, amount, price, params)
+            # CRITICAL: Don't pass params if None - ccxt crashes with "'NoneType' object is not iterable"
+            if params is None:
+                return self._exchange.create_limit_sell_order(symbol, amount, price)
+            else:
+                return self._exchange.create_limit_sell_order(symbol, amount, price, params)
         
         # Paper mode: store as open limit order (could be TP from bracket)
         try:
@@ -307,7 +319,11 @@ class PaperExchangeWrapper:
                     price: Optional[float] = None, params: Optional[dict] = None):
         """Generic create_order (handles stop orders)"""
         if not self._is_paper:
-            return self._exchange.create_order(symbol, order_type, side, amount, price, params)
+            # CRITICAL: Don't pass params if None - ccxt crashes with "'NoneType' object is not iterable"
+            if params is None:
+                return self._exchange.create_order(symbol, order_type, side, amount, price)
+            else:
+                return self._exchange.create_order(symbol, order_type, side, amount, price, params)
         
         # Paper mode: handle stop orders
         try:
@@ -360,8 +376,12 @@ class PaperExchangeWrapper:
     def fetch_open_orders(self, symbol: Optional[str] = None, since: Optional[int] = None, limit: Optional[int] = None, params: Optional[dict] = None):
         """Fetch open orders (paper or live)"""
         if not self._is_paper:
+            # CRITICAL: Don't pass params if None - ccxt crashes with "'NoneType' object is not iterable"
             if symbol:
-                return self._exchange.fetch_open_orders(symbol, since, limit, params)
+                if params is None:
+                    return self._exchange.fetch_open_orders(symbol, since, limit)
+                else:
+                    return self._exchange.fetch_open_orders(symbol, since, limit, params)
             else:
                 return self._exchange.fetch_open_orders()
         
@@ -383,7 +403,11 @@ class PaperExchangeWrapper:
     def fetch_balance(self, params: Optional[dict] = None):
         """Fetch balance (paper or live)"""
         if not self._is_paper:
-            return self._exchange.fetch_balance(params)
+            # CRITICAL: Don't pass params if None - ccxt crashes with "'NoneType' object is not iterable"
+            if params is None:
+                return self._exchange.fetch_balance()
+            else:
+                return self._exchange.fetch_balance(params)
         
         # Paper mode: return simulator balance
         balance = {
@@ -414,7 +438,11 @@ class PaperExchangeWrapper:
     def cancel_order(self, order_id: str, symbol: Optional[str] = None, params: Optional[dict] = None):
         """Cancel an order"""
         if not self._is_paper:
-            return self._exchange.cancel_order(order_id, symbol, params)
+            # CRITICAL: Don't pass params if None - ccxt crashes with "'NoneType' object is not iterable"
+            if params is None:
+                return self._exchange.cancel_order(order_id, symbol)
+            else:
+                return self._exchange.cancel_order(order_id, symbol, params)
         
         # Paper mode: mark as cancelled in canonical ledger
         # CRITICAL: Reload from disk to handle multi-worker uvicorn environment
