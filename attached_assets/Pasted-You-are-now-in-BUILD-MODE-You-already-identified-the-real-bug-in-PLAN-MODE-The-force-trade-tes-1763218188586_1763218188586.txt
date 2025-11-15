@@ -1,0 +1,146 @@
+You are now in BUILD MODE.
+
+You already identified the real bug in PLAN MODE:
+
+- The force trade test logic in commands.py is working.
+- The bug is in llm_agent.py: the LLM is refusing to call execute_trading_command for force trade tests because the system prompt / tool description incorrectly treats them as paper-only or unsafe in LIVE.
+- Result: I get fake “internal consistency” / no-op behavior instead of actual Kraken orders or real Kraken errors.
+
+Now I want you to FIX llm_agent.py so that:
+
+- Commands like “Force trade test on ETH/USD” correctly route to the trading tool.
+- Zyn understands that force trade tests are specifically designed to test the LIVE pipeline with small real orders, guarded by ENABLE_FORCE_TRADE.
+
+Make ALL of the following changes, in this order:
+
+────────────────────────
+1) FIX THE SYSTEM PROMPT
+────────────────────────
+
+• File: llm_agent.py (or wherever the system prompt / agent instructions are defined for the LLM that talks to the trading backend).
+
+Task:
+
+1. Locate the system prompt / base instructions that describe:
+   - What the bot is,
+   - How it uses tools (like execute_trading_command),
+   - Any comments about LIVE vs PAPER trading,
+   - Any comments about "test trades", "simulations", "safety", etc.
+
+2. Remove or adjust any language that tells the LLM that:
+   - Force trades are PAPER-only, OR
+   - The LLM should *avoid* placing real orders when the user explicitly asks for a force trade test.
+
+3. ADD a very clear instruction along these lines (adapt wording to your style, but keep semantics):
+
+   - “When the user explicitly requests a force trade test (e.g., ‘Force trade test on ETH/USD’) and ENABLE_FORCE_TRADE=1 is set in the environment, you MUST route this to the execute_trading_command tool so that the backend can place a small, real test order in LIVE mode (if the bot is currently in LIVE mode).”
+   - “Force trade tests exist specifically to verify the full LIVE order pipeline with very small notional size. Do not block these when LIVE mode is enabled and ENABLE_FORCE_TRADE=1. If there is an error, let the backend surface the real Kraken error message.”
+
+4. Also add a general rule:
+
+   - “For trading-related commands like status, bal, open, show evaluations, force trade test, etc., you should call the execute_trading_command tool instead of simulating the response yourself. Let the backend perform the real logic and return its result.”
+
+The goal: the LLM should no longer "protect" me from force trades; it should call the tool and let the backend handle safety via ENABLE_FORCE_TRADE and internal logic.
+
+────────────────────────────────────
+2) FIX TOOL DESCRIPTION / ROUTING HINT
+────────────────────────────────────
+
+• Still in llm_agent.py (or wherever tools are registered for the LLM).
+
+Task:
+
+1. Find the definition for the trading tool, likely something like:
+
+   - execute_trading_command
+   - or similar tool/function used to send commands into commands.py
+
+2. Update the tool description so that it explicitly mentions force trade tests. Example:
+
+   - “Use this tool to execute any trading command (e.g. ‘bal’, ‘open’, ‘trade history’, ‘show evaluations’, ‘force trade test ETH/USD’, etc.). For force trade tests in LIVE mode, ensure ENABLE_FORCE_TRADE=1 is set; the backend will place a very small test order and return real Kraken responses or errors.”
+
+3. Make sure the description does NOT say anything like:
+   - “force trades are paper-only”
+   - “never call this in LIVE mode for test trades”
+
+The tool description should encourage the LLM to use execute_trading_command for “force trade test …” requests, not scare it away from doing so.
+
+───────────────────────────────
+3) VERIFY LLM ROUTING LOGIC
+───────────────────────────────
+
+Now verify that natural language routes correctly:
+
+1. Look at the main LLM handling code in llm_agent.py:
+   - Wherever user messages are received and the LLM decides:
+       - whether to respond conversationally,
+       - or to call tools (execute_trading_command, etc.).
+
+2. Confirm that commands starting with or containing phrases like:
+
+   - “Force trade test on ETH/USD”
+   - “Force trade test ETH/USD”
+   - “Run a force trade test on BTC/USD”
+
+   are NOT being blocked or special-cased in a way that avoids the tool.
+
+3. If there is any logic like:
+   - “If mode is LIVE, and user says ‘test’ or ‘force trade’, avoid calling trading tool”
+   - Or any other protective special case around LIVE + test trades
+
+   REMOVE or RELAX that logic so that:
+
+   - As long as:
+       - Mode is LIVE,
+       - ENABLE_FORCE_TRADE=1,
+       - And the user clearly requested a force trade test,
+     the LLM must call the execute_trading_command tool.
+
+4. Ensure that the final behavior is:
+
+   - User: “Force trade test on ETH/USD”
+   - LLM: calls execute_trading_command("force trade test ETH/USD") (or whatever exact command string the backend expects).
+   - commands.py: runs the *already implemented* force trade handler.
+   - Backend: either places a real bracketed test order or returns a **real** Kraken error.
+   - Response: includes actual order IDs or explicit Kraken error (e.g. “minimum order size not met”), NOT vague “internal consistency” fluff.
+
+───────────────────────────────
+4) NO CHANGES TO BACKEND LOGIC
+───────────────────────────────
+
+DO NOT modify:
+
+- commands.py force trade handler (assume it’s correct as per your Plan analysis).
+- bracket_order_manager.py logic for actual order placement (except where previously requested in older tasks).
+- Evaluation logging, NO_TRADE logic, or risk management for this specific change.
+
+This pass is *only* about llm_agent.py:
+- Prompt / system instructions
+- Tool descriptions
+- Routing behavior for force trade test commands
+
+───────────────────────────────
+5) FINAL CHECKS AFTER EDITS
+───────────────────────────────
+
+After you’ve edited llm_agent.py:
+
+1. Summarize exactly what you changed:
+   - The prompt lines you added/removed.
+   - The tool description modifications.
+   - Any routing/special-case logic you changed.
+
+2. Confirm expected runtime behavior:
+
+   - Scenario:
+       - Mode: LIVE
+       - ENABLE_FORCE_TRADE=1 in .env
+   - User types: “Force trade test on ETH/USD”
+   - LLM behavior (what it *should* do now):
+       - Calls execute_trading_command with the appropriate force trade command string.
+   - Backend:
+       - Either places a tiny real test trade with brackets OR returns a real Kraken error.
+
+Do NOT fake or simulate the backend response in the LLM. All trading behavior must come from execute_trading_command / commands.py.
+
+Once that’s done and summarized, stop.
