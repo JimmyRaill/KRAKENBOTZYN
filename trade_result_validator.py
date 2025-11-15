@@ -41,10 +41,34 @@ class TradeResult:
             '-ERR', 'failed', 'FAIL', 'Error', 'error'
         ])
         
+        # Determine command type first (needed for success detection)
+        cmd_type = "unknown"
+        is_query_command = False
+        
+        if "bracket" in command.lower():
+            cmd_type = "bracket"
+        elif "open" in command.lower():
+            cmd_type = "query_orders"
+            is_query_command = True
+        elif "bal" in command.lower():
+            cmd_type = "query_balance"
+            is_query_command = True
+        elif "price" in command.lower():
+            cmd_type = "query_price"
+            is_query_command = True
+        elif "cancel" in command.lower():
+            cmd_type = "cancel"
+        
         # Check for success patterns
-        has_success = any(pattern in result_str for pattern in [
-            'BRACKET OK', 'OK', 'SUCCESS', 'executed'
-        ]) and not has_error
+        # CRITICAL FIX: Query commands (bal, open, price) are ALWAYS successful unless they error
+        # They don't return "OK" or "SUCCESS" keywords, so we check by command type
+        if is_query_command:
+            has_success = not has_error  # Queries succeed if they don't error
+        else:
+            # Trading commands need explicit success keywords
+            has_success = any(pattern in result_str for pattern in [
+                'BRACKET OK', 'OK', 'SUCCESS', 'executed', 'FILLED'
+            ]) and not has_error
         
         # Extract order IDs
         order_ids = re.findall(r'(PAPER-[A-F0-9]+|O[A-Z0-9]{5,})', result_str)
@@ -52,17 +76,6 @@ class TradeResult:
         # Extract symbol if present
         symbol_match = re.search(r'([A-Z]{3,}/[A-Z]{3,})', result_str)
         symbol = symbol_match.group(1) if symbol_match else None
-        
-        # Determine command type
-        cmd_type = "unknown"
-        if "bracket" in command.lower():
-            cmd_type = "bracket"
-        elif "open" in command.lower():
-            cmd_type = "query_orders"
-        elif "bal" in command.lower():
-            cmd_type = "query_balance"
-        elif "price" in command.lower():
-            cmd_type = "query_price"
         
         return cls(
             success=has_success,
