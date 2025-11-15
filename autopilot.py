@@ -60,6 +60,7 @@ from evaluation_log import log_evaluation
 
 # RECONCILIATION SERVICE - TP/SL fill monitoring
 from reconciliation_service import run_reconciliation_cycle
+from loguru import logger as reconciliation_logger
 
 # Advanced feature imports with individual toggles
 MULTI_STRATEGY_ENABLED = False
@@ -1457,7 +1458,7 @@ def run_forever() -> None:
                 run_reconciliation_cycle()
                 last_reconciliation_time = current_time
             except Exception as e:
-                logger.error(f"[RECONCILE] Error in cycle: {e}")
+                reconciliation_logger.error(f"[RECONCILE] Error in cycle: {e}")
         
         time.sleep(iv)
 

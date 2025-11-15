@@ -6,7 +6,7 @@ from typing import Optional
 import ccxt
 from dotenv import load_dotenv
 from exchange_manager import get_exchange, get_mode_str, is_paper_mode
-from evaluation_log import log_order_execution
+from evaluation_log import log_order_execution, register_pending_child_order
 
 # Load .env from project root
 load_dotenv(dotenv_path=".env", override=True)
@@ -634,6 +634,36 @@ def handle(text: str) -> str:
                             ex, sym, fill_size, tp_p, sl_p, side='long', 
                             max_retries=3, delay_sec=2
                         )
+                        
+                        # Register TP/SL orders for monitoring
+                        trading_mode = get_mode_str().lower()
+                        tp_id = tp_order.get("id") or tp_order.get("orderId")
+                        sl_id = sl_order.get("id") or sl_order.get("orderId")
+                        
+                        if tp_id:
+                            register_pending_child_order(
+                                symbol=sym,
+                                order_id=tp_id,
+                                order_type="tp",
+                                parent_order_id=entry_id,
+                                side="sell",
+                                quantity=fill_size,
+                                limit_price=tp_p,
+                                trading_mode=trading_mode
+                            )
+                        
+                        if sl_id:
+                            register_pending_child_order(
+                                symbol=sym,
+                                order_id=sl_id,
+                                order_type="sl",
+                                parent_order_id=entry_id,
+                                side="sell",
+                                quantity=fill_size,
+                                limit_price=sl_p,
+                                trading_mode=trading_mode
+                            )
+                        
                     except Exception as protect_err:
                         # ROLLBACK: TP/SL creation failed - must cleanup completely
                         print(f"[BRACKET-ROLLBACK] TP/SL creation failed after retries: {protect_err}")
@@ -737,6 +767,36 @@ def handle(text: str) -> str:
                             ex, sym, fill_size, tp_p, sl_p, side='short', 
                             max_retries=3, delay_sec=2
                         )
+                        
+                        # Register TP/SL orders for monitoring
+                        trading_mode = get_mode_str().lower()
+                        tp_id = tp_order.get("id") or tp_order.get("orderId")
+                        sl_id = sl_order.get("id") or sl_order.get("orderId")
+                        
+                        if tp_id:
+                            register_pending_child_order(
+                                symbol=sym,
+                                order_id=tp_id,
+                                order_type="tp",
+                                parent_order_id=entry_id,
+                                side="buy",
+                                quantity=fill_size,
+                                limit_price=tp_p,
+                                trading_mode=trading_mode
+                            )
+                        
+                        if sl_id:
+                            register_pending_child_order(
+                                symbol=sym,
+                                order_id=sl_id,
+                                order_type="sl",
+                                parent_order_id=entry_id,
+                                side="buy",
+                                quantity=fill_size,
+                                limit_price=sl_p,
+                                trading_mode=trading_mode
+                            )
+                        
                     except Exception as protect_err:
                         # ROLLBACK: TP/SL creation failed - must cleanup completely
                         print(f"[BRACKET-ROLLBACK] TP/SL creation failed after retries: {protect_err}")
