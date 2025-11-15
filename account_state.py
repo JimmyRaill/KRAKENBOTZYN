@@ -342,50 +342,35 @@ def get_balances() -> Dict[str, Dict[str, Any]]:
     now = time.time()
     now_iso = datetime.now(tz=timezone.utc).isoformat()
     
-    # CRITICAL: Kraken asset key normalization mapping
-    # Kraken uses ZUSD, XXBT, XETH, XZEC, etc. - we need to normalize to USD, BTC, ETH, ZEC
-    KRAKEN_ASSET_MAP = {
-        'ZUSD': 'USD',
-        'XXBT': 'BTC',
-        'XBT': 'BTC',
-        'XETH': 'ETH',
-        'XZEC': 'ZEC',
-        'XXRP': 'XRP',
-        'XLTC': 'LTC',
-        'XXDG': 'DOGE',
-        'XXMR': 'XMR',
-        'XREP': 'REP',
-        'ZEUR': 'EUR',
-        'ZGBP': 'GBP',
-        'ZCAD': 'CAD',
-        'ZJPY': 'JPY'
-    }
-    
     if mode == "live":
         # LIVE MODE: Fetch from Kraken API
+        # NOTE: CCXT automatically normalizes Kraken codes (ZUSD→USD, XXBT→BTC, etc.)
+        # We don't need to do manual mapping - just skip metadata keys
         try:
             ex = get_exchange()
             balances_raw = ex.fetch_balance()
             
             # CRITICAL: Handle None response from exchange
             if balances_raw is None:
-                logger.error(f"[ACCOUNT-STATE] fetch_balance() returned None")
+                logger.error(f"[ACCOUNT-STATE] fetch_balance() returned None in LIVE mode")
                 return {}
             
-            logger.debug(f"[ACCOUNT-STATE] Raw balances from Kraken: {list(balances_raw.keys())}")
+            # DETAILED LOGGING: Show exactly what CCXT returned (already normalized by CCXT)
+            logger.info(f"[ACCOUNT-STATE] LIVE mode - CCXT fetch_balance() keys: {list(balances_raw.keys())}")
+            
+            # Log first few currency balances for debugging (CCXT already normalized ZUSD→USD, XXBT→BTC)
+            sample_currencies = {k: v for k, v in balances_raw.items() if isinstance(v, dict) and k not in ('free', 'used', 'total', 'info')}
+            logger.info(f"[ACCOUNT-STATE] LIVE mode - Sample balances (CCXT normalized): {dict(list(sample_currencies.items())[:3])}")
             
             balances = {}
-            for currency_raw, balance in balances_raw.items():
-                # CRITICAL: Skip metadata keys and non-dict values
-                if currency_raw in ('free', 'used', 'total', 'info', 'timestamp', 'datetime'):
+            for currency, balance in balances_raw.items():
+                # CRITICAL: Skip metadata keys (aggregates and raw info)
+                if currency in ('free', 'used', 'total', 'info', 'timestamp', 'datetime'):
                     continue
                 
                 # CRITICAL: Skip non-dict values (e.g. scalar metadata)
                 if not isinstance(balance, dict):
                     continue
-                
-                # CRITICAL FIX: Normalize Kraken asset codes (ZUSD→USD, XXBT→BTC, etc.)
-                currency = KRAKEN_ASSET_MAP.get(currency_raw, currency_raw)
                 
                 free = balance.get('free', 0.0) or 0.0
                 used = balance.get('used', 0.0) or 0.0

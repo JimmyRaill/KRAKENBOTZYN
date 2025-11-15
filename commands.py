@@ -119,6 +119,54 @@ def _open_orders_text(ex, symbol_filter: str | None = None) -> str:
         lines.append(f"{sid} | {sym} | {side} {typ} {amt} @ {px} | {status}")
     return "\n".join(lines)
 
+def _trade_history_text(ex, symbol_filter: str | None = None, limit: int = 20) -> str:
+    """
+    Fetch and display recent trade history using fetch_my_trades().
+    CRITICAL: This is separate from open orders - uses actual trade execution data.
+    """
+    from exchange_manager import get_mode_str
+    from datetime import datetime
+    
+    mode = get_mode_str()
+    
+    try:
+        # Fetch trade history from exchange
+        if symbol_filter:
+            trades = ex.fetch_my_trades(symbol=symbol_filter, limit=limit)
+        else:
+            trades = ex.fetch_my_trades(limit=limit)
+        
+        # DIAGNOSTIC: Log what this path sees
+        print(f"[HISTORY CMD] mode={mode}, ex={type(ex).__name__}, trades_count={len(trades)}")
+        
+        if not trades:
+            return "(no trade history)"
+        
+        lines = [f"Recent trades (limit {limit}):"]
+        for t in trades:
+            tid = str(t.get("id") or "?")
+            sym = t.get("symbol") or ""
+            side = t.get("side") or ""
+            amt = _safe_float(t.get("amount"), 0.0) or 0.0
+            px = _safe_float(t.get("price"), 0.0) or 0.0
+            cost = _safe_float(t.get("cost"), 0.0) or 0.0
+            timestamp = t.get("timestamp")
+            
+            # Format timestamp if available
+            time_str = ""
+            if timestamp:
+                try:
+                    dt = datetime.fromtimestamp(timestamp / 1000)  # ms to seconds
+                    time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    time_str = str(timestamp)
+            
+            lines.append(f"{tid} | {time_str} | {sym} | {side} {amt} @ ${px:.2f} | Cost: ${cost:.2f}")
+        
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[HISTORY-ERR] {e}"
+
 def _ensure_min_cost(ex, symbol: str, amount: float, price: float) -> float:
     """
     Kraken enforces a min notional per order (market & limit).
@@ -464,6 +512,19 @@ def handle(text: str) -> str:
             return _open_orders_text(ex, sym)
         except Exception as e:
             return f"[OPEN-ERR] {e}"
+
+    # history [symbol] [limit]
+    # Examples: "history", "history BTC/USD", "history BTC/USD 50"
+    m = re.fullmatch(r"(?i)history(?:\s+([A-Za-z0-9:/\-\._]+))?(?:\s+(\d+))?", s)
+    if m:
+        sym_filter = m.group(1)
+        limit_str = m.group(2)
+        try:
+            sym = _norm_sym(sym_filter) if sym_filter else None
+            limit = int(limit_str) if limit_str else 20
+            return _trade_history_text(ex, sym, limit)
+        except Exception as e:
+            return f"[HISTORY-ERR] {e}"
 
     # cancel <order_id> [symbol]
     m = re.fullmatch(r"(?i)cancel\s+([A-Za-z0-9\-_]+)(?:\s+([A-Za-z0-9:/\-\._]+))?", s)
