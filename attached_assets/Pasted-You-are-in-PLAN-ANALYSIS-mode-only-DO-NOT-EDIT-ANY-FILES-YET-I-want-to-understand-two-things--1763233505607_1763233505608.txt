@@ -1,0 +1,103 @@
+You are in PLAN / ANALYSIS mode only. DO NOT EDIT ANY FILES YET.
+
+I want to understand two things clearly:
+
+1) Is the strategy actually generating ANY entry signals in the last 24 hours, or is it effectively always in NO_TRADE / HOLD?
+2) Is my "universal symbol" support actually wired into autopilot, or is Zyn still hard-limited to BTC/ETH/ZEC in practice?
+
+Use real data from evaluation_log and the actual code (autopilot, strategy, symbol-universe file).
+
+Timeframe: last 24 hours, LIVE mode.
+
+────────────────────────
+STEP 1 – ENTRY vs NO_TRADE STATS (LAST 24H)
+────────────────────────
+
+1) Query evaluation_log for the last 24 hours where trading_mode = 'live'.
+
+For that result set, give me:
+
+- total_evals = <int>
+- decisions = {
+    "<decision_string>": count,
+    ...
+  }
+- regimes = {
+    "<regime_string>": count,
+    ...
+  }
+
+I want the EXACT distinct values for `decision` and `regime`, not guesses.
+
+2) Identify which decision strings correspond to “we actually tried to open a position”, e.g.:
+
+- ENTER_LONG_*
+- RANGE_LONG_ENTRY / TREND_UP_ENTRY
+- Any decision that, in the code, leads to calling `open_position_with_brackets(...)` or equivalent.
+
+List those “entry-type” decision strings explicitly, then tell me:
+
+- How many times each of those appeared in the last 24 hours (with counts).
+
+If the count for ALL entry-type decisions is 0, say clearly:
+> “In the last 24 hours in LIVE mode, the strategy produced ZERO entry signals.”
+
+────────────────────────
+STEP 2 – SYMBOL UNIVERSE: WHAT ARE WE ACTUALLY TRADING?
+────────────────────────
+
+Now I want you to inspect how symbols are determined for the autopilot loop.
+
+1) In autopilot.py, show:
+
+- The code that defines `symbols = ...` in `run_forever()` and/or `loop_once()`.
+- How that list is built:
+  - Does it come strictly from env var SYMBOLS?
+  - Is there any call into a separate “universal symbol” file/module?
+
+Paste the relevant snippet(s) with line numbers.
+
+2) Locate the "universal cryptocurrency" file/module we previously added (for example something like:
+
+- symbols_universe.py
+- all_symbols.py
+- markets_universe.json
+- or whatever name you can find that clearly holds a large list of tradable Kraken symbols,
+
+and answer:
+
+- File path + name.
+- How it exposes the full symbol list (e.g. a function like `get_all_spot_markets()` or a constant list).
+- Where (if anywhere) autopilot or strategy calls into that file.
+
+3) Tell me plainly:
+
+- Is the autopilot currently restricted to SYMBOLS from the .env only (like "BTC/USD,ETH/USD,ZEC/USD")?
+- Or is it already wired to dynamically pull from the universal symbol list and then filter?
+
+If the universal symbol file is present but NOT actually used anywhere in the autopilot / main loop, say:
+
+> “The universal symbol file exists but is currently unused for symbol selection. Autopilot only trades symbols manually listed in the SYMBOLS env var.”
+
+────────────────────────
+STEP 3 – DIAGNOSIS: STRICTNESS vs UNIVERSE
+────────────────────────
+
+Based on:
+
+- The entry/decision stats from STEP 1, and
+- The symbol-universe wiring from STEP 2,
+
+I want a concise 3–5 sentence diagnosis:
+
+1) Is the main reason for “no trades all day” that:
+   - (A) The strategy never generates entries (filters too strict) EVEN for the symbols it sees, OR
+   - (B) The symbol universe is extremely narrow (BTC/ETH/ZEC only) so there just aren’t enough qualifying setups, OR
+   - (C) Both: strict filters + narrow universe combine to almost never produce trades.
+
+2) Explicitly state which of A/B/C is the primary reason GIVEN THE LAST 24 HOURS OF DATA.
+
+Do NOT change any code yet. Just give me:
+- The stats,
+- The symbol-universe wiring,
+- And a clear explanation of what’s limiting trades right now.

@@ -1,0 +1,179 @@
+You are now in BUILD MODE.
+
+You already diagnosed that:
+
+- strategy_orchestrator.py returns TradeSignal(action='long') for valid entries.
+- autopilot.py logs those as decision="LONG" in evaluation_log.
+- But the execution code checks for action == "buy", so no trades are executed.
+- In the last 24h, there were 5 valid LONG signals (BTC/ETH/ZEC), zero executions.
+
+You also confirmed:
+
+- Autopilot currently only uses SYMBOLS from .env (BTC/USD,ETH/USD,ZEC/USD).
+- There is a crypto_universe.py with CryptoUniverseScanner that can scan all Kraken USD pairs and filter liquid ones.
+- CRYPTO_UNIVERSE_ENABLED is effectively disabled (hard-coded or ENV flag off), so the scanner is not being used.
+
+I want you to do TWO focused fixes:
+
+1) Fix the wiring bug so LONG signals actually execute.
+2) Enable the CryptoUniverseScanner behind a feature flag so Zyn can trade a broader universe (not just 3 majors).
+
+Do NOT change strategy thresholds (RSI/ADX/BB) or risk rules in this pass.
+
+────────────────────────
+PART 1 – FIX THE LONG → BUY WIRING BUG
+────────────────────────
+
+File: autopilot.py
+
+1) Locate the section where:
+
+- The strategy signal is read:
+    trade_signal = orchestrator.generate_signal(...)
+    action = trade_signal.action        # currently 'long'
+- The decision is logged:
+    log_evaluation(decision=action.upper(), ... )  # logs 'LONG'
+- The execution logic checks:
+    if action == "buy" and price:
+        # buy logic...
+    else:
+        print("[HOLD] ...")
+
+2) Immediately after you read action from the signal, normalize it so the rest of the code sees "buy"/"sell" instead of "long"/"short".
+
+Example (adapt to your exact structure):
+
+    action = trade_signal.action  # e.g. 'long', 'short', 'hold'
+
+    # Normalize strategy actions to execution actions
+    if action == "long":
+        exec_action = "buy"
+    elif action == "short":
+        exec_action = "sell"
+    else:
+        exec_action = action
+
+    # Use exec_action for execution routing
+    log_evaluation(
+        symbol=sym,
+        decision=action.upper(),  # keep 'LONG' in the DB for clarity
+        ...
+    )
+
+    # Later, when deciding whether to execute:
+    if exec_action == "buy" and price:
+        # call open_position_with_brackets or equivalent
+        ...
+    elif exec_action == "sell" and price:
+        # short / close logic if applicable
+        ...
+    else:
+        # HOLD / SKIP path
+        ...
+
+3) Make sure:
+
+- The evaluation_log still records decision="LONG" (so we can see strategy intent historically).
+- The EXECUTION branch uses exec_action ("buy"/"sell") when checking whether to place orders.
+- There is no remaining condition in the execution path that only checks for action == "buy" while ignoring "long".
+
+The goal: when the strategy says action='long', that MUST result in the code entering the buy execution block when all other conditions (risk, limits) are satisfied.
+
+────────────────────────
+PART 2 – ENABLE CRYPTO UNIVERSE SCANNER FOR SYMBOL SELECTION
+────────────────────────
+
+File: autopilot.py  
+File: crypto_universe.py (already exists, do NOT rewrite it, just use it)
+
+1) At the top of autopilot.py, where CRYPTO_UNIVERSE_ENABLED is defined, change it so it reads from an ENV flag instead of being hard-coded to False.
+
+For example:
+
+    import os
+    from crypto_universe import CryptoUniverseScanner  # if not already imported
+
+    CRYPTO_UNIVERSE_ENABLED = os.getenv("ENABLE_CRYPTO_UNIVERSE", "0").lower() in ("1", "true", "yes", "on")
+
+2) In the main symbol selection logic inside run_forever() or loop_once(), you already have something like this (based on the PLAN analysis):
+
+    if CRYPTO_UNIVERSE_ENABLED and CryptoUniverseScanner:
+        try:
+            print("[UNIVERSE] Initializing Crypto Universe Scanner...")
+            scanner = CryptoUniverseScanner(
+                exchange=ex,
+                quote_currency="USD",
+                max_assets=env_int("MAX_UNIVERSE_ASSETS", 20),
+                min_volume_24h=env_float("MIN_VOLUME_24H", 10000.0)
+            )
+            symbols = scanner.get_tradable_symbols()
+            if not symbols:
+                print("[UNIVERSE] No symbols from scanner, falling back to static list")
+                symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
+        except Exception as e:
+            print(f"[UNIVERSE-ERR] {e}, using static symbols")
+            symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
+    else:
+        symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
+
+Verify this block exists and is correctly indented. If not, create it as above.
+
+3) Ensure fallback works correctly:
+
+- If ENABLE_CRYPTO_UNIVERSE=1 and scanner works:
+  - symbols = scanner.get_tradable_symbols()
+- If scanner returns an empty list OR throws:
+  - Log the error and fall back to SYMBOLS from .env.
+- If ENABLE_CRYPTO_UNIVERSE is NOT set:
+  - Use SYMBOLS from .env only (BTC/USD,ETH/USD,ZEC/USD as currently configured).
+
+4) Confirm CryptoUniverseScanner filters:
+
+In crypto_universe.py, confirm:
+
+- It only returns liquid USD spot markets (no derivatives, no weird leveraged tokens).
+- It respects:
+  - max_assets (e.g., default 20)
+  - min_volume_24h (e.g., default 10,000 or 100,000)
+
+Do NOT change the internal logic here in this pass unless you see a clear bug. Just ensure autopilot is actually using it when ENABLE_CRYPTO_UNIVERSE=1.
+
+────────────────────────
+PART 3 – NON-CODE: .env SETTINGS I WILL USE
+────────────────────────
+
+Do NOT set these yourself, but ASSUME I will set:
+
+In .env:
+
+    ENABLE_CRYPTO_UNIVERSE=1
+    MAX_UNIVERSE_ASSETS=20
+    MIN_VOLUME_24H=100000.0
+    SYMBOLS=BTC/USD,ETH/USD,ZEC/USD     # still used as fallback
+    KRAKEN_VALIDATE_ONLY=0              # live mode
+
+After you make the code changes, I will:
+
+- Set those env vars,
+- Restart the bot,
+- Let autopilot run.
+
+────────────────────────
+PART 4 – FINAL CHECKLIST BEFORE YOU STOP
+────────────────────────
+
+Before finishing, verify:
+
+- [ ] autopilot.py now normalizes action='long' / 'short' into exec_action='buy' / 'sell' before execution checks.
+- [ ] The buy execution path uses exec_action, NOT raw 'long'.
+- [ ] Evaluation_log continues to store decision="LONG" for those signals.
+- [ ] CRYPTO_UNIVERSE_ENABLED is controlled by ENABLE_CRYPTO_UNIVERSE env var.
+- [ ] When ENABLE_CRYPTO_UNIVERSE=1, symbols are populated from CryptoUniverseScanner, with a clear log line like:
+      "[UNIVERSE] Using X scanned symbols: ..."
+- [ ] If the scanner fails or returns nothing, symbols fall back to SYMBOLS from .env.
+
+At the end, summarize in your build output:
+
+- Which files/functions you changed.
+- Exactly how actions now flow: strategy action → exec_action → execution.
+- Exactly how symbols are chosen when ENABLE_CRYPTO_UNIVERSE=1 vs 0.

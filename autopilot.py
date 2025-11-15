@@ -127,6 +127,7 @@ except ImportError as e:
     print(f"[WARNING] Notifications not available: {e}")
 
 # NEW ADVANCED FEATURES - Full bot upgrade
+# Initialize feature flags (will be set based on imports and env vars)
 CRYPTO_UNIVERSE_ENABLED = False
 PROFIT_TARGET_ENABLED = False
 MULTI_TIMEFRAME_ENABLED = False
@@ -136,12 +137,14 @@ BACKTEST_MODE_ENABLED = False
 CryptoUniverseScanner = get_target_system = MultiTimeframeAnalyzer = None
 get_watchdog = get_backtest = fetch_multi_timeframe_data = None
 
+# Crypto Universe Scanner - Dynamic symbol selection
 try:
     from crypto_universe import CryptoUniverseScanner, get_dynamic_universe
     if CryptoUniverseScanner:
-        CRYPTO_UNIVERSE_ENABLED = os.getenv("ENABLE_CRYPTO_UNIVERSE", "0") == "1"
+        # Enable based on ENABLE_CRYPTO_UNIVERSE env var
+        CRYPTO_UNIVERSE_ENABLED = os.getenv("ENABLE_CRYPTO_UNIVERSE", "0").lower() in ("1", "true", "yes", "on")
         if CRYPTO_UNIVERSE_ENABLED:
-            print("[INIT] ✅ Crypto Universe Scanner enabled (200+ pairs)")
+            print("[INIT] ✅ Crypto Universe Scanner enabled - will scan 200+ Kraken pairs for liquid markets")
 except ImportError as e:
     print(f"[WARNING] Crypto Universe not available: {e}")
 
@@ -746,10 +749,19 @@ def loop_once(ex, symbols: List[str]) -> None:
                 )
                 
                 # Extract action and reasoning from trade signal
-                action = trade_signal.action
+                action = trade_signal.action  # 'long', 'short', 'hold', 'sell_all'
                 why = trade_signal.reason
                 price = current_close
                 regime = trade_signal.regime
+                
+                # CRITICAL FIX: Normalize strategy actions to execution actions
+                # Strategy returns 'long'/'short', but execution needs 'buy'/'sell'
+                if action == "long":
+                    exec_action = "buy"
+                elif action == "short":
+                    exec_action = "sell"
+                else:
+                    exec_action = action  # 'hold', 'sell_all' pass through
                 
                 # Log regime and strategy details
                 print(f"[REGIME] {sym} - {regime.value} (confidence={trade_signal.confidence:.2f})")
@@ -786,6 +798,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                 traceback.print_exc()
                 # Fallback to hold on orchestrator error and LOG the error
                 action = "hold"
+                exec_action = "hold"  # Set exec_action for execution path
                 why = f"Orchestrator error: {e}"
                 price = current_close
                 regime = None
@@ -806,6 +819,7 @@ def loop_once(ex, symbols: List[str]) -> None:
             # TREND_DOWN regime with open position → Force exit
             if regime and regime.value == 'TREND_DOWN' and pos_qty > 0:
                 action = "sell_all"
+                exec_action = "sell_all"  # Update exec_action too
                 confidence_str = f"(confidence={trade_signal.confidence:.2f})" if trade_signal else ""
                 why = f"TREND_DOWN regime - exit long position {confidence_str}"
                 print(f"[REGIME-EXIT] {sym} - Forcing exit due to bearish regime")
@@ -813,6 +827,7 @@ def loop_once(ex, symbols: List[str]) -> None:
             # Adjust action based on position
             if action == 'long' and pos_qty > 0:
                 action = "hold"
+                exec_action = "hold"  # Update exec_action too
                 why = f"LONG signal but already in position ({pos_qty:.6f})"
             
             # Calculate edge for logging
@@ -821,7 +836,8 @@ def loop_once(ex, symbols: List[str]) -> None:
             # Update candle tracking AFTER signal evaluation
             update_candle_tracking(state, sym, latest_ts, current_sma20, current_close)
 
-            if action == "buy" and price:
+            # EXECUTION ROUTING: Use exec_action (not raw action from strategy)
+            if exec_action == "buy" and price:
                 eq_full: Dict[str, Any] = ex.fetch_balance()
                 eq_usd = account_equity_usd(eq_full)
                 qty = qty_from_atr(eq_usd, atr, price)
@@ -1203,7 +1219,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                         # Exit loop immediately to prevent more trades
                         break
 
-            elif action == "sell_all" and pos_qty > 0:
+            elif exec_action == "sell_all" and pos_qty > 0:
                 print(f"[SELL] {sym} all @ mkt | {why}")
                 
                 # Calculate profit before executing
@@ -1388,24 +1404,32 @@ def run_forever() -> None:
     # Get trading symbols - either from Crypto Universe Scanner or static list
     if CRYPTO_UNIVERSE_ENABLED and CryptoUniverseScanner:
         try:
-            print("[UNIVERSE] Initializing Crypto Universe Scanner...")
+            max_assets = env_int("MAX_UNIVERSE_ASSETS", 20)
+            min_volume = env_float("MIN_VOLUME_24H", 100000.0)
+            print(f"[UNIVERSE] Initializing Crypto Universe Scanner (max={max_assets}, min_vol=${min_volume:,.0f})...")
             scanner = CryptoUniverseScanner(
                 exchange=ex,
                 quote_currency="USD",
-                max_assets=env_int("MAX_UNIVERSE_ASSETS", 20),
-                min_volume_24h=env_float("MIN_VOLUME_24H", 10000.0)
+                max_assets=max_assets,
+                min_volume_24h=min_volume
             )
             symbols = scanner.get_tradable_symbols()
-            if not symbols:
-                print("[UNIVERSE] No symbols from scanner, falling back to static list")
+            if symbols:
+                print(f"[UNIVERSE] ✅ Using {len(symbols)} scanned symbols: {', '.join(symbols[:10])}{' ...' if len(symbols) > 10 else ''}")
+            else:
+                print("[UNIVERSE] ⚠️ Scanner returned empty list, falling back to static SYMBOLS from .env")
                 symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
         except Exception as e:
-            print(f"[UNIVERSE-ERR] {e}, using static symbols")
+            print(f"[UNIVERSE-ERR] Scanner failed: {e}")
+            print("[UNIVERSE] ⚠️ Falling back to static SYMBOLS from .env")
             symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
     else:
+        # CRYPTO_UNIVERSE_ENABLED=0 or scanner not available - use static list
         symbols = [s.strip().upper() for s in env_str("SYMBOLS", "ZEC/USD").split(",") if s.strip()]
+        print(f"[UNIVERSE] Using static symbol list from SYMBOLS env var: {', '.join(symbols)}")
+    
     iv = env_int("TRADE_INTERVAL_SEC", 60)  # 60s for fresh data, still 99% under Kraken limits
-    print(f"[AUTOPILOT] running on {symbols} every {iv}s (validate={env_str('KRAKEN_VALIDATE_ONLY','1')})", flush=True)
+    print(f"[AUTOPILOT] Running on {len(symbols)} symbol(s) every {iv}s (mode={get_mode_str().upper()}, validate={env_str('KRAKEN_VALIDATE_ONLY','1')})", flush=True)
 
     # initialize day start equity
     try:

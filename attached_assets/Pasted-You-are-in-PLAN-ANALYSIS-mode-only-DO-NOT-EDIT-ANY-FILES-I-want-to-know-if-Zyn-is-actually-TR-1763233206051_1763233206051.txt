@@ -1,0 +1,102 @@
+You are in PLAN / ANALYSIS mode only. DO NOT EDIT ANY FILES.
+
+I want to know if Zyn is actually TRYING to trade automatically, or if the strategy filters are blocking 100% of setups.
+
+Answer this based ONLY on real data from evaluation_log and the strategy code.
+
+Timeframe to analyze: last 24 hours of LIVE mode evaluations.
+
+────────────────────────
+STEP 1 – DECISION STATS FROM EVALUATION_LOG
+────────────────────────
+
+1) Query evaluation_log for the last 24 hours where trading_mode = 'live'.
+
+For that set, give me a breakdown of counts by decision, for example:
+
+- HOLD
+- SKIP
+- NO_TRADE
+- ENTER_LONG
+- ENTER_SHORT
+- RANGE_ENTRY
+- TREND_ENTRY
+- Any other decision values actually used
+
+Return something like:
+
+- total_evals = X
+- decisions = {
+    "HOLD": N1,
+    "SKIP": N2,
+    "ENTER_LONG": N3,
+    ...
+  }
+
+If there are NO decisions that look like "ENTER_*", "RANGE_*", "TREND_*", or any kind of "ENTER", say that explicitly.
+
+2) Also give me a breakdown of regimes for the same rows:
+
+- regimes = {
+    "NO_TRADE": N_nt,
+    "RANGE": N_rg,
+    "TREND_UP": N_tu,
+    "TREND_DOWN": N_td,
+    ...
+  }
+
+────────────────────────
+STEP 2 – CHECK IF ENTRY SIGNALS ARE EVER GENERATED
+────────────────────────
+
+Look at the strategy code in strategy_orchestrator.py and any related files.
+
+1) Identify the specific decisions that correspond to "we want to open a position now". For example:
+   - _range_strategy(...) returning a TradeSignal with something like action="ENTER_LONG"
+   - _trend_up_strategy(...)
+   - Anything that triggers open_position_with_brackets(...) in autopilot.py.
+
+2) For each such “entry” decision:
+   - Tell me what exact decision string gets logged into evaluation_log (decision field).
+   - Tell me what conditions must be met for that decision to happen (high level: RSI, BB%, trend, etc.).
+
+3) Cross-check with the last 24 hours of evaluation_log:
+   - Did ANY of those entry-type decision strings appear at all?
+   - If yes: how many times and at what timestamps?
+   - If no: explicitly say: “In the last 24 hours, the strategy NEVER produced an entry signal in LIVE mode.”
+
+────────────────────────
+STEP 3 – CHECK IF RISK/LIMITS ARE BLOCKING ENTRIES AFTER SIGNAL
+────────────────────────
+
+If you find that there WERE entry signals in the last 24 hours:
+
+1) For a couple of examples (2–3 entry evaluations):
+   - Look at the corresponding code path in autopilot.py after the signal is generated.
+   - Answer:
+     - Did can_trade_today(...) allow or block it?
+     - Did calculate_per_trade_risk / calculate_active_risk block it?
+     - Did Krakens minimum order size / min cost logic block it?
+   - For each example, say clearly:
+     - “Signal said ENTER, but order was BLOCKED by X.”
+
+2) If some entries DID turn into real order placement calls:
+   - Tell me how many times open_position_with_brackets(...) was actually called in the last 24h from autopilot (NOT from force trade commands).
+   - If that number is 0, say so explicitly.
+
+────────────────────────
+STEP 4 – BOTTOM-LINE DIAGNOSIS
+────────────────────────
+
+Based ONLY on the last 24h data and code:
+
+Answer in 2–4 clear sentences:
+
+1) Is the reason I saw **no automatic trades all day** because:
+   - (A) The strategy literally never produced any entry signal (filters too strict), OR
+   - (B) The strategy produced entries but risk management / limits / min-size blocked them, OR
+   - (C) The strategy produced entries and the code SHOULD have placed orders, but the autopilot never actually called open_position_with_brackets (wiring bug).
+
+2) Tell me which of A/B/C is the primary cause, and why.
+
+Do NOT change any code. Just give me the stats and the concrete diagnosis.
