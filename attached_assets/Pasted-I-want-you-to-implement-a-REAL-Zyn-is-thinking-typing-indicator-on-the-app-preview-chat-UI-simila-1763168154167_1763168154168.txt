@@ -1,0 +1,40 @@
+I want you to implement a REAL “Zyn is thinking/typing” indicator on the app preview chat UI, similar to ChatGPT’s typing bubble. It must be 100% tied to actual backend processing and MUST NOT be fake or always-on.
+
+Here are the requirements:
+	1.	Add a typing/thinking indicator to the chat UI
+	•	In the app preview/chatbox page, add a small visual element (e.g., “Zyn is thinking…” with three animated dots or a subtle bubble) that appears when Zyn is actively processing a message.
+	•	Place it in a natural spot in the chat, like just above the input or as a message bubble from Zyn.
+	2.	Wire it to REAL backend activity, not a timer
+	•	The indicator should be driven off the actual lifecycle of a request to the /chat (or equivalent) endpoint, specifically around ask_llm / LLM + tool execution.
+	•	When the user submits a message, as soon as the frontend sends the request to the backend and the backend starts handling it, the UI should show the “thinking” indicator.
+	•	When the backend finishes (success, error, or explicit “I cannot access data at this time”), the “thinking” indicator must be removed.
+	3.	Use proper eventing (no polling hacks if possible)
+	•	Use WebSockets or Server-Sent Events (SSE) if available to emit “typing_start” and “typing_stop” style events from the backend to the frontend.
+	•	Each user message should have a unique request ID. The backend should:
+	•	Emit “typing_start” when it begins processing that request.
+	•	Emit “typing_stop” when that request is fully resolved (response ready, including error cases).
+	•	The frontend should show the typing bubble only while there is at least one in-flight request associated with the current session.
+	4.	It must not show when Zyn is not actually responding
+	•	If the backend determines that it cannot respond to a message at all (e.g., no tools can handle it, or it immediately rejects it), the indicator should either never show or show only very briefly while that decision is being made and then disappear with the error/neutral response.
+	•	Do NOT simulate thinking when nothing is happening. No artificial delays or fake “typing” just to seem alive. The indicator must strictly reflect real work in progress.
+	5.	Integrate with the existing ask_llm flow
+	•	In llm_agent.ask_llm (or equivalent), trigger the typing start event as soon as the function begins processing a user query (after basic validation, before any LLM or tool calls).
+	•	Trigger the typing stop event in a finally block so it always fires, even if there is an exception or validator rejection.
+	•	Ensure that even if a hallucination validator stops a response or an internal error occurs, typing_stop is still sent so the UI never gets stuck showing “thinking”.
+	6.	Handle multiple quick messages correctly
+	•	If the user sends multiple messages quickly, the indicator should stay on while any of them are still being processed.
+	•	Only turn off the indicator when there are no more active requests in-flight for that chat session. Track this with a simple counter or request ID set.
+	7.	Frontend behavior expectations
+	•	The frontend should:
+	•	Show the “Zyn is thinking” indicator when it receives typing_start or when a request is sent and awaiting a response.
+	•	Hide it when typing_stop is received or when the response payload is fully rendered.
+	•	Make sure the indicator animates smoothly and doesn’t flicker if responses are very fast.
+	8.	No fake optimism, no fake activity
+	•	The design goal is:
+	•	If Zyn is actually working on your message in the backend → show the bubble.
+	•	If Zyn is idle, blocked, or not processing → no bubble.
+	•	Make sure the code cannot show the typing indicator just from the LLM “thinking about what to say” without a real request in-flight.
+
+Once this is implemented, I should be able to:
+	•	Type a message → see Zyn’s thinking/typing bubble while the backend processes it → see the bubble disappear exactly when his reply appears.
+	•	If the backend cannot respond or immediately returns “I cannot access data at this time,” the bubble should only appear briefly (while processing) or not at all, but it should never remain hanging or pretend he’s thinking when nothing is happening
