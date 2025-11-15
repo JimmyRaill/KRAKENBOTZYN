@@ -284,6 +284,11 @@ def position_qty(ex, symbol: str):
 
 def account_equity_usd(bal: Dict[str, Any]) -> float:
     try:
+        # CRITICAL FIX: Handle None or empty balance responses
+        if bal is None:
+            return 0.0
+        if not isinstance(bal, dict):
+            return 0.0
         return float((bal.get("USD") or {}).get("total", 0.0) or 0.0)
     except Exception:
         return 0.0
