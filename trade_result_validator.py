@@ -107,32 +107,50 @@ class LLMResponseValidator:
     """
     
     # Success claim patterns that trigger validation
-    # NARROWED: Only match explicit trade execution claims, not casual language
+    # COMPREHENSIVE: Match trade execution claims while avoiding casual diagnostic language
+    # Covers: auxiliaries, adverbs, light verbs, contractions, direct forms, plurals, all tenses
     SUCCESS_PATTERNS = [
-        r'\bsuccessfully executed the trade\b',
-        r'\bsuccessfully placed the order\b',
-        r'\btrade has been executed\b',
-        r'\border has been placed\b',
-        r'\bposition has been opened\b',
-        r'\bthe order was placed successfully\b',
-        r'\bthe trade was executed successfully\b',
-        r'\bopened.*position.*successfully\b',
-        r'\bplaced.*order.*successfully\b',
-        r'\bcompleted.*trade.*successfully\b',
+        # Verb-first patterns: "executed (your/the) [descriptors] trade(s)/order(s)/position(s)"
+        r'\b(successfully\s+)?(executed|placed|opened|filled|completed)\s+(your|the|a|an|this|that|these|those)\s+(?:\S+\s+)+(trades?|orders?|positions?)\b',
+        # Verb-first simple: "executed (your/the/a) trade(s)/order(s)/position(s)"
+        r'\b(successfully\s+)?(executed|placed|opened|filled|completed)\s+(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)\b',
+        
+        # Noun-first with auxiliaries: "(your) trade is/was/has been executed"
+        r'\b(your|the|a|an|this|that|these|those)\s+(?:\S+\s+)+(trades?|orders?|positions?)\s+(is|are|was|were|has\s+been|had\s+been|have\s+been)\s+(executed|placed|opened|filled|completed)(\s+successfully)?\b',
+        r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)\s+(is|are|was|were|has\s+been|had\s+been|have\s+been)\s+(executed|placed|opened|filled|completed)(\s+successfully)?\b',
+        
+        # Contractions: "(your) order's/trade's filled" (handles apostrophe variants)
+        r'\b(your|the|a|an|this|that|these|those)\s+(?:\S+\s+)+(trades?|orders?|positions?)[\''][s]?\s+(executed|placed|opened|filled|completed)\b',
+        r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)[\''][s]?\s+(just|now|finally|already)?\s*(executed|placed|opened|filled|completed)\b',
+        r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)[\''][s]?\s+been\s+(executed|placed|opened|filled|completed)\b',
+        
+        # Noun-first with adverbs: "(your) order just/now filled"
+        r'\b(your|the|a|an|this|that|these|those)\s+(?:\S+\s+)+(trades?|orders?|positions?)\s+(just|now|finally|already)\s+(executed|placed|opened|filled|completed)\b',
+        r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)\s+(just|now|finally|already)\s+(executed|placed|opened|filled|completed)\b',
+        
+        # Noun-first with light verbs: "(your) order got/get filled"
+        r'\b(your|the|a|an|this|that|these|those)\s+(?:\S+\s+)+(trades?|orders?|positions?)\s+(got|gets?|getting)\s+(executed|placed|opened|filled|completed)\b',
+        r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)\s+(got|gets?|getting)\s+(executed|placed|opened|filled|completed)\b',
+        
+        # Common short forms (singular and plural)
+        r'\borders?\s+filled\b',
+        r'\btrades?\s+executed\b',
+        r'\bpositions?\s+opened\b',
+        r'\borders?\s+executed\b',
     ]
     
     # Patterns that indicate query/diagnostic language (NOT trade claims)
+    # Used to EXCLUDE responses from validation even if they match success patterns
     QUERY_INDICATORS = [
-        r'\bquery\b',
-        r'\bcheck\b',
-        r'\bshow\b',
-        r'\blook\b',
-        r'\bfetch\b',
-        r'\bretriev\b',
-        r'\bbalance\b',
-        r'\bopen orders\b',
-        r'\bhistory\b',
-        r'\bevaluation\b',
+        r'\b(let me|i will|i\'ll)\s+(query|check|show|look|fetch|retrieve)\b',
+        r'\bquery\s+(for|to|the)\b',
+        r'\bcheck\s+(your|the|my)\s+(balance|orders|position|history)\b',
+        r'\bshow\s+(you|me|the)\s+(balance|orders|position|history)\b',
+        r'\blook(ing)?\s+at\s+(your|the|my)\s+(balance|orders|position|history|evaluations|trades)\b',
+        r'\bfetch(ing|ed)?\s+(your|the|my)\s+(balance|data|information)\b',
+        r'\bretriev(e|ing|ed)\s+(your|the|my)\s+(balance|data)\b',
+        r'\bhere\s+(is|are)\s+your\s+(balance|orders|position|history)\b',
+        r'\b(balance|open\s+orders|evaluation|history)\s+(shows|indicates)\b',
     ]
     
     # Error/failure patterns (EXPANDED for Kraken-specific errors)
