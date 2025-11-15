@@ -694,13 +694,14 @@ def _run_paper_trade_test() -> str:
 
 
 # ---------- Public entrypoint ----------
-def ask_llm(user_text: str, session_id: str = "default") -> str:
+def ask_llm(user_text: str, session_id: str = "default", request_id: str = None) -> str:
     """
     Primary chat function used by api.py.
     
     Args:
         user_text: The user's message
         session_id: Session identifier to maintain conversation history (default: "default")
+        request_id: Optional request ID for event tracking (used by SSE)
 
     Power commands:
       - remember: <fact>

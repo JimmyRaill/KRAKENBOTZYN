@@ -3,14 +3,18 @@ from __future__ import annotations
 
 import os
 import json
+import asyncio
+import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from event_manager import event_manager
 
 app = FastAPI()
 
@@ -347,6 +351,36 @@ CONTROL_PANEL = """
             0%, 100% { opacity: 1; }
             50% { opacity: 0.6; }
         }
+        
+        .typing-dots {
+            display: inline-flex;
+            gap: 4px;
+            align-items: center;
+            padding: 8px 0;
+        }
+        .typing-dots span {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #667eea;
+            animation: typing-bounce 1.4s infinite ease-in-out both;
+        }
+        .typing-dots span:nth-child(1) {
+            animation-delay: -0.32s;
+        }
+        .typing-dots span:nth-child(2) {
+            animation-delay: -0.16s;
+        }
+        @keyframes typing-bounce {
+            0%, 80%, 100% {
+                transform: scale(0);
+                opacity: 0.5;
+            }
+            40% {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
     </style>
 </head>
 <body>
@@ -536,6 +570,42 @@ CONTROL_PANEL = """
             }
         }
         
+        let typingIndicator = null;
+        let currentEventSource = null;
+        
+        // Show typing indicator
+        function showTypingIndicator() {
+            if (typingIndicator) return;
+            const messagesDiv = document.getElementById('chatMessages');
+            typingIndicator = document.createElement('div');
+            typingIndicator.className = 'message bot typing-indicator';
+            typingIndicator.innerHTML = `
+                <div class="typing-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            `;
+            messagesDiv.appendChild(typingIndicator);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        // Hide typing indicator
+        function hideTypingIndicator() {
+            if (typingIndicator) {
+                typingIndicator.remove();
+                typingIndicator = null;
+            }
+        }
+        
+        // Close existing event source
+        function closeEventSource() {
+            if (currentEventSource) {
+                currentEventSource.close();
+                currentEventSource = null;
+            }
+        }
+        
         // Send message to Zyn
         async function sendMessage() {
             const input = document.getElementById('chatInput');
@@ -546,6 +616,8 @@ CONTROL_PANEL = """
             addMessage(text, 'user');
             input.value = '';
             
+            closeEventSource();
+            
             try {
                 const response = await fetch('/ask', {
                     method: 'POST',
@@ -553,8 +625,35 @@ CONTROL_PANEL = """
                     body: JSON.stringify({ text })
                 });
                 const data = await response.json();
+                
+                if (data.request_id) {
+                    const eventSource = new EventSource(`/api/events/${data.request_id}`);
+                    currentEventSource = eventSource;
+                    
+                    eventSource.onmessage = (event) => {
+                        try {
+                            const eventData = JSON.parse(event.data);
+                            if (eventData.type === 'typing_start') {
+                                showTypingIndicator();
+                            } else if (eventData.type === 'typing_stop') {
+                                hideTypingIndicator();
+                                closeEventSource();
+                            }
+                        } catch (e) {
+                            console.error('SSE parse error:', e);
+                        }
+                    };
+                    
+                    eventSource.onerror = () => {
+                        hideTypingIndicator();
+                        closeEventSource();
+                    };
+                }
+                
+                hideTypingIndicator();
                 addMessage(data.answer || 'No response', 'bot');
             } catch (error) {
+                hideTypingIndicator();
                 addMessage('Sorry, I had trouble processing that: ' + error.message, 'bot');
             }
         }
@@ -1254,32 +1353,70 @@ def get_status():
             "trace": traceback.format_exc()[-1000:]
         })
 
+@app.get("/api/events/{request_id}")
+async def events_stream(request_id: str):
+    async def event_generator():
+        queue = event_manager.subscribe(request_id)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'ping', 'timestamp': datetime.utcnow().isoformat()})}\n\n"
+                except Exception:
+                    break
+        finally:
+            event_manager.unsubscribe(request_id, queue)
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 @app.post("/ask")
 async def ask(a: AskIn):
+    request_id = str(uuid.uuid4())
+    
     try:
         from llm_agent import ask_llm
         from telemetry_db import log_conversation
         
-        # Use session_id from token if provided, otherwise use "jimmy" as default
-        session_id = a.token if a.token else "jimmy"
+        # Emit typing_start event
+        event_manager.typing_start(request_id)
         
-        # Get response with conversation history
-        out = ask_llm(a.text, session_id=session_id)
-        
-        # Log conversation for learning
         try:
-            log_conversation(a.text, out)
-        except Exception:
-            pass
-        
-        return {"answer": out}
+            # Use session_id from token if provided, otherwise use "jimmy" as default
+            session_id = a.token if a.token else "jimmy"
+            
+            # Get response with conversation history
+            out = ask_llm(a.text, session_id=session_id, request_id=request_id)
+            
+            # Log conversation for learning
+            try:
+                log_conversation(a.text, out)
+            except Exception:
+                pass
+            
+            return {"answer": out, "request_id": request_id}
+        finally:
+            # Always emit typing_stop, even on error
+            event_manager.typing_stop(request_id)
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
+        # Ensure typing_stop on error
+        event_manager.typing_stop(request_id)
         # Return 200 so the UI shows the error text instead of blank 500 page
         return JSONResponse(status_code=200, content={
             "answer": f"[Backend Error] {e.__class__.__name__}: {e}",
-            "trace": tb[-1500:]
+            "trace": tb[-1500:],
+            "request_id": request_id
         })
 
 # --- optional: GET /ask?q=... (lets you ask from the URL) ---
