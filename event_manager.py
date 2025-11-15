@@ -1,5 +1,5 @@
 import asyncio
-from typing import Dict, Set
+from typing import Dict, Set, Optional
 from datetime import datetime
 
 class EventManager:
@@ -20,7 +20,7 @@ class EventManager:
             if not self._queues[request_id]:
                 del self._queues[request_id]
     
-    async def emit(self, request_id: str, event_type: str, data: dict = None):
+    async def emit(self, request_id: str, event_type: str, data: Optional[dict] = None):
         if request_id not in self._queues:
             return
         
