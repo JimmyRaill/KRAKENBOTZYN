@@ -18,7 +18,7 @@ class TradeResult:
     command: str
     symbol: Optional[str] = None
     mode: Optional[str] = None
-    order_ids: List[str] = None
+    order_ids: Optional[List[str]] = None
     error: Optional[str] = None
     raw_message: str = ""
     
@@ -154,8 +154,9 @@ class LLMResponseValidator:
             error = "LLM claimed trade execution but no trade tools were called"
             logger.error(f"[LLM-HALLUCINATION] {error}")
             corrected = (
-                "⚠️ Internal consistency error: I cannot confirm that any trade was executed. "
-                "Please check your open orders and balances directly using the 'open' and 'bal' commands."
+                "⚠️ Internal error: I attempted to execute a trade but no command was actually sent. "
+                "Please verify your positions using 'open' and 'bal' commands. "
+                "If you intended to trade, please retry the command."
             )
             return False, error, corrected
         
@@ -178,18 +179,22 @@ class LLMResponseValidator:
             # Check if there's an error message we can surface
             first_result = trade_tools[0] if trade_tools else {}
             actual_error = first_result.get('error')
+            raw_message = first_result.get('raw_message', '')
             
             error = "LLM claimed success but no tool result confirmed execution"
             logger.error(f"[LLM-HALLUCINATION] {error}")
             
             if actual_error:
                 # Surface the actual error instead of generic message
-                corrected = f"⚠️ The command failed with error:\n\n{actual_error}"
+                corrected = f"⚠️ Command failed with error:\n\n{actual_error}"
+            elif raw_message and any(err_pattern in raw_message for err_pattern in ['-ERR', 'failed', 'error', 'Error']):
+                # Surface the raw message if it contains error information
+                corrected = f"⚠️ Command failed:\n\n{raw_message}"
             else:
-                # Fallback to generic message if no error available
+                # Last resort: show raw message and ask user to verify
                 corrected = (
-                    "⚠️ I cannot confirm the execution status. "
-                    "Please verify your open orders with the 'open' command."
+                    f"⚠️ Execution status unclear. Command output:\n\n{raw_message}\n\n"
+                    "Please verify with 'open' and 'bal' commands."
                 )
             return False, error, corrected
         
