@@ -120,9 +120,9 @@ class LLMResponseValidator:
         r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)\s+(is|are|was|were|has\s+been|had\s+been|have\s+been)\s+(executed|placed|opened|filled|completed)(\s+successfully)?\b',
         
         # Contractions: "(your) order's/trade's filled" (handles apostrophe variants)
-        r'\b(your|the|a|an|this|that|these|those)\s+(?:\S+\s+)+(trades?|orders?|positions?)[\''][s]?\s+(executed|placed|opened|filled|completed)\b',
-        r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)[\''][s]?\s+(just|now|finally|already)?\s*(executed|placed|opened|filled|completed)\b',
-        r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)[\''][s]?\s+been\s+(executed|placed|opened|filled|completed)\b',
+        r'\b(your|the|a|an|this|that|these|those)\s+(?:\S+\s+)+(trades?|orders?|positions?)[\'\u2019]s?\s+(executed|placed|opened|filled|completed)\b',
+        r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)[\'\u2019]s?\s+(just|now|finally|already)?\s*(executed|placed|opened|filled|completed)\b',
+        r'\b(your|the|a|an|this|that|these|those)?\s*(trades?|orders?|positions?)[\'\u2019]s?\s+been\s+(executed|placed|opened|filled|completed)\b',
         
         # Noun-first with adverbs: "(your) order just/now filled"
         r'\b(your|the|a|an|this|that|these|those)\s+(?:\S+\s+)+(trades?|orders?|positions?)\s+(just|now|finally|already)\s+(executed|placed|opened|filled|completed)\b',
