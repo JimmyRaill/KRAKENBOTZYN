@@ -16,6 +16,8 @@ The bot provides a chat interface on port 5000 for real-time interaction and a d
 ### Technical Implementations
 The system is designed with a strong emphasis on mode isolation (LIVE vs. PAPER), ensuring no cross-contamination of data.
 
+**CRITICAL FIX (Nov 15, 2025) - Invisible Trades Bug Resolved**: Fixed "dual database syndrome" where manual/command trades weren't appearing in "trades in last 24 hours" reporting. Root cause: `commands.py` only logged to `executed_orders` table (evaluation_log.db) but NOT to `trades` table (trading_memory.db) which powers trade count statistics. Solution: Added `log_trade()` calls to ALL manual trade execution paths (buy, sell, bracket, force_trade_test) ensuring complete dual-database logging for accurate reporting.
+
 - **Account State (`account_state.py`)**: Provides canonical, mode-aware account data, including balances, trade history, and portfolio snapshots, ensuring complete isolation between LIVE and PAPER trading. Paper trading state is persisted via `paper_ledger.json`. **CRITICAL ARCHITECTURE (Nov 13, 2025)**: The `PaperLedger` singleton is the single source of truth for ALL paper orders - both execution and query paths use this unified ledger to prevent data disconnection.
 - **Status Service (`status_service.py`)**: Acts as a centralized single source of truth for all trading data, rigorously enforcing mode isolation by routing data requests through `account_state.py` and skipping Kraken API calls in PAPER mode where appropriate.
 - **Self-Learning Components**:

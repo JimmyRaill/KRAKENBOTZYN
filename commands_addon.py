@@ -5,6 +5,8 @@ import time
 import os
 from typing import Dict, Any
 from exchange_manager import get_mode_str, is_paper_mode
+from evaluation_log import log_order_execution, register_pending_child_order
+from telemetry_db import log_trade
 
 def _debug_status() -> str:
     """
@@ -166,7 +168,7 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
         
         # Step 2: Calculate quantity
         log_lines.append("Step 2/5: Calculating position size...")
-        qty = test_usd / price
+        qty = float(test_usd / price)
         base_currency = symbol.split('/')[0]
         log_lines.append(f"✅ Quantity: {qty:.8f} {base_currency}")
         log_lines.append("")
@@ -179,14 +181,53 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
         log_lines.append(f"   Full response: {json.dumps(entry_order, indent=2, default=str)}")
         log_lines.append("")
         
+        # Log the trade to both databases for complete tracking
+        actual_filled = entry_order.get("filled") or qty
+        actual_price = entry_order.get("average") or entry_order.get("price") or price
+        
+        # Log to executed_orders table (forensic log)
+        try:
+            log_order_execution(
+                symbol=symbol,
+                side="buy",
+                quantity=actual_filled,
+                entry_price=actual_price,
+                order_id=entry_id,
+                trading_mode="live",
+                source="force_trade_test",
+                extra_info=f"LIVE force trade test ~${test_usd}"
+            )
+        except Exception as log_err:
+            log_lines.append(f"⚠️  Failed to log to executed_orders: {log_err}")
+        
+        # Log to telemetry DB (for "trades in last 24h" reporting)
+        try:
+            log_trade(
+                symbol=symbol,
+                side="buy",
+                action="market_buy",
+                quantity=actual_filled,
+                price=actual_price,
+                usd_amount=actual_filled * actual_price,
+                order_id=entry_id,
+                reason="force trade test",
+                source="force_trade_test",
+                mode="live"
+            )
+        except Exception as log_err:
+            log_lines.append(f"⚠️  Failed to log to telemetry DB: {log_err}")
+        
         # Step 4: Calculate SL/TP using ATR
         log_lines.append("Step 4/5: Calculating stop-loss and take-profit...")
         from candle_strategy import calculate_atr
         ohlcv = ex.fetch_ohlcv(symbol, '5m', 100)
         atr = calculate_atr(ohlcv, period=14)
         
-        sl_price = price - (2.0 * atr)  # 2x ATR stop-loss
-        tp_price = price + (3.0 * atr)  # 3x ATR take-profit
+        if atr is None or atr <= 0:
+            raise ValueError("Invalid ATR calculation - cannot determine stop-loss/take-profit")
+        
+        sl_price = price - (2.0 * float(atr))  # 2x ATR stop-loss
+        tp_price = price + (3.0 * float(atr))  # 3x ATR take-profit
         
         log_lines.append(f"✅ ATR: ${atr:.2f}")
         log_lines.append(f"   Stop-Loss: ${sl_price:.2f} (2x ATR below entry)")

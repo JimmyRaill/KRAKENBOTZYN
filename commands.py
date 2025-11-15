@@ -7,6 +7,7 @@ import ccxt
 from dotenv import load_dotenv
 from exchange_manager import get_exchange, get_mode_str, is_paper_mode
 from evaluation_log import log_order_execution, register_pending_child_order
+from telemetry_db import log_trade
 
 # Load .env from project root
 load_dotenv(dotenv_path=".env", override=True)
@@ -406,6 +407,20 @@ def handle(text: str) -> str:
                     source="command",
                     extra_info=f"market buy ~${usd:.2f} status={order_status}"
                 )
+                
+                # CRITICAL FIX: Also log to telemetry DB so "trades in last 24h" reporting works
+                log_trade(
+                    symbol=sym,
+                    side="buy",
+                    action="market_buy",
+                    quantity=actual_filled,
+                    price=actual_avg_price,
+                    usd_amount=actual_filled * actual_avg_price,
+                    order_id=oid,
+                    reason=f"manual buy ${usd:.2f}",
+                    source="command",
+                    mode=get_mode_str().lower()
+                )
             
             return f"BUY OK {sym} ~${usd:.2f} (qty≈{amt}) id={oid}"
         except Exception as e:
@@ -452,6 +467,20 @@ def handle(text: str) -> str:
                     trading_mode=get_mode_str().lower(),
                     source="command",
                     extra_info=f"market sell all status={order_status}"
+                )
+                
+                # CRITICAL FIX: Also log to telemetry DB so "trades in last 24h" reporting works
+                log_trade(
+                    symbol=sym,
+                    side="sell",
+                    action="market_sell",
+                    quantity=actual_filled,
+                    price=actual_avg_price,
+                    usd_amount=actual_filled * actual_avg_price,
+                    order_id=oid,
+                    reason="manual sell all",
+                    source="command",
+                    mode=get_mode_str().lower()
                 )
             
             return f"SELL OK {sym} qty={qf} id={oid}"
@@ -884,6 +913,22 @@ def handle(text: str) -> str:
                         trading_mode=get_mode_str().lower(),
                         source="command",
                         extra_info=f"bracket {side_str} TP=${tp_p} SL=${sl_p} tp_id={tid} sl_id={sid} status={entry_status}"
+                    )
+                    
+                    # CRITICAL FIX: Also log to telemetry DB so "trades in last 24h" reporting works
+                    log_trade(
+                        symbol=sym,
+                        side="buy" if is_long else "sell",
+                        action="market_buy" if is_long else "market_sell",
+                        quantity=fill_size,
+                        price=fill_price,
+                        usd_amount=fill_size * fill_price,
+                        order_id=entry_id,
+                        reason=f"bracket {side_str} entry",
+                        source="command",
+                        mode=get_mode_str().lower(),
+                        stop_loss=sl_p,
+                        take_profit=tp_p
                     )
                 # NOTE: TP/SL fills are NOT logged here - they're limit orders that execute later
                 # Future enhancement: Add monitoring system to log TP/SL executions when they fill
