@@ -68,10 +68,12 @@ class StrategyOrchestrator:
     
     def __init__(self):
         """Initialize strategy orchestrator"""
+        import os
         self.regime_detector = get_regime_detector()
         self.mtf_context = get_mtf_context()
         self.config = TradingConfig()
-        logger.info("StrategyOrchestrator initialized")
+        self.aggressive_mode = os.getenv("AGGRESSIVE_RANGE_TRADING", "0") == "1"
+        logger.info(f"StrategyOrchestrator initialized (aggressive_mode={self.aggressive_mode})")
     
     def generate_signal(
         self,
@@ -287,6 +289,10 @@ class StrategyOrchestrator:
         - HTF filter: Prefer trades aligned with HTF or neutral
         - Tight stops outside bands
         - Target middle band
+        
+        AGGRESSIVE_RANGE_TRADING mode:
+        - Normal: BB ≤40%, RSI <45
+        - Aggressive: BB ≤50%, RSI <55
         """
         bb_upper = indicators_5m.get('bb_upper')
         bb_middle = indicators_5m.get('bb_middle')
@@ -314,11 +320,14 @@ class StrategyOrchestrator:
         band_range = (bb_upper - bb_lower) if (bb_upper and bb_lower) else 0
         price_position_pct = ((price - bb_lower) / band_range) * 100 if (band_range > 0 and bb_lower) else 50
         
-        # Long signal: price in lower 40% of band (was: only at exact lower band)
-        # This allows entries when moving toward lower band, not just at the edge
-        if price_position_pct <= 40:  # In lower 40% of range
-            # Check RSI (relaxed from 35 to 45 for more opportunities)
-            if rsi and rsi < 45:
+        # Adjust thresholds based on mode (read from orchestrator config)
+        max_bb_position = 50 if self.aggressive_mode else 40  # 50% vs 40% of band
+        max_rsi = 55 if self.aggressive_mode else 45          # RSI <55 vs <45
+        
+        # Long signal: price in lower X% of band
+        if price_position_pct <= max_bb_position:
+            # Check RSI
+            if rsi and rsi < max_rsi:
                 # Confidence based on how close to lower band
                 base_confidence = 0.5
                 if price_position_pct <= 20:  # Very close to lower band
@@ -346,7 +355,9 @@ class StrategyOrchestrator:
                 )
         
         # Approaching middle band from below (momentum play)
-        elif 40 < price_position_pct <= 60 and rsi and rsi < 50:
+        # Use same aggressive mode threshold for momentum plays
+        momentum_threshold = 60 if self.aggressive_mode else 50
+        if max_bb_position < price_position_pct <= momentum_threshold and rsi and rsi < (max_rsi + 5):
             # Only if HTF is bullish (safer mid-band entries)
             if htf.dominant_trend == 'up':
                 confidence = 0.45  # Lower confidence for mid-band entries

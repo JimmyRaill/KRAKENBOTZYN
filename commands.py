@@ -23,6 +23,8 @@ HELP = (
     "  bracket <symbol> <amount> tp <px> sl <px>\n"
     "  open [symbol]\n"
     "  cancel <order_id> [symbol]\n"
+    "  debug status                        show diagnostics\n"
+    "  force trade test <symbol>           test LIVE order placement (requires ENABLE_FORCE_TRADE=1)\n"
     "  help\n"
 )
 
@@ -208,6 +210,18 @@ def handle(text: str) -> str:
         return HELP
 
     ex = _ex()
+    
+    # Debug status command
+    if s.lower() in ("debug status", "show diagnostics", "status"):
+        from commands_addon import _debug_status
+        return _debug_status()
+    
+    # Force trade test command
+    if s.lower().startswith("force trade test"):
+        from commands_addon import _force_trade_test
+        parts = s.split()
+        symbol = _norm_sym(parts[3]) if len(parts) > 3 else "ETH/USD"
+        return _force_trade_test(symbol)
 
     # bal
     if s.lower() == "bal":

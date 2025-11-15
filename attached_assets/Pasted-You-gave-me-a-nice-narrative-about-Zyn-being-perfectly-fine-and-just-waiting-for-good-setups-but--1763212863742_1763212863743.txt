@@ -1,0 +1,97 @@
+You gave me a nice narrative about Zyn being “perfectly fine” and just waiting for good setups, but I need ENGINEERING PROOF and CONCRETE CHANGES, not a story.
+
+Do not give me another high-level explanation. I want file paths, function names, code snippets, and raw logs. If something does not exist or is not implemented, say “not implemented” and then implement it.
+
+Do all of the following, step by step:
+
+Step 1 – Show me the actual code paths (no hand-waving)
+	•	Paste:
+	•	The file path and function name of the main scheduler/autopilot loop that runs every 5 minutes.
+	•	The file path and function name of the main strategy evaluation function that decides TRADE vs NO_TRADE.
+	•	The exact place where LIVE vs PAPER mode is selected (file, function, and code snippet).
+	•	The exact place where regime = "NO_TRADE" (or equivalent) is set, and paste the FULL if/else or match block that defines those conditions.
+	•	The exact places where AGGRESSIVE_RANGE_TRADING and ENABLE_FORCE_TRADE are read from the environment and used in code. Paste those code blocks.
+
+If you cannot paste a given snippet because it does not exist, explicitly write:
+“[X] is not implemented yet” and then implement it.
+
+Step 2 – Show me raw evaluation logs, not a summary
+	•	Query whatever storage Zyn uses for evaluation logs (DB, file, etc.) and paste the last 10 evaluations in RAW form. For each evaluation, I want at minimum:
+	•	timestamp
+	•	symbol / pair
+	•	regime (e.g. RANGE, NO_TRADE, TREND, etc.)
+	•	ADX (or equivalent trend metric)
+	•	RSI
+	•	Bollinger-band position or equivalent range metric
+	•	volume / liquidity metric you actually use
+	•	the exact blocking reason or rule that prevented a trade (e.g. “RSI 57 >= 45 threshold” or “BB_pos 0.63 > 0.40 threshold”)
+Do not paraphrase these. Paste the real stored values or the real log lines.
+
+If such logs are not currently stored, explicitly say so and then:
+	•	Implement a logging mechanism (DB table or file) that records the fields above for every evaluation.
+	•	Implement a function/command that returns the last N evaluations in a structured way so I can call it from the chat UI (for example, a command like “show last 10 evaluations”).
+
+Step 3 – Prove that LIVE order placement actually works today
+I want a FORCE TRADE test path that is fully wired and visible.
+	•	Show me the exact code that:
+	•	Checks ENABLE_FORCE_TRADE.
+	•	Handles a user command like “Force trade test on ETH/USD”.
+	•	Builds the order payload (pair, side, type, volume, price if limit, stop loss, take profit).
+	•	Sends it to Kraken in LIVE mode.
+	•	Logs the Kraken request and response.
+
+Paste all relevant functions with file paths.
+
+If any of this does not exist yet, implement it as follows:
+	•	When ENABLE_FORCE_TRADE=1 and I send “Force trade test on ETH/USD”:
+	•	Place a tiny LIVE market order (around $10–$15 notional) on ETH/USD.
+	•	Immediately attach stop loss and take profit (bracket order) according to our default risk rules.
+	•	Log, at minimum:
+	•	timestamp
+	•	mode (LIVE)
+	•	pair
+	•	side
+	•	volume
+	•	Kraken order id(s)
+	•	full Kraken response payload
+	•	Make sure nothing about this force-trade path can run unless ENABLE_FORCE_TRADE=1. When the flag is 0 or missing, the command must refuse to run.
+
+Step 4 – Add a “debug status” command I can call from chat
+Implement a chat command like debug status or show diagnostics that returns a concise but detailed snapshot of what Zyn is actually doing right now. The response should include:
+	•	current mode (LIVE or PAPER) and which API keys/account it is using
+	•	current equity / balance it thinks it has
+	•	timestamp and pair of the last evaluation
+	•	regime of the last evaluation
+	•	key indicators of the last evaluation (ADX, RSI, BB position, volume)
+	•	the decision (TRADE or NO_TRADE) and the blocking reason if NO_TRADE
+	•	number of evaluations run in the last 24 hours
+	•	number of trades placed in the last 24 hours in LIVE mode
+
+Show me the code for this command (file + function), and an example of the exact JSON or structured object it returns before the chat layer formats it.
+
+Step 5 – Tighten or confirm the filters based on real data
+Once the logging is in place and we can see the real evaluations, do the following:
+	•	Based on the last 24–48 hours of evaluations, compute:
+	•	How many times all filters except RSI and BB-position passed.
+	•	How many potential trades were blocked ONLY by:
+	•	price > BB threshold, or
+	•	RSI above its threshold.
+	•	Use those statistics to answer:
+	•	Are our filters so tight that we are realistically blocking almost everything?
+	•	If we turned on AGGRESSIVE_RANGE_TRADING, how many of those would have passed?
+
+Answer with actual counts and percentages based on the logged evaluations, not guesses.
+
+Step 6 – Summarize concrete fixes and changes made
+At the end, I want a short list of concrete changes you made. For example:
+	•	“Added evaluation logging to [file: X, function: Y] with fields: …”
+	•	“Implemented force-trade command in [file: A, function: B]”
+	•	“Implemented debug status command in [file: C, function: D]”
+	•	“Adjusted RSI threshold with AGGRESSIVE_RANGE_TRADING to …” (if you changed it)
+
+Do not just say “Zyn is working perfectly.” I want:
+	•	exact code locations,
+	•	real logs,
+	•	and explicit confirmation that LIVE order placement has been tested end-to-end with a force trade (once I enable the env flag and explicitly request it).
+
+Only when you’ve given me ALL of the above (code + logs + implemented commands) should you give any high-level commentary.
