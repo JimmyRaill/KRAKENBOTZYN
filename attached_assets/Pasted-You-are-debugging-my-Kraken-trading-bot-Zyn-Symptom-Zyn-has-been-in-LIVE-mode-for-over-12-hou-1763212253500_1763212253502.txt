@@ -1,0 +1,65 @@
+You are debugging my Kraken trading bot “Zyn”.
+
+Symptom:
+– Zyn has been in LIVE mode for over 12 hours and has placed zero trades.
+– He says he evaluates the market every 5 minutes and often reports a “NO_TRADE” regime, but he currently cannot show me the last N evaluations or the exact indicator readings/filters that blocked trades.
+– Previously, he has successfully placed trades (so the basic Kraken connection and order placement do work), but something in the current logic or scheduling is preventing trades in LIVE mode.
+
+I want you to open ALL relevant files for this project (strategy, scheduler, risk management, Kraken API wrapper, chat interface, config/env handling) and answer the following questions based only on actual code and any existing logs. Do NOT guess. If something is unclear from the code, say “not clearly implemented” and point to the exact file/line.
+
+Please answer each question clearly and reference file + function names where applicable:
+	•	Where is the main evaluation loop or scheduler defined (file and function name)? Exactly what triggers the “every 5 minutes” evaluation, and is that same mechanism used in LIVE mode?
+	•	In LIVE mode, what exact function gets called to:
+	•	gather market data (candles, order book, etc.),
+	•	compute indicators (RSI, ATR, volume, volatility, etc.),
+	•	decide whether to trade,
+	•	place orders on Kraken?
+List the call chain, with file + function names, in order.
+	•	Is there any code path or flag that disables trading in LIVE mode (e.g., LIVE_TRADING_ENABLED, ALLOW_LIVE_ORDERS, SAFE_MODE, or a mode == "PAPER" check that might still be true)? If yes, show exactly where and what the current default is.
+	•	How is the LIVE/PAPER switch implemented in the code? Specifically:
+	•	Where does the code read the “mode” (env var, config file, UI toggle)?
+	•	How does it decide which API keys or environment to use for Kraken?
+	•	Is there any place where the “mode” is not passed through correctly, so the bot thinks it’s in PAPER or “NO_TRADE” mode even when I’ve set LIVE?
+	•	In LIVE mode, is the scheduler actually reaching the strategy evaluation function? Add logging if needed and show me:
+	•	where it logs (or should log) each evaluation,
+	•	what timestamp the last evaluation would have (in logs),
+	•	whether those logs are currently being written in live runs.
+	•	For the “NO_TRADE” regime:
+	•	Where in the code is “NO_TRADE” set, and under exactly what conditions?
+	•	List all filters that can block a trade (RSI thresholds, ATR filters, volume filters, volatility filters, spread filters, time-of-day filters, active-risk limits, etc.).
+	•	Given the current parameter values in the code, are these filters so strict that trades will almost never trigger? Show examples of current thresholds (e.g., RSI < X, volume > Y, etc.).
+	•	How is risk management limiting trades?
+	•	Where is max active risk or position size controlled?
+	•	Is there a condition like “if active_risk + risk_for_trade > max_active_risk: NO_TRADE” that might currently block everything due to a miscalculated balance or equity?
+	•	Is equity being read from the correct account (LIVE vs PAPER)?
+	•	Check Kraken order constraints:
+	•	For the symbols the bot is allowed to trade, are we respecting Kraken’s minimum order size and step size with the current position sizing logic?
+	•	Is it possible that the bot wants to place orders smaller than Kraken’s minimum, causing silent failures or early rejections?
+	•	Error handling:
+	•	Where are Kraken API errors caught and logged?
+	•	Is there any place where exceptions during order placement, balance fetches, or price fetches are swallowed (try/except with no logging) so that the bot just quietly stops trading instead of surfacing the problem?
+	•	If you find any except: or very broad exception blocks, show them and suggest concrete logging improvements.
+	•	Logs / transparency:
+	•	Is there any function that stores or could store the last N evaluations (indicator values + “reason for no trade”) so they can be shown in the chat UI?
+	•	If not, propose a small, concrete design for:
+	•	a simple in-memory ring buffer or persisted log of the last 20 evaluations,
+	•	a function that returns a human-readable list of these logs (time, symbol, indicators, decision, reason).
+	•	Force-trade test path:
+	•	Is there a way in the current code to bypass all filters and risk checks (in a controlled TEST mode) to verify that the order-placement pipeline still works in LIVE mode?
+	•	If not, propose a minimal, safe “force_trade” function or developer/test command that:
+	•	takes a small hard-coded position size,
+	•	places a live market order on a test symbol or micro-size trade,
+	•	logs every step,
+	•	and is clearly disabled or hidden in production so it can’t be triggered accidentally.
+
+After you answer all of these questions, I want you to:
+	•	Summarize the single most likely reason Zyn hasn’t placed any trades in LIVE mode in the last 12+ hours, based strictly on the code and config.
+	•	Propose a minimal, safe set of code changes to:
+	•	fix any obvious bugs preventing evaluation or order placement,
+	•	relax any overly strict filters (if needed),
+	•	and add strong logging around each 5-minute evaluation so I can see, in plain English, why each decision is TRADE or NO_TRADE.
+
+Do not refactor the entire project. Focus on making LIVE trading:
+	1.	actually run on schedule,
+	2.	attempt trades when conditions are truly met, and
+	3.	fully explain, via logs, why trades are or are not being placed.
