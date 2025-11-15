@@ -107,16 +107,32 @@ class LLMResponseValidator:
     """
     
     # Success claim patterns that trigger validation
+    # NARROWED: Only match explicit trade execution claims, not casual language
     SUCCESS_PATTERNS = [
-        r'\bsuccessfully executed\b',
-        r'\btrade executed\b',
-        r'\border placed\b',
-        r'\bposition opened\b',
-        r'\bexecuted.*trade\b',
-        r'\bopened.*position\b',
-        r'\bplaced.*order\b',
-        r'\bcompleted.*trade\b',
-        r'\bfilled.*order\b',
+        r'\bsuccessfully executed the trade\b',
+        r'\bsuccessfully placed the order\b',
+        r'\btrade has been executed\b',
+        r'\border has been placed\b',
+        r'\bposition has been opened\b',
+        r'\bthe order was placed successfully\b',
+        r'\bthe trade was executed successfully\b',
+        r'\bopened.*position.*successfully\b',
+        r'\bplaced.*order.*successfully\b',
+        r'\bcompleted.*trade.*successfully\b',
+    ]
+    
+    # Patterns that indicate query/diagnostic language (NOT trade claims)
+    QUERY_INDICATORS = [
+        r'\bquery\b',
+        r'\bcheck\b',
+        r'\bshow\b',
+        r'\blook\b',
+        r'\bfetch\b',
+        r'\bretriev\b',
+        r'\bbalance\b',
+        r'\bopen orders\b',
+        r'\bhistory\b',
+        r'\bevaluation\b',
     ]
     
     # Error/failure patterns (EXPANDED for Kraken-specific errors)
@@ -229,14 +245,33 @@ class LLMResponseValidator:
     
     @classmethod
     def _detect_success_claim(cls, text: str) -> bool:
-        """Detect if LLM is claiming successful trade execution"""
+        """
+        Detect if LLM is claiming successful trade execution.
+        
+        Returns False if response clearly contains query/diagnostic language,
+        even if it matches success patterns (to avoid false positives).
+        """
         text_lower = text.lower()
-        return any(re.search(pattern, text_lower) for pattern in cls.SUCCESS_PATTERNS)
+        
+        # Check if response contains query/diagnostic language
+        has_query_language = any(re.search(pattern, text_lower) for pattern in cls.QUERY_INDICATORS)
+        
+        # Check if response claims trade success
+        has_success_claim = any(re.search(pattern, text_lower) for pattern in cls.SUCCESS_PATTERNS)
+        
+        # If it's clearly a query/diagnostic response, don't validate as trade
+        if has_query_language and not has_success_claim:
+            return False
+        
+        # Only validate if there's an explicit success claim
+        return has_success_claim
     
     @classmethod
     def _extract_trade_tool_results(cls, tool_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Extract trade-related tool results and parse them.
+        
+        CRITICAL: Skips query commands (bal, open, price) which aren't trades.
         
         Returns list of parsed TradeResult dictionaries.
         """
@@ -251,6 +286,22 @@ class LLMResponseValidator:
             
             # Check if this is a trade-related tool
             if tool_name in ['execute_trading_command', 'execute_bracket_with_percentages']:
+                # CRITICAL FIX: Skip query commands - they're not trades
+                # Query commands: bal, open, price, debug, history, evaluations
+                content_lower = content.lower()
+                is_query_result = any(indicator in content_lower for indicator in [
+                    'balance:', 'balances:', 'equity:', 'usd value:',  # bal command
+                    'open orders:', 'no open orders', 'orders for',    # open command
+                    'current price:', 'market price:', 'price:',       # price command
+                    'debug status:', 'heartbeat:', 'evaluation',       # debug/diagnostic
+                    'trade history:', 'recent trades:',                # history command
+                ])
+                
+                if is_query_result:
+                    # This is a query result, not a trade - skip validation
+                    logger.debug(f"[VALIDATOR] Skipping query result from validation (tool={tool_name})")
+                    continue
+                
                 # Try to parse as JSON first (new structured format)
                 try:
                     parsed = json.loads(content)

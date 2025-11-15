@@ -1,0 +1,99 @@
+You are in PLAN / ANALYSIS mode ONLY. DO NOT EDIT ANY CODE.
+
+Goal: I want you to precisely diagnose where this message is coming from and why it’s firing when I ask diagnostic questions instead of trade commands:
+
+"⚠️ Internal error: I attempted to execute a trade but no command was actually sent. Please verify your positions using 'open' and 'bal' commands. If you intended to trade, please retry the command."
+
+You are NOT allowed to guess. Use actual code inspection and, if needed, read-only queries into logs/DB. I need a clear map of the logic, not a story.
+
+────────────────────────
+STEP 1 – FIND THE SOURCE OF THAT ERROR STRING
+────────────────────────
+
+1) Search the entire codebase for that exact string and tell me:
+   - File path(s)
+   - Function name(s)
+   - Approximate line number(s)
+
+2) For EACH place the string appears, tell me:
+   - Under what condition it is returned (what branch / error case).
+   - What input or tool result triggers that branch.
+   - Whether it is:
+     - (a) coming directly from commands.py / backend logic, OR
+     - (b) injected by llm_agent.py, OR
+     - (c) part of a validator / post-processor.
+
+I want precise pointers, not “probably.”
+
+────────────────────────
+STEP 2 – SHOW ME THE ROUTING PATH FOR TRADE COMMANDS VS DIAGNOSTIC QUESTIONS
+────────────────────────
+
+Focus on llm_agent.py (or equivalent) and commands.py.
+
+1) In llm_agent.py, identify the function that decides when to call the trading tool (usually execute_trading_command or similar). For that function, show me:
+
+   - The logic that classifies user messages as “commands” vs general text.
+   - Any heuristics/patterns used (e.g., startswith("bal"), regex matching, etc.).
+   - Whether long natural-language prompts (like my big diagnostic blocks) are being passed wholesale into execute_trading_command.
+
+Paste the key conditional blocks with line numbers so I can see exactly how routing works.
+
+2) In commands.py, show me the handler that ultimately returns that internal error string:
+
+   - The function / branch that constructs or returns that exact “⚠️ Internal error…” message.
+   - What the incoming `command` string looks like in that branch (e.g., empty, malformed, etc.).
+   - Whether that branch is intended for failed TRADE commands, or is being hit for other generic input.
+
+3) Show me the top-level flow from user text → llm_agent → execute_trading_command → that error string. Summarize as a step-by-step call chain with function names, not just prose. For example:
+
+   - user_input → llm_agent._route(...) → execute_trading_command("...") → commands.handle("...") → <some branch> → returns internal error string
+
+────────────────────────
+STEP 3 – CHECK IF ANY VALIDATOR OR POST-PROCESSOR IS OVERWRITING RESPONSES
+────────────────────────
+
+1) If there is a module like trade_result_validator.py (or any validator that inspects tool results), show me:
+
+   - Where it looks at tool outputs and LLM outputs.
+   - Whether it can replace the LLM’s answer with the generic internal error string.
+   - Any explicit rules that trigger that replacement (e.g., when a tool fails but LLM claims success).
+
+2) Tell me clearly:
+   - Does this “⚠️ Internal error…” string come directly from commands.py?
+   - Or is it injected/rewritten by llm_agent or a validator after seeing a particular tool result?
+
+────────────────────────
+STEP 4 – EXAMPLE OF A REAL INPUT THAT TRIGGERS THIS PATH
+────────────────────────
+
+Using logs or code reasoning:
+
+1) Take a REAL example of a user input similar to what I used (a long diagnostic block asking about trades and history).
+
+2) Trace what happens to it:
+   - How does llm_agent classify it?
+   - What exact string gets passed into execute_trading_command / commands.handle?
+   - Why does commands.handle decide to emit that “internal error” string instead of a normal diagnostic output?
+
+3) Show me the exact command string that winds up at commands.handle in that case (e.g., a giant blob of text, an empty string, or some mangled version).
+
+────────────────────────
+STEP 5 – BOTTOM-LINE DIAGNOSIS (NO FIXES YET)
+────────────────────────
+
+In 3–5 sentences, answer:
+
+1) Why am I seeing this “⚠️ Internal error…” message when I ask big diagnostic questions instead of issuing clear trade commands?
+
+2) Is the root cause primarily:
+   - (A) llm_agent misclassifying my diagnostic text as a trade command,
+   - (B) commands.handle not validating input and defaulting to this generic error,
+   - (C) a validator/post-processor overwriting the response,
+   - or (D) some combination of these?
+
+3) Based on your analysis, what is the MINIMUM precise change (in a future BUILD step) that would:
+   - Prevent diagnostic questions from ever hitting that internal-trade-error path, and
+   - Ensure that message only appears (if at all) for genuine, failed trade commands?
+
+Do NOT edit any files. Just give me the exact locations, call chains, and explanation so we can surgically fix it in the next BUILD step.
