@@ -1709,19 +1709,20 @@ def set_trading_mode_endpoint(request: TradingModeRequest):
 def restart_workflows_endpoint():
     """
     Restart both autopilot and chat workflows.
-    Uses subprocess to call killall -HUP python to trigger Replit workflow restart.
+    Uses pkill -HUP to send hangup signal to Python processes, triggering Replit workflow restart.
     """
     try:
-        # Method 1: Send HUP signal to restart Python processes (Replit auto-restarts workflows)
+        # Send HUP signal to Python processes (Replit auto-restarts workflows)
+        # Using pkill (available in Replit) instead of killall
         result = subprocess.run(
-            ["killall", "-HUP", "python"],
+            ["pkill", "-HUP", "python"],
             capture_output=True,
             text=True,
             timeout=5
         )
         
-        # Even if killall returns non-zero (no matching processes), it's ok
-        # because Replit will restart the workflows automatically
+        # pkill returns 0 if processes were signaled, 1 if no processes matched
+        # Either way, Replit will restart the workflows automatically
         return {
             "status": "success",
             "message": "Workflows restarting... (autopilot + chat)",
@@ -1729,6 +1730,8 @@ def restart_workflows_endpoint():
         }
     except subprocess.TimeoutExpired:
         return {"status": "error", "message": "Restart command timed out"}
+    except FileNotFoundError:
+        return {"status": "error", "message": "pkill command not found in system"}
     except Exception as e:
         return {"status": "error", "message": f"Failed to restart workflows: {str(e)}"}
 
