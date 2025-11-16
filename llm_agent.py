@@ -3,6 +3,7 @@
 import os
 import json
 import re
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
@@ -832,7 +833,8 @@ def ask_llm(user_text: str, session_id: str = "default", request_id: str = None)
                 
                 mode = get_trading_mode()
                 snapshot = get_portfolio_snapshot()
-                recent_trades = get_trade_history(limit=5)
+                # CRITICAL: Use timestamp filter to get trades from last 24 hours only
+                recent_trades = get_trade_history(since=time.time() - 86400, limit=5)
                 
                 lines = [
                     "═══════════════════════════════════════════════════════",
