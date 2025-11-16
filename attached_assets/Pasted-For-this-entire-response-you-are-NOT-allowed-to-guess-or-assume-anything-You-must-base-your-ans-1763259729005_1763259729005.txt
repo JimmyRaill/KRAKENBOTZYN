@@ -1,0 +1,62 @@
+For this entire response, you are NOT allowed to guess or assume anything.  
+You must base your answers ONLY on:
+
+- Your executed_orders table / internal execution log
+- Your trades table / telemetry DB
+- Real Kraken trade history via your live exchange client
+
+Do NOT place any trades. Read-only diagnostics only.
+
+Answer ALL of the following in ONE response:
+
+1) Mode & universe
+- What trading mode are you in right now (live or paper)?
+- Are you currently using the Crypto Universe Scanner or a static SYMBOLS list?
+- List the full set of symbols you are currently evaluating each cycle.
+
+2) Trades in the last 24 hours (REAL, timestamp-based)
+- Using your trades table OR Kraken trade history with a REAL 24h time filter:
+  - How many trades exist in the last 24 hours? Answer with a single integer.
+- Then list each of those trades with:
+  - symbol
+  - side
+  - amount
+  - price
+  - timestamp
+  - trade id
+  - source field exactly as stored (autopilot / command / force_test / unknown)
+
+You MUST only count trades whose timestamp is within the last 24 hours.  
+If there are 0 trades in the last 24 hours, say: “Trades in the last 24 hours: 0” and do NOT list older trades.
+
+3) Internal execution log (executed_orders)
+- Show me the last 10 entries from your internal executed_orders log.
+  For each entry include:
+  - timestamp
+  - symbol
+  - side
+  - quantity
+  - price
+  - order_id
+  - trading_mode
+  - source
+- If there are 0 entries, say exactly: “executed_orders log: 0 entries.”
+
+4) Autopilot vs command vs force_test (last 24 hours)
+Based ONLY on:
+- your trades table AND/OR executed_orders log with a REAL 24h time filter:
+
+Give me three integers:
+- Number of trades in the last 24 hours with source="autopilot"
+- Number with source="command"
+- Number with source="force_test"
+
+If there are none in a category, that category’s number must be 0.
+
+5) Consistency check
+- Confirm explicitly that:
+  - The total trades in the last 24 hours from step (2)
+  = the sum of (autopilot + command + force_test) from step (4).
+- If they do NOT match, say: “Mismatch between 24h trade count and source breakdown” and explain why based on the actual data.
+
+You are not allowed to use “last 24 hours” language for any trade that is older than 24 hours by timestamp.
