@@ -224,20 +224,188 @@ def _check_paper_order_status(order_id: str, symbol: str) -> tuple[bool, Optiona
         return False, None
 
 
+def reconcile_all_kraken_fills(trading_mode: str, lookback_hours: int = 48) -> Dict[str, Any]:
+    """
+    Comprehensive sweep: Find ALL Kraken fills (entry + TP/SL) and log missing ones.
+    
+    This catches TP/SL fills that weren't registered as pending orders.
+    
+    Args:
+        trading_mode: "live" or "paper"
+        lookback_hours: How far back to check (default 48h)
+    
+    Returns:
+        Summary with newly_logged fills
+    """
+    import time
+    from account_state import get_trade_history
+    from evaluation_log import get_executed_orders
+    
+    if trading_mode.upper() != "LIVE":
+        # Only run for LIVE mode (paper mode doesn't need this)
+        return {"newly_logged": 0, "errors": []}
+    
+    try:
+        # Get all Kraken trades from last N hours
+        since = time.time() - (lookback_hours * 3600)
+        kraken_trades = get_trade_history(since=since, limit=500)
+        
+        if not kraken_trades:
+            logger.debug(f"[RECONCILE-ALL] No Kraken trades in last {lookback_hours}h")
+            return {"newly_logged": 0, "errors": []}
+        
+        # Get all executed_orders from database
+        executed = get_executed_orders(limit=500)
+        executed_order_ids = {e['order_id'] for e in executed}
+        
+        # Find Kraken trades NOT in executed_orders
+        missing_fills = []
+        for trade in kraken_trades:
+            order_id = trade.get('order_id', '')
+            if not order_id or order_id in executed_order_ids:
+                continue
+            
+            # This is a fill we haven't logged yet
+            missing_fills.append(trade)
+        
+        if not missing_fills:
+            logger.debug(f"[RECONCILE-ALL] All {len(kraken_trades)} Kraken trades already logged")
+            return {"newly_logged": 0, "errors": []}
+        
+        # Log the missing fills
+        logged_count = 0
+        errors = []
+        
+        # Get all pending child orders to identify TP/SL fills by parent linkage
+        from evaluation_log import get_db_connection
+        pending_conn = get_db_connection()
+        pending_cursor = pending_conn.cursor()
+        pending_cursor.execute("""
+            SELECT order_id, parent_order_id, order_type
+            FROM pending_child_orders
+            WHERE trading_mode = ?
+        """, (trading_mode.lower(),))
+        
+        # Build lookup: order_id -> (parent_order_id, order_type)
+        pending_orders_lookup = {}
+        for row in pending_cursor.fetchall():
+            pending_orders_lookup[row[0]] = {"parent": row[1], "type": row[2]}
+        pending_conn.close()
+        
+        for fill in missing_fills:
+            try:
+                # CRITICAL: Determine entry vs TP/SL using PARENT ORDER LINKAGE
+                # NOT just raw_type (limit entries would be misclassified)
+                order_id = fill.get('order_id', '')
+                order_type = "unknown"
+                is_tp_sl = False
+                
+                # Check if this order is in pending_child_orders (TP/SL bracket child)
+                if order_id in pending_orders_lookup:
+                    order_type = pending_orders_lookup[order_id]['type']  # "tp" or "sl"
+                    is_tp_sl = True
+                # Fallback: incomplete data suggests TP/SL (Kraken omits symbol/side)
+                elif fill.get('is_incomplete_data'):
+                    order_type = "tp_or_sl"
+                    is_tp_sl = True
+                else:
+                    # Complete data + not in pending = likely entry fill
+                    order_type = "entry"
+                
+                # Get parent_order_id if available
+                parent_order_id = None
+                if order_id in pending_orders_lookup:
+                    parent_order_id = pending_orders_lookup[order_id]['parent']
+                
+                # Log to executed_orders (forensic database)
+                log_order_execution(
+                    symbol=fill.get('symbol', 'UNKNOWN'),
+                    side=fill.get('side', 'unknown'),
+                    quantity=fill.get('quantity', 0),
+                    entry_price=fill.get('price', 0),
+                    order_id=fill['order_id'],
+                    trading_mode="live",
+                    source="reconciliation_sweep",
+                    extra_info=f"Retroactive logging of {order_type} fill from Kraken",
+                    order_type=order_type,
+                    parent_order_id=parent_order_id
+                )
+                
+                # ALSO log to telemetry trades table for 24h/7d stats
+                from telemetry_db import log_trade
+                
+                action = "market_sell" if fill.get('side') == 'sell' else "market_buy"
+                reason = f"TP/SL fill (retroactive)" if is_tp_sl else "Entry fill (retroactive)"
+                
+                log_trade(
+                    symbol=fill.get('symbol', 'UNKNOWN'),
+                    side=fill.get('side', 'unknown'),
+                    action=action,
+                    quantity=fill.get('quantity', 0),
+                    price=fill.get('price', 0),
+                    usd_amount=fill.get('cost', 0),
+                    order_id=fill['order_id'],
+                    reason=reason,
+                    source="reconciliation_sweep",
+                    mode="live"
+                )
+                
+                logged_count += 1
+                logger.info(
+                    f"[RECONCILE-ALL] ✅ Logged missing fill: {fill.get('symbol', 'UNK')} "
+                    f"{fill.get('side', 'unk')} @ ${fill.get('price', 0):.2f} (order_id={fill['order_id'][:20]}...)"
+                )
+                
+            except Exception as e:
+                error_msg = f"Failed to log fill {fill.get('order_id', 'unknown')}: {e}"
+                errors.append(error_msg)
+                logger.error(f"[RECONCILE-ALL] {error_msg}")
+        
+        logger.info(f"[RECONCILE-ALL] Logged {logged_count}/{len(missing_fills)} missing Kraken fills")
+        
+        return {
+            "newly_logged": logged_count,
+            "errors": errors,
+            "missing_fills_found": len(missing_fills)
+        }
+        
+    except Exception as e:
+        logger.error(f"[RECONCILE-ALL] CRITICAL: {e}")
+        return {
+            "newly_logged": 0,
+            "errors": [str(e)],
+            "missing_fills_found": 0
+        }
+
+
 def run_reconciliation_cycle():
     """
     Run reconciliation for current trading mode.
     Called by autopilot heartbeat every 60 seconds.
+    
+    TWO-PHASE APPROACH:
+    1. Check registered pending orders (fast, targeted)
+    2. Sweep all Kraken fills every 10 cycles to catch unregistered TP/SL fills
     """
     try:
         trading_mode = os.getenv("TRADING_MODE", "PAPER").upper()
         
+        # Phase 1: Check pending orders
         result = reconcile_tp_sl_fills(trading_mode)
         
-        if result['filled_count'] > 0:
+        # Phase 2: Comprehensive sweep (every 10 cycles = ~10 minutes)
+        # Use modulo trick with timestamp to spread load
+        import time
+        if trading_mode == "LIVE" and int(time.time()) % 600 < 60:  # Run once per 10min
+            sweep_result = reconcile_all_kraken_fills(trading_mode, lookback_hours=48)
+            result['sweep_newly_logged'] = sweep_result.get('newly_logged', 0)
+            result['sweep_errors'] = sweep_result.get('errors', [])
+        
+        if result['filled_count'] > 0 or result.get('sweep_newly_logged', 0) > 0:
             logger.info(
                 f"[RECONCILE-{trading_mode}] Cycle complete: "
-                f"{result['filled_count']}/{result['pending_count']} orders filled"
+                f"{result['filled_count']}/{result['pending_count']} pending filled, "
+                f"{result.get('sweep_newly_logged', 0)} retroactive logged"
             )
         
         return result

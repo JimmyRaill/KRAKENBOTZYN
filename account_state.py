@@ -528,21 +528,48 @@ def get_trade_history(since: Optional[float] = None, limit: int = 100) -> List[D
             # Fetch from Kraken
             trades_raw = ex.fetch_my_trades(since=since_ms, limit=limit)
             
-            # Convert to our format
+            # Convert to our format with robust field extraction
             trades = []
             for t in trades_raw:
+                # Extract core fields with fallbacks
+                symbol = t.get('symbol', '').strip()
+                side = t.get('side', '').strip()
+                order_id = t.get('order', '')
+                trade_id = t.get('id', '')
+                
+                # Detect if this is potentially a TP/SL fill (missing critical fields)
+                # TP/SL fills often have empty symbol/side from Kraken API
+                is_incomplete = not symbol or not side
+                
+                # For incomplete trades, try to infer from info field or mark clearly
+                if is_incomplete and 'info' in t:
+                    # Kraken's raw 'info' field sometimes has additional data
+                    info = t.get('info', {})
+                    if isinstance(info, dict):
+                        # Try alternative field names
+                        symbol = symbol or info.get('pair', '').strip()
+                        side = side or info.get('type', '').strip()
+                
+                # If still incomplete after all attempts, mark with UNKNOWN placeholder
+                if not symbol:
+                    symbol = 'UNKNOWN_SYMBOL'
+                if not side:
+                    side = 'unknown'
+                
                 trades.append({
-                    'trade_id': t.get('id', ''),
-                    'order_id': t.get('order', ''),
+                    'trade_id': trade_id,
+                    'order_id': order_id,
                     'timestamp': t.get('timestamp', 0) / 1000,  # Convert ms to seconds
                     'datetime_utc': t.get('datetime', ''),
-                    'symbol': t.get('symbol', ''),
-                    'side': t.get('side', ''),
+                    'symbol': symbol,
+                    'side': side,
                     'price': t.get('price', 0),
                     'quantity': t.get('amount', 0),
                     'cost': t.get('cost', 0),
                     'fee': t.get('fee', {}).get('cost', 0),
-                    'fee_currency': t.get('fee', {}).get('currency', 'USD')
+                    'fee_currency': t.get('fee', {}).get('currency', 'USD'),
+                    'is_incomplete_data': is_incomplete,  # Flag for diagnostics
+                    'raw_type': t.get('type', 'unknown')  # Original type from Kraken
                 })
             
             return trades
