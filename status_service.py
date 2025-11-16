@@ -589,7 +589,8 @@ def _get_cached_trades() -> List[Dict[str, Any]]:
     if mode == "paper":
         try:
             from account_state import get_trade_history
-            paper_trades = get_trade_history(limit=100)
+            # CRITICAL: Use timestamp filter to get recent trades only (last 7 days for cache)
+            paper_trades = get_trade_history(since=time.time() - 604800, limit=100)
             
             # Convert to ccxt format for compatibility
             result = []
