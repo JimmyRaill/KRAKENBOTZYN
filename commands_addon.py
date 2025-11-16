@@ -262,6 +262,7 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
         
         # CRITICAL: Log entry IMMEDIATELY to both databases (before attempting protection)
         log_lines.append("📝 Logging entry to both databases (forensic + telemetry)...")
+        print(f"[DEBUG-LOGGING] About to call record_entry_fill for {symbol} order {entry_id}")
         logging_result = record_entry_fill(
             symbol=symbol,
             side="buy",
@@ -273,6 +274,7 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
             reason="force trade test",
             extra_info=f"LIVE force trade test ~${test_usd}"
         )
+        print(f"[DEBUG-LOGGING] record_entry_fill completed: forensic={logging_result['forensic_log_success']}, telemetry={logging_result['telemetry_log_success']}, errors={logging_result['errors']}")
         
         if logging_result['forensic_log_success'] and logging_result['telemetry_log_success']:
             log_lines.append("✅ Entry logged to BOTH databases (executed_orders + trades)")
