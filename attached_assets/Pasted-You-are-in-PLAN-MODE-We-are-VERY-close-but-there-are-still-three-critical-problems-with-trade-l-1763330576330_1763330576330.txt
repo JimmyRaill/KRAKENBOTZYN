@@ -1,0 +1,241 @@
+You are in PLAN MODE.
+
+We are VERY close, but there are still three critical problems with trade logging and reporting.
+
+LATEST OBSERVED BEHAVIOR (GROUND TRUTH):
+
+User ran another `force trade test on ETH/USD`. A real order executed on Kraken (user confirmed in the Kraken UI).
+
+Then Zyn was asked for a STRICT, read-only diagnostic. Zyn replied:
+
+1) Time sanity
+- Current UTC time: 2025-11-16T21:42:10.415027+00:00
+- Timestamp of the MOST RECENT trade: 2025-11-16T20:22:17.860000+00:00
+
+2) Trades in the LAST 24 HOURS
+- Cutoff_24h = 2025-11-15T21:42:10.415027+00:00
+- 24h_trades = 4
+- Listed trades:
+  1) ETH/USD sell, 0.00484425 @ 3126.89, ts=2025-11-16T20:22:17.860Z, id=OFIMZT-AWRP7-CDBW57, source=unknown
+  2) ETH/USD sell, 0.00485006 @ 3135.00, ts=2025-11-16T16:20:08.896Z, id=OL2BUG-ON5XX-ZYG7SX, source=unknown
+  3) Symbol: [Trade not available]
+  4) Symbol: [Trade not available]
+
+3) Trades in the LAST 7 DAYS
+- Cutoff_7d = 2025-11-09T21:42:10.415027+00:00
+- 7d_trades = 50
+- Details of last 10 trades:
+  1–10: Symbol: [Trade not available]
+
+4) Internal executed_orders log
+- “executed_orders log: 0 entries”
+
+5) Last force trade test status
+- “Did Kraken confirm an entry order? No.”
+- “Force-test trade is missing from all relevant logs.”
+
+This is logically inconsistent with reality:
+- The user saw the ETH force trade execute on Kraken.
+- There are 24h and 7d trade counts, but many rows show as “[Trade not available]”.
+- executed_orders is still empty.
+- Force-test status says “no entry order confirmed” even though trades exist.
+
+Your job in PLAN MODE:
+Do a focused, code-level forensic analysis and then produce a concrete fix plan for these THREE PROBLEMS:
+
+  (A) Corrupted / incomplete trade rows (“[Trade not available]”)
+  (B) executed_orders not being populated
+  (C) Last-force-test status not tied to real data
+
+Do NOT touch: strategy filters, risk management, symbol universe. Only trade logging + reporting.
+
+────────────────────
+STEP 1 – FIND WHERE “[Trade not available]” IS GENERATED
+────────────────────
+
+1. Search the codebase for the literal string:
+   - "[Trade not available]"
+
+2. Identify:
+   - File and function where this placeholder is produced.
+   - EXACT data structure it tries to read from (e.g., dict keys like trade["symbol"], trade["price"], etc.).
+
+3. Then:
+   - Log (or inspect) the raw objects BEFORE formatting that become “[Trade not available]”.
+   - Determine which keys are missing or None (symbol, side, amount, price, timestamp, trade_id, source, etc.).
+
+4. Verify what underlying call populated those raw objects:
+   - Are they coming from the `trades` table (SQLite)?
+   - From `fetch_my_trades()` via ccxt?
+   - From some in-memory cache?
+
+Explain why 24h_trades = 4 but only 2 trades have valid fields and 2 show as “[Trade not available]”.
+Explain why 7d_trades = 50 but last 10 are all “[Trade not available]”.
+
+────────────────────
+STEP 2 – INSPECT THE TRADES TABLE DIRECTLY
+────────────────────
+
+Use the SAME DB the app uses in production.
+
+1. Show the CREATE TABLE schema for the trades table:
+   - Column names
+   - Types
+   - Any default values
+
+2. Run a raw query (no helper functions) to inspect the newest rows:
+
+   - SELECT * FROM trades ORDER BY timestamp DESC LIMIT 20;
+
+3. For each of the newest rows, confirm:
+   - Is symbol null or empty?
+   - Is side null or empty?
+   - Is price null or 0?
+   - Is timestamp stored as TEXT or INTEGER (unix seconds / ms)?
+
+Specifically:
+   - Do OL2BUG-ON5XX-ZYG7SX and OFIMZT-AWRP7-CDBW57 exist as rows?
+   - If so, what are their actual stored fields for symbol, side, price, timestamp, source?
+
+Determine the exact reason some trades format correctly and some collapse to “[Trade not available]”.
+
+────────────────────
+STEP 3 – TRACE executed_orders LOGGING
+────────────────────
+
+We need to know why executed_orders is still empty.
+
+1. Find the schema & location for executed_orders:
+   - In evaluation_log.py (or equivalent).
+   - Show the CREATE TABLE statement for executed_orders.
+
+2. Find ALL usages of log_order_execution (or similarly named function):
+   - Which files call it? (commands.py, autopilot.py, commands_addon.py, etc.)
+   - In what code paths? (normal buys, sells, bracket entries, force trade tests, autopilot entries).
+
+3. For the **force trade test path** in commands.py:
+   - Identify the point where Kraken confirms the entry order (market buy).
+   - Confirm whether log_order_execution is called AFTER that confirmation.
+   - If not called, that’s bug #1.
+   - If it is called, check for try/except around it that might swallow errors.
+
+4. Add or verify logging:
+   - Right before calling log_order_execution, print a clear console line like:
+     - "[EXEC-LOG] Logging executed order to executed_orders: {symbol} {side} {qty} @ {price}, source={source}"
+   - Right after it, log success or the exception.
+
+5. Confirm the DB/file path:
+   - Ensure log_order_execution writes to the same sqlite file that the status endpoint reads when it prints “executed_orders log: 0 entries”.
+   - If there are multiple DB paths (e.g., dev vs prod, or different filenames), document and fix.
+
+────────────────────
+STEP 4 – TRACE WHERE 24H / 7D STATS ARE PULLED FROM
+────────────────────
+
+We need to pin down whether 24h/7d stats come from:
+- trades table only, or
+- direct Kraken fetch, or
+- a combination.
+
+1. Locate all functions that compute:
+   - 24h_trades
+   - 7d_trades
+
+Likely locations:
+   - commands_addon.py
+   - telemetry_db.py
+   - account_state.py
+   - any get_trading_stats function.
+
+2. For each function, explain:
+   - Does it query the trades table? If so, what SQL and what filters?
+   - Does it call fetch_my_trades()? If so, is the since= parameter used?
+   - How does it combine data from DB vs Kraken (if at all)?
+
+3. Verify that:
+   - 24h_trades uses cutoff_24h = now - 86400 seconds.
+   - 7d_trades uses cutoff_7d = now - 7*86400 seconds.
+   - The WHERE clause or since= parameter actually uses these cutoffs.
+
+If the count is correct (e.g., 4 and 50) but formatting fails, that’s a formatter/data-shape mismatch.
+If the count itself is wrong, the underlying query/filter is wrong.
+
+────────────────────
+STEP 5 – FIX LAST-FORCE-TEST STATUS LOGIC
+────────────────────
+
+We want this behavior:
+
+For the MOST RECENT “force trade test”:
+- It should be tied to:
+  - Either the last trade in the trades table with source="force_test", OR
+  - A known order_id stored at the time the force test executed.
+
+Currently it says:
+- “Did Kraken confirm an entry order? No.”
+- Even though the user literally saw it in Kraken AND trade IDs like OL2BUG / OFIMZT show up elsewhere.
+
+1. Find the function that answers:
+   - “Did Kraken confirm an entry order? Yes/No”
+   - And “Force-test trade is missing from all relevant logs.”
+
+2. Analyze:
+   - Does it look at:
+     - trades table?
+     - executed_orders?
+     - some internal flag?
+   - Why can it say “No” when the trades table clearly has ETH trades from today?
+
+3. Design a robust logic for last force trade test:
+
+   - Define a clear rule:
+     - A trade is considered a “force_test” trade if:
+       - source="force_test" in the trades table, OR
+       - it is the last trade created by the force trade handler that wrote to the DB.
+
+   - For that last force_test trade:
+     - Confirm presence in trades (by trade_id).
+     - Confirm presence in executed_orders (by order_id).
+     - Optionally cross-check against Kraken via fetch_my_trades().
+
+   - The answer should then be:
+     - “Yes, confirmed” with full details, OR
+     - “Mismatch: trade exists in Kraken but is missing from internal logs (list which).”
+
+────────────────────
+STEP 6 – PRODUCE A CLEAR FIX PLAN
+────────────────────
+
+At the end, produce a concrete fix plan with:
+
+1. For problem (A) “[Trade not available]”:
+   - File + function where placeholder is emitted.
+   - Root cause: e.g., rows inserted with missing symbol/side, or reader using wrong keys.
+   - Fix: e.g., correct insert statement in log_trade, or correct field mapping when reading from DB.
+
+2. For problem (B) executed_orders:
+   - File + function where log_order_execution SHOULD be called but isn’t.
+   - Any DB path mismatch and how to unify it.
+   - Exact change: add log_order_execution in force trade test path + normal entry paths, with robust error logging.
+
+3. For problem (C) last-force-test status:
+   - File + function generating “Did Kraken confirm an entry order? No.”
+   - Replace that logic with a deterministic check against trades and/or executed_orders, with trade_id source="force_test".
+   - Ensure it NEVER answers “No” if a matching trade is present in trades or Kraken history.
+
+Finally, describe an “AFTER FIX” scenario:
+
+- User runs: `force trade test on ETH/USD`.
+- Kraken fills the order.
+- System:
+  - Logs to executed_orders.
+  - Logs to trades with source="force_test".
+- 24h_trades:
+  - Count includes that trade.
+  - It appears with full, non-placeholder details.
+- 7d_trades:
+  - Also includes it correctly.
+- Force-test status:
+  - Reports: “Yes, Kraken confirmed the entry order”, with symbol/side/size/price/order_id/source and whether TP/SL succeeded, failed with rollback, or failed and left the position open.
+
+Do NOT handwave. I want explicit root causes + precise changes we can hand to BUILD mode.
