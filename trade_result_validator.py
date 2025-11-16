@@ -6,6 +6,7 @@ All trade-related claims are validated against structured tool results.
 """
 import re
 import json
+import time
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from loguru import logger
@@ -465,7 +466,9 @@ def get_realtime_trading_status() -> Dict[str, Any]:
         # Fetch fresh data (no caching)
         open_orders = ex.fetch_open_orders()
         balances = get_balances()
-        recent_trades = get_trade_history()[-50:] if get_trade_history() else []
+        # CRITICAL: Use timestamp filter to get trades from last 24 hours only
+        trades_24h = get_trade_history(since=time.time() - 86400, limit=50)
+        recent_trades = trades_24h if trades_24h else []
         
         # Calculate equity
         total_equity = 0.0
