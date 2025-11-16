@@ -1,0 +1,176 @@
+You are in BUILD MODE.
+
+Goal: Fix the execution + logging pipeline so that:
+- As soon as Kraken confirms an entry order, it is ALWAYS logged (executed_orders + trades table),
+- Force trade tests and autopilot trades NEVER “silently succeed” on Kraken while being reported as failures,
+- Errors after entry (TP/SL / bracket failures / insufficient funds) are reported as:
+  “Entry succeeded, protection failed” – NOT “nothing executed”.
+
+Do NOT touch strategy filters, regimes, or risk settings. Focus ONLY on:
+- force trade handler,
+- bracket/TP/SL logic,
+- logging + user-facing messages.
+
+────────────────────────
+STEP 1 – ENTRY MUST BE LOGGED IMMEDIATELY ON SUCCESS
+────────────────────────
+
+1) In the code path used for:
+   - force trade tests (e.g. “force trade test on ETH/USD”),
+   - normal buy/bracket execution (autopilot or commands),
+
+locate where the entry order is actually executed on Kraken, something like:
+
+- ex.create_market_buy_order(...)
+- or a similar call inside a bracket helper.
+
+From previous analysis there were functions like:
+- the force trade handler in commands.py (regex for “force trade test”),
+- bracket execution logic (e.g. _place_tp_and_sl_with_retry or open_position_with_brackets),
+- log_order_execution(...) and telemetry_db.log_trade(...).
+
+2) Change the flow so that:
+
+- AFTER Kraken confirms the entry (i.e., create_market_buy_order returns a successful response and you’ve read order_id / fill price / filled size),
+- You IMMEDIATELY call BOTH:
+  - log_order_execution(...), writing to executed_orders, and
+  - telemetry_db.log_trade(...), writing to the trades table.
+
+This MUST happen BEFORE trying to place TP/SL or any extra orders, and BEFORE any rollback.
+
+The fields should include at least:
+- symbol
+- side
+- quantity / size actually filled
+- avg price
+- order_id
+- timestamp
+- trading_mode (live/paper)
+- source: 
+  - "autopilot" for autopilot trades,
+  - "command" for manual commands,
+  - "force_test" for force trade tests.
+
+Make sure you are using the REAL source value, not leaving it to a default.
+
+────────────────────────
+STEP 2 – SEPARATE ENTRY SUCCESS FROM BRACKET FAILURE
+────────────────────────
+
+1) In the bracket / TP/SL logic (the code that, after entry, places TP and SL and currently raises or returns errors like:
+
+- “EOrder:Insufficient funds”
+- “[BRACKET-ERR] Entry executed but TP/SL failed …”
+
+update the control flow so that:
+
+- ENTRY SUCCESS and BRACKET FAILURE are treated as TWO stages.
+
+Specifically:
+
+- Stage 1 (Entry):
+  - If the entry market order on Kraken fails → return a clear “ENTRY_FAILED” result, do NOT log anything as executed.
+  - If the entry market order succeeds → log it immediately (see Step 1), and proceed to Stage 2.
+
+- Stage 2 (Protection / Brackets):
+  - Try to place TP and SL.
+  - If both succeed → mark this as a FULLY_PROTECTED trade.
+  - If either fails after retries → DO **NOT** pretend nothing happened.
+    - You may still perform your existing safety rollback (market close the position) if you want, but:
+      - That rollback should ALSO be logged as a separate executed order (sell) with correct source.
+    - Return a result that clearly indicates:
+      - “ENTRY_SUCCEEDED_BUT_PROTECTION_FAILED”
+      - and include the Kraken error message.
+
+2) Ensure that any exception that occurs AFTER entry success does NOT prevent the entry from being present in:
+   - executed_orders,
+   - trades table.
+
+In other words: partial success must still be logged as real trades.
+
+────────────────────────
+STEP 3 – FIX FORCE TRADE TEST REPORTING
+────────────────────────
+
+1) In the force trade handler (e.g. commands.py, regex for "force trade test"):
+
+- After the bracket/entry helper returns, inspect its result.
+
+- If the entry was executed on Kraken (Stage 1 success):
+  - Ensure that:
+    - log_order_execution for the entry has already been called,
+    - telemetry_db.log_trade has been called with source="force_test",
+    - and ANY rollback trades (if protection failed and you auto-close) are ALSO logged with source="force_test".
+
+- The final user-facing message for a force trade MUST distinguish between:
+
+  - Case A: Nothing executed at all:
+    - e.g., “Force trade test failed, entry was NEVER placed on Kraken: {error}”
+
+  - Case B: Entry succeeded, protection failed:
+    - e.g., “Entry executed on Kraken (order ID X, size Y @ price Z), but TP/SL placement failed: {error}. Current state: {open position or closed by rollback}”
+
+2) The bot MUST NOT return a message like:
+
+- “The force trade test failed due to insufficient funds …”
+- while Kraken actually shows a filled entry.
+
+Make the error composition logic reflect the two-stage outcome (entry vs protection).
+
+────────────────────────
+STEP 4 – ENSURE AUTOPILOT USES THE SAME LOGGING
+────────────────────────
+
+1) For the autopilot path that opens positions automatically:
+
+- Reuse the same logging functions and patterns from Steps 1–3.
+- As soon as Kraken confirms an entry for an autopilot trade:
+  - log_order_execution(...) with source="autopilot"
+  - telemetry_db.log_trade(..., source="autopilot")
+
+2) If autopilot entries use the same bracket helper, make sure the helper **always** logs entries after success and before bracket placement, regardless of whether the caller is autopilot, command, or force_test.
+
+This guarantees that:
+- ANY future live trades show up in:
+  - 24h trade counts,
+  - executed_orders,
+  - and telemetry stats.
+
+────────────────────────
+STEP 5 – QUICK SANITY GUARDRAILS
+────────────────────────
+
+1) In any high-level status / debug function that reports things like:
+
+- “Trades executed in last 24 hours”
+- “Last N trades”
+- “Autopilot vs command vs force_test counts”
+
+Make sure they are using:
+- executed_orders and/or trades table as the **only** source of truth,
+- not evaluation_log or any guessed counters.
+
+2) If, after an order attempt returns an error, but there is evidence in executed_orders or Kraken history that an entry was filled, the debug/status functions should NEVER say “no order executed”. Instead, they should report the actual state based on logs.
+
+────────────────────────
+STEP 6 – RESTART & SUMMARY
+────────────────────────
+
+After making the changes:
+
+- Restart all relevant workflows:
+  - Autopilot / background loop
+  - API/chat server
+
+Then print to logs something like:
+
+- “[SYSTEM] Entry logging now occurs immediately after Kraken confirms an order.”
+- “[SYSTEM] Force trade tests now distinguish entry success from bracket failures and always log real executions.”
+
+Finally, summarize for me in plain language:
+
+- Which functions/files you changed (especially in commands.py, any bracket helpers, telemetry_db, and logging helpers),
+- How a force trade on ETH/USD will now behave step-by-step when:
+  - everything succeeds,
+  - entry succeeds but TP/SL fails,
+  - entry itself fails.

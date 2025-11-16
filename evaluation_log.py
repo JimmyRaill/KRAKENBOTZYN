@@ -8,8 +8,120 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from loguru import logger
+from dataclasses import dataclass, field
+from enum import Enum
 
 DB_PATH = Path("evaluation_log.db")
+
+
+class EntryStatus(Enum):
+    """Entry order execution status"""
+    SUCCESS = "success"
+    FAILED = "failed"
+    NOT_ATTEMPTED = "not_attempted"
+
+
+class ProtectionStatus(Enum):
+    """Protective bracket (TP/SL) placement status"""
+    FULLY_PROTECTED = "fully_protected"  # Both TP and SL placed successfully
+    PARTIALLY_PROTECTED = "partially_protected"  # Only TP or SL placed
+    NOT_PROTECTED = "not_protected"  # Neither TP nor SL placed
+    FAILED = "failed"  # Attempted but failed
+    NOT_ATTEMPTED = "not_attempted"  # Entry failed, protection never attempted
+
+
+@dataclass
+class TradeExecutionResult:
+    """
+    Structured result for trade execution with two-stage tracking.
+    
+    Separates entry success from protection success to prevent "silent success" bugs
+    where Kraken executes an entry but the system reports total failure due to
+    downstream bracket/protection errors.
+    
+    Examples:
+        - FULLY_SUCCESSFUL: entry=SUCCESS, protection=FULLY_PROTECTED
+        - PARTIAL_SUCCESS: entry=SUCCESS, protection=FAILED (naked position created)
+        - ENTRY_FAILED: entry=FAILED, protection=NOT_ATTEMPTED
+    """
+    # Stage 1: Entry order
+    entry_status: EntryStatus
+    entry_order_id: Optional[str] = None
+    entry_price: Optional[float] = None
+    entry_quantity: Optional[float] = None
+    
+    # Stage 2: Protection (TP/SL)
+    protection_status: ProtectionStatus = ProtectionStatus.NOT_ATTEMPTED
+    tp_order_id: Optional[str] = None
+    sl_order_id: Optional[str] = None
+    
+    # Metadata
+    symbol: str = ""
+    side: str = ""
+    trading_mode: str = ""
+    source: str = ""
+    
+    # Error tracking
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    
+    # Raw messages
+    raw_message: str = ""
+    
+    def is_fully_successful(self) -> bool:
+        """Both entry and protection succeeded"""
+        return (
+            self.entry_status == EntryStatus.SUCCESS and
+            self.protection_status == ProtectionStatus.FULLY_PROTECTED
+        )
+    
+    def is_partial_success(self) -> bool:
+        """Entry succeeded but protection failed or partially failed"""
+        return (
+            self.entry_status == EntryStatus.SUCCESS and
+            self.protection_status in [
+                ProtectionStatus.FAILED,
+                ProtectionStatus.PARTIALLY_PROTECTED,
+                ProtectionStatus.NOT_PROTECTED
+            ]
+        )
+    
+    def is_total_failure(self) -> bool:
+        """Entry failed - nothing executed"""
+        return self.entry_status == EntryStatus.FAILED
+    
+    def to_user_message(self) -> str:
+        """Generate truthful user-facing message based on actual execution state"""
+        if self.is_fully_successful():
+            return (
+                f"✅ TRADE EXECUTED SUCCESSFULLY\n"
+                f"Entry: {self.entry_order_id} - {self.side.upper()} {self.entry_quantity:.6f} {self.symbol} @ ${self.entry_price:.2f}\n"
+                f"Take-Profit: {self.tp_order_id}\n"
+                f"Stop-Loss: {self.sl_order_id}\n"
+                f"Status: FULLY PROTECTED"
+            )
+        elif self.is_partial_success():
+            warning_msg = (
+                f"⚠️  PARTIAL EXECUTION - MANUAL ACTION REQUIRED\n"
+                f"✅ Entry: {self.entry_order_id} - {self.side.upper()} {self.entry_quantity:.6f} {self.symbol} @ ${self.entry_price:.2f}\n"
+                f"❌ Protection Status: {self.protection_status.value}\n"
+            )
+            if self.tp_order_id:
+                warning_msg += f"✅ Take-Profit: {self.tp_order_id}\n"
+            if self.sl_order_id:
+                warning_msg += f"✅ Stop-Loss: {self.sl_order_id}\n"
+            if self.errors:
+                warning_msg += f"\nErrors:\n" + "\n".join(f"  - {e}" for e in self.errors)
+            warning_msg += f"\n\n🚨 POSITION IS OPEN BUT {self.protection_status.value.upper().replace('_', ' ')}"
+            warning_msg += f"\nYou MUST manually close or protect this position: sell all {self.symbol}"
+            return warning_msg
+        else:
+            return (
+                f"❌ TRADE EXECUTION FAILED\n"
+                f"Entry Status: {self.entry_status.value}\n"
+                f"Symbol: {self.symbol}\n"
+                f"Errors:\n" + "\n".join(f"  - {e}" for e in self.errors)
+            )
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -409,6 +521,111 @@ def log_order_execution(
         logger.error(f"[ORDER-LOG] CRITICAL: Failed to log executed order: {e}")
         import sys
         print(f"❌ CRITICAL: Failed to log order execution: {e}", file=sys.stderr)
+
+
+def record_entry_fill(
+    symbol: str,
+    side: str,
+    quantity: float,
+    price: float,
+    order_id: str,
+    trading_mode: str,
+    source: str,
+    reason: str = "",
+    extra_info: str = ""
+) -> Dict[str, Any]:
+    """
+    SHARED UTILITY: Record entry order fill to BOTH databases immediately after Kraken confirms.
+    
+    This function ensures that every successful entry order is logged BEFORE attempting
+    to place protective TP/SL orders. This prevents "silent success" bugs where Kraken
+    executes an entry but the system reports failure due to downstream bracket errors.
+    
+    Used by:
+    - Force trade tests (source="force_test")
+    - Manual bracket commands (source="command")
+    - Autopilot trades (source="autopilot")
+    
+    Args:
+        symbol: Trading pair (e.g., "ETH/USD")
+        side: "buy" or "sell"
+        quantity: Filled quantity (actual from Kraken)
+        price: Average fill price (actual from Kraken)
+        order_id: Kraken order ID
+        trading_mode: "live" or "paper"
+        source: "force_test", "command", "autopilot", etc.
+        reason: Trade reason/strategy
+        extra_info: Additional context
+    
+    Returns:
+        Dict with:
+            - forensic_log_success: bool (executed_orders table)
+            - telemetry_log_success: bool (trades table)
+            - errors: List[str] (any errors encountered)
+    """
+    result = {
+        'forensic_log_success': False,
+        'telemetry_log_success': False,
+        'errors': []
+    }
+    
+    # Stage 1: Log to executed_orders table (forensic log)
+    try:
+        log_order_execution(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            entry_price=price,
+            order_id=order_id,
+            trading_mode=trading_mode,
+            source=source,
+            extra_info=extra_info,
+            order_type="entry",
+            parent_order_id=None
+        )
+        result['forensic_log_success'] = True
+    except Exception as e:
+        error_msg = f"Failed to log to executed_orders: {e}"
+        logger.error(f"[RECORD-ENTRY-FILL] {error_msg}")
+        result['errors'].append(error_msg)
+    
+    # Stage 2: Log to trades table (telemetry/24h stats)
+    try:
+        from telemetry_db import log_trade
+        
+        usd_amount = quantity * price
+        log_trade(
+            symbol=symbol,
+            side=side,
+            action=f"market_{side}",
+            quantity=quantity,
+            price=price,
+            usd_amount=usd_amount,
+            order_id=order_id,
+            reason=reason or f"{source} entry",
+            source=source,
+            mode=trading_mode
+        )
+        result['telemetry_log_success'] = True
+    except Exception as e:
+        error_msg = f"Failed to log to telemetry DB: {e}"
+        logger.error(f"[RECORD-ENTRY-FILL] {error_msg}")
+        result['errors'].append(error_msg)
+    
+    # Log summary
+    if result['forensic_log_success'] and result['telemetry_log_success']:
+        logger.info(
+            f"[ENTRY-RECORDED] {symbol} {side.upper()} {quantity:.6f} @ ${price:.2f} "
+            f"(order_id={order_id}, source={source}, mode={trading_mode}) → LOGGED TO BOTH DATABASES"
+        )
+    elif result['errors']:
+        logger.warning(
+            f"[ENTRY-RECORDED] {symbol} {side.upper()} partial logging: "
+            f"forensic={result['forensic_log_success']}, telemetry={result['telemetry_log_success']} "
+            f"errors={result['errors']}"
+        )
+    
+    return result
 
 
 def get_executed_orders(limit: int = 50, symbol: Optional[str] = None, since_hours: int = 24) -> List[Dict[str, Any]]:

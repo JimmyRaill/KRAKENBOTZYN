@@ -1,0 +1,101 @@
+You are in PLAN / ANALYSIS mode ONLY. Do NOT edit any code.
+
+Goal: Forensically analyze the MOST RECENT “force trade test on ETH/USD” I just ran, where you returned:
+
+"EOrder:Insufficient funds"
+
+but Kraken still shows that a real ETH trade was executed.
+
+I want to know EXACTLY what happened in the backend, step by step.
+
+────────────────────────
+STEP 1 – FIND THE SPECIFIC FORCE-TRADE ATTEMPT
+────────────────────────
+
+1) Locate the most recent log entry corresponding to my last "force trade test on ETH/USD" command. Use:
+   - commands.py logs,
+   - any force-trade specific logging in commands_addon.py,
+   - and any bracket-related logs (BRACKET-ERR, BRACKET-ROLLBACK, etc.).
+
+2) Confirm:
+   - The exact timestamp of that force trade test.
+   - The symbol, side, and size you attempted to trade.
+   - The exchange mode (live vs paper).
+
+────────────────────────
+STEP 2 – TRACE THE FULL CALL CHAIN FOR THAT ATTEMPT
+────────────────────────
+
+For THIS specific force trade test:
+
+1) Show me the exact call chain from:
+   - the chat command,
+   - to execute_trading_command / commands.handle,
+   - to the force-trade handler,
+   - to the bracket/entry function,
+   - to the actual Kraken order calls.
+
+2) For each step, give:
+   - File and function name,
+   - What parameters were passed (symbol, amount, etc.),
+   - Whether an exception was raised, and where.
+
+────────────────────────
+STEP 3 – KRAKEN RESPONSE VS ERROR STRING
+────────────────────────
+
+For the entry part of that force trade:
+
+1) Did you successfully call exchange.create_market_buy_order (or create_order) on Kraken for ETH/USD?
+   - If yes, show:
+     - the full Kraken response (order id, filled size, avg price),
+     - and confirm that Kraken returned success.
+
+2) At what point did `EOrder:Insufficient funds` get raised?
+   - Was it:
+     - during entry,
+     - during take-profit placement,
+     - during stop-loss placement,
+     - or during some other follow-up call (e.g., rollback)?
+
+3) Show the exact stack or log line where `EOrder:Insufficient funds` was caught and turned into the final error message returned to the chat.
+
+────────────────────────
+STEP 4 – LOGGING AND WHY THIS TRADE IS INVISIBLE
+────────────────────────
+
+1) For that specific ETH force trade:
+
+   - Did any code path call:
+     - log_order_execution(...)
+     - and/or telemetry_db.log_trade(...)
+
+   - If yes:
+     - Show the inserted row(s) from executed_orders and/or trades tables.
+
+   - If no:
+     - Show the exact condition that prevented logging (e.g., only logging on success path, but this path was treated as failure).
+
+2) Confirm whether:
+   - The entry was executed successfully on Kraken,
+   - But the entire operation was marked as failure because a later step (like TP/SL placement) threw `EOrder:Insufficient funds`.
+
+────────────────────────
+STEP 5 – BOTTOM-LINE DIAGNOSIS (NO FIXES YET)
+────────────────────────
+
+In 4–6 sentences, answer:
+
+1) For my last “force trade test on ETH/USD”, did Kraken execute a real entry order? Yes or no, based on the actual Kraken response.
+
+2) Why did you return `EOrder:Insufficient funds` to the chat even though Kraken filled the entry?
+
+3) Why does this trade NOT appear in:
+   - the “trades in the last 24 hours” count,
+   - the executed_orders log,
+   - or any internal trade telemetry?
+
+4) What exact code path(s) would need to be changed in a future BUILD step so that:
+   - the entry is logged as soon as Kraken confirms the order,
+   - the final message to the user clearly distinguishes “entry succeeded but TP/SL failed” from “nothing executed”,
+   - and force trade tests NEVER silently succeed on Kraken while being reported as failures in chat.

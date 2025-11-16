@@ -34,7 +34,12 @@ class TradeResult:
     def from_command_result(cls, command: str, result_str: str, mode: str) -> 'TradeResult':
         """
         Parse command result string into structured format.
-        Handles both success and error cases.
+        Handles both success and error cases, including PARTIAL SUCCESS.
+        
+        PARTIAL SUCCESS DETECTION:
+        - Entry executed on Kraken but protection (TP/SL) failed
+        - Marked as success=True so LLM doesn't hallucinate "nothing executed"
+        - Error field contains protection failure details
         """
         # Check for error patterns (EXPANDED for Kraken-specific errors)
         has_error = any(pattern in result_str for pattern in [
@@ -45,6 +50,28 @@ class TradeResult:
             'Minimum order size', 'Position size', 'Rate limit',
             'API rate limit', 'Invalid nonce', 'Invalid signature'
         ])
+        
+        # CRITICAL: Detect partial success patterns (entry succeeded, protection failed)
+        has_entry_success = any(pattern in result_str for pattern in [
+            'ENTRY EXECUTED ON KRAKEN',
+            'Entry Order:',
+            '✅ Entry:',
+            'Entry: O',  # Order ID pattern for entry
+            'PARTIAL EXECUTION',
+            'entry succeeded',
+            'entry_status": "success'
+        ])
+        
+        has_protection_failure = any(pattern in result_str for pattern in [
+            'PROTECTION FAILED',
+            'NAKED POSITION',
+            'protection_status": "failed',
+            'protection_status": "not_protected',
+            'NO PROTECTIVE BRACKETS',
+            'TP/SL PLACEMENT FAILED'
+        ])
+        
+        is_partial_success = has_entry_success and has_protection_failure
         
         # Determine command type first (needed for success detection)
         cmd_type = "unknown"
@@ -70,17 +97,18 @@ class TradeResult:
         if is_query_command:
             has_success = not has_error  # Queries succeed if they don't error
         else:
-            # Trading commands need EXPLICIT success keywords AND order IDs
-            # STRICT: Must have both success marker AND order ID (or be an error)
+            # Trading commands: Check for full success OR partial success
             has_success_keyword = any(pattern in result_str for pattern in [
                 'BRACKET OK', 'BUY OK', 'SELL OK', 'LIMIT BUY OK', 'LIMIT SELL OK',
-                'STOP BUY OK', 'STOP SELL OK', 'CANCEL OK', 'OK', 'SUCCESS', 'executed', 'FILLED'
+                'STOP BUY OK', 'STOP SELL OK', 'CANCEL OK', 'OK', 'SUCCESS', 'executed', 'FILLED',
+                'FULLY SUCCESSFUL', 'FULLY PROTECTED'
             ])
             has_order_id = bool(re.search(r'(PAPER-[A-F0-9]+|O[A-Z0-9]{5,}|id=\S+)', result_str))
             
-            # Success ONLY if we have success keyword AND no error
-            # Order ID is bonus verification but not strictly required for all commands
-            has_success = has_success_keyword and not has_error
+            # Success if:
+            # 1. Normal success: success keyword AND no error
+            # 2. Partial success: entry succeeded even if protection failed
+            has_success = (has_success_keyword and not has_error) or is_partial_success
         
         # Extract order IDs
         order_ids = re.findall(r'(PAPER-[A-F0-9]+|O[A-Z0-9]{5,})', result_str)

@@ -168,18 +168,25 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
     """
     DEVELOPER ONLY: Execute a tiny LIVE trade to verify order placement pipeline.
     
+    TWO-STAGE EXECUTION:
+    - Stage 1 (Entry): Place market buy order, log IMMEDIATELY to both databases
+    - Stage 2 (Protection): Attempt to place TP/SL bracket orders
+    
+    CRITICAL: Entry logging happens IMMEDIATELY after Kraken confirms, BEFORE
+    attempting protection. This prevents "silent success" bugs where entry executes
+    but system reports failure due to downstream bracket errors.
+    
     SAFETY:
     - Requires ENABLE_FORCE_TRADE=1 in environment
     - Only works in LIVE mode
     - Hard-coded to $15 position size
     - Logs every step with full Kraken responses
-    - Places bracket orders (SL/TP) for protection
     
     Args:
         symbol: Trading pair (default: ETH/USD)
     
     Returns:
-        Detailed log of execution with Kraken order IDs
+        Truthful execution report distinguishing entry vs protection outcomes
     """
     # Safety check: Must be enabled
     if os.getenv("ENABLE_FORCE_TRADE", "0") != "1":
@@ -196,6 +203,7 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
     
     # Safety check: Must be LIVE mode
     from exchange_manager import get_mode_str, get_exchange, is_live_mode
+    from evaluation_log import record_entry_fill, TradeExecutionResult, EntryStatus, ProtectionStatus
     
     if not is_live_mode():
         return (
@@ -207,6 +215,15 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
     ex = get_exchange()
     test_usd = 15.0  # Tiny test size
     
+    # Initialize execution result tracker
+    result = TradeExecutionResult(
+        entry_status=EntryStatus.NOT_ATTEMPTED,
+        symbol=symbol,
+        side="buy",
+        trading_mode="live",
+        source="force_test"
+    )
+    
     log_lines = [
         "🧪 [FORCE-TRADE-TEST] Starting LIVE trade test...",
         f"Symbol: {symbol}",
@@ -214,68 +231,93 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
         ""
     ]
     
+    # ═════════════════════════════════════════════════════════════════════════
+    # STAGE 1: ENTRY EXECUTION (Separate try-catch)
+    # ═════════════════════════════════════════════════════════════════════════
     try:
         # Step 1: Fetch price
-        log_lines.append("Step 1/5: Fetching market price...")
+        log_lines.append("Step 1/3 (ENTRY): Fetching market price...")
         ticker = ex.fetch_ticker(symbol)
         price = float(ticker['last'])
         log_lines.append(f"✅ Price: ${price:.2f}")
-        log_lines.append(f"   Full ticker: {json.dumps(ticker, indent=2, default=str)}")
         log_lines.append("")
         
         # Step 2: Calculate quantity
-        log_lines.append("Step 2/5: Calculating position size...")
+        log_lines.append("Step 2/3 (ENTRY): Calculating position size...")
         qty = float(test_usd / price)
         base_currency = symbol.split('/')[0]
         log_lines.append(f"✅ Quantity: {qty:.8f} {base_currency}")
         log_lines.append("")
         
-        # Step 3: Place market buy order
-        log_lines.append("Step 3/5: Placing LIVE market buy order...")
+        # Step 3: Place market buy order on Kraken
+        log_lines.append("Step 3/3 (ENTRY): Placing LIVE market buy order on Kraken...")
         entry_order = ex.create_market_buy_order(symbol, qty)
         entry_id = str(entry_order.get('id') or entry_order.get('orderId', 'NO_ID'))
-        log_lines.append(f"✅ Entry Order ID: {entry_id}")
-        log_lines.append(f"   Full response: {json.dumps(entry_order, indent=2, default=str)}")
-        log_lines.append("")
-        
-        # Log the trade to both databases for complete tracking
         actual_filled = entry_order.get("filled") or qty
         actual_price = entry_order.get("average") or entry_order.get("price") or price
         
-        # Log to executed_orders table (forensic log)
-        try:
-            log_order_execution(
-                symbol=symbol,
-                side="buy",
-                quantity=actual_filled,
-                entry_price=actual_price,
-                order_id=entry_id,
-                trading_mode="live",
-                source="force_trade_test",
-                extra_info=f"LIVE force trade test ~${test_usd}"
-            )
-        except Exception as log_err:
-            log_lines.append(f"⚠️  Failed to log to executed_orders: {log_err}")
+        log_lines.append(f"✅ ENTRY EXECUTED ON KRAKEN: {entry_id}")
+        log_lines.append(f"   Filled: {actual_filled:.8f} @ ${actual_price:.2f}")
+        log_lines.append("")
         
-        # Log to telemetry DB (for "trades in last 24h" reporting)
-        try:
-            log_trade(
-                symbol=symbol,
-                side="buy",
-                action="market_buy",
-                quantity=actual_filled,
-                price=actual_price,
-                usd_amount=actual_filled * actual_price,
-                order_id=entry_id,
-                reason="force trade test",
-                source="force_trade_test",
-                mode="live"
-            )
-        except Exception as log_err:
-            log_lines.append(f"⚠️  Failed to log to telemetry DB: {log_err}")
+        # CRITICAL: Log entry IMMEDIATELY to both databases (before attempting protection)
+        log_lines.append("📝 Logging entry to both databases (forensic + telemetry)...")
+        logging_result = record_entry_fill(
+            symbol=symbol,
+            side="buy",
+            quantity=actual_filled,
+            price=actual_price,
+            order_id=entry_id,
+            trading_mode="live",
+            source="force_test",
+            reason="force trade test",
+            extra_info=f"LIVE force trade test ~${test_usd}"
+        )
         
+        if logging_result['forensic_log_success'] and logging_result['telemetry_log_success']:
+            log_lines.append("✅ Entry logged to BOTH databases (executed_orders + trades)")
+        else:
+            log_lines.append(f"⚠️  Partial logging: {logging_result['errors']}")
+        log_lines.append("")
+        
+        # Update result object with entry success
+        result.entry_status = EntryStatus.SUCCESS
+        result.entry_order_id = entry_id
+        result.entry_price = actual_price
+        result.entry_quantity = actual_filled
+        
+    except Exception as e:
+        # Entry failed - nothing executed on Kraken
+        import traceback
+        result.entry_status = EntryStatus.FAILED
+        result.errors.append(f"Entry execution failed: {str(e)}")
+        
+        log_lines.extend([
+            "",
+            "❌ ENTRY FAILED - NO ORDER PLACED ON KRAKEN",
+            f"Error: {str(e)}",
+            "",
+            "Full Traceback:",
+            traceback.format_exc()
+        ])
+        
+        # Return immediately - no point attempting protection
+        result.raw_message = "\n".join(log_lines)
+        return result.to_user_message() + "\n\n" + result.raw_message
+    
+    # ═════════════════════════════════════════════════════════════════════════
+    # STAGE 2: PROTECTION PLACEMENT (Separate try-catch)
+    # ═════════════════════════════════════════════════════════════════════════
+    # If we reach here, entry succeeded. Now try to protect it.
+    
+    log_lines.append("=" * 60)
+    log_lines.append("STAGE 2: PROTECTIVE BRACKET PLACEMENT")
+    log_lines.append("=" * 60)
+    log_lines.append("")
+    
+    try:
         # Step 4: Calculate SL/TP using ATR
-        log_lines.append("Step 4/5: Calculating stop-loss and take-profit...")
+        log_lines.append("Step 1/3 (PROTECTION): Calculating stop-loss and take-profit...")
         from candle_strategy import calculate_atr
         ohlcv = ex.fetch_ohlcv(symbol, '5m', 100)
         atr = calculate_atr(ohlcv, period=14)
@@ -283,58 +325,77 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
         if atr is None or atr <= 0:
             raise ValueError("Invalid ATR calculation - cannot determine stop-loss/take-profit")
         
-        sl_price = price - (2.0 * float(atr))  # 2x ATR stop-loss
-        tp_price = price + (3.0 * float(atr))  # 3x ATR take-profit
+        sl_price = actual_price - (2.0 * float(atr))  # 2x ATR stop-loss
+        tp_price = actual_price + (3.0 * float(atr))  # 3x ATR take-profit
         
         log_lines.append(f"✅ ATR: ${atr:.2f}")
         log_lines.append(f"   Stop-Loss: ${sl_price:.2f} (2x ATR below entry)")
         log_lines.append(f"   Take-Profit: ${tp_price:.2f} (3x ATR above entry)")
         log_lines.append("")
         
-        # Step 5: Place bracket orders
-        log_lines.append("Step 5/5: Placing protective bracket orders...")
-        
-        # Take-profit (limit sell)
-        tp_order = ex.create_limit_sell_order(symbol, qty, tp_price)
+        # Step 5: Place take-profit order
+        log_lines.append("Step 2/3 (PROTECTION): Placing take-profit order...")
+        tp_order = ex.create_limit_sell_order(symbol, actual_filled, tp_price)
         tp_id = str(tp_order.get('id') or tp_order.get('orderId', 'NO_ID'))
         log_lines.append(f"✅ Take-Profit Order ID: {tp_id}")
-        log_lines.append(f"   TP response: {json.dumps(tp_order, indent=2, default=str)}")
-        
-        # Stop-loss (stop-market sell)
-        sl_order = ex.create_order(symbol, 'market', 'sell', qty, None, {'stopPrice': sl_price})
-        sl_id = str(sl_order.get('id') or sl_order.get('orderId', 'NO_ID'))
-        log_lines.append(f"✅ Stop-Loss Order ID: {sl_id}")
-        log_lines.append(f"   SL response: {json.dumps(sl_order, indent=2, default=str)}")
         log_lines.append("")
         
-        # Success summary
+        # Step 6: Place stop-loss order
+        log_lines.append("Step 3/3 (PROTECTION): Placing stop-loss order...")
+        sl_order = ex.create_order(symbol, 'market', 'sell', actual_filled, None, {'stopPrice': sl_price})
+        sl_id = str(sl_order.get('id') or sl_order.get('orderId', 'NO_ID'))
+        log_lines.append(f"✅ Stop-Loss Order ID: {sl_id}")
+        log_lines.append("")
+        
+        # Both TP and SL succeeded
+        result.protection_status = ProtectionStatus.FULLY_PROTECTED
+        result.tp_order_id = tp_id
+        result.sl_order_id = sl_id
+        
         log_lines.extend([
             "=" * 60,
-            "✅ FORCE TRADE TEST SUCCESSFUL",
+            "✅ FULLY SUCCESSFUL - ENTRY + PROTECTION",
             "=" * 60,
-            f"Entry: {entry_id}",
+            f"Entry: {entry_id} ({actual_filled:.8f} @ ${actual_price:.2f})",
             f"Take-Profit: {tp_id}",
             f"Stop-Loss: {sl_id}",
             "",
-            "⚠️  LIVE POSITION OPENED",
-            "This is a real trade with real money.",
-            "Monitor the position and close manually if needed.",
+            "Status: FULLY PROTECTED",
             "",
-            "To close manually:",
-            f"  sell all {symbol}",
+            "⚠️  LIVE POSITION OPENED WITH BRACKETS",
+            "Monitor via: open",
+            f"Manual close: sell all {symbol}",
             ""
         ])
         
-        return "\n".join(log_lines)
-        
     except Exception as e:
+        # Entry succeeded but protection failed
         import traceback
+        result.protection_status = ProtectionStatus.FAILED
+        result.errors.append(f"Protection placement failed: {str(e)}")
+        
         log_lines.extend([
             "",
-            "❌ [FORCE-TRADE-TEST] FAILED",
+            "❌ PROTECTION FAILED - ENTRY SUCCEEDED BUT TP/SL PLACEMENT FAILED",
             f"Error: {str(e)}",
             "",
             "Full Traceback:",
-            traceback.format_exc()
+            traceback.format_exc(),
+            "",
+            "=" * 60,
+            "🚨 CRITICAL: NAKED POSITION EXISTS",
+            "=" * 60,
+            f"✅ Entry Order: {result.entry_order_id}",
+            f"   Filled: {result.entry_quantity:.8f} @ ${result.entry_price:.2f}",
+            f"   LOGGED TO: executed_orders + trades tables",
+            "",
+            "❌ NO PROTECTIVE BRACKETS PLACED",
+            "",
+            "⚠️  YOU MUST MANUALLY CLOSE OR PROTECT THIS POSITION:",
+            f"   sell all {symbol}",
+            ""
         ])
-        return "\n".join(log_lines)
+    
+    # Return truthful message based on staged execution
+    result.raw_message = "\n".join(log_lines)
+    return result.to_user_message() + "\n\n" + result.raw_message
