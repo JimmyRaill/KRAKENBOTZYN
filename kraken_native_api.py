@@ -43,8 +43,9 @@ class KrakenNativeAPI:
         Returns:
             Base64-encoded signature string
         """
-        # URL-encode the POST data
-        postdata = urllib.parse.urlencode(data)
+        # URL-encode the POST data, preserving brackets in parameter names
+        # CRITICAL: safe='[]' prevents encoding brackets (close[ordertype] stays as-is)
+        postdata = urllib.parse.urlencode(data, safe='[]')
         
         # Combine nonce + POST data and encode
         encoded = (str(data['nonce']) + postdata).encode()
@@ -88,8 +89,11 @@ class KrakenNativeAPI:
             'Content-Type': 'application/x-www-form-urlencoded'
         }
         
-        # URL-encode the data ourselves to ensure proper encoding
-        encoded_data = urllib.parse.urlencode(str_data)
+        # URL-encode the data, preserving brackets in parameter names
+        # CRITICAL: safe='[]' prevents encoding brackets (close[ordertype] stays as-is)
+        encoded_data = urllib.parse.urlencode(str_data, safe='[]')
+        
+        print(f"[KRAKEN-API-DEBUG] Encoded payload: {encoded_data}")
         
         # Make request with pre-encoded data
         url = self.api_url + endpoint

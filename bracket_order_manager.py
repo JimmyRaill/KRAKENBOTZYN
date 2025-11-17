@@ -30,7 +30,7 @@ def env_bool(key: str, default: bool) -> bool:
 class BracketConfig:
     """Configuration for bracket orders."""
     risk_per_trade_pct: float = 0.25      # % of equity max loss per position
-    min_rr: float = 1.5                    # minimum reward:risk ratio
+    min_rr: float = 1.0                    # minimum reward:risk ratio (TEMPORARILY LOWERED FOR OCO TESTING)
     atr_mult_stop: float = 2.0             # ATR multiplier for stop
     atr_mult_tp: float = 3.0               # ATR multiplier for TP
     max_slippage_bps: int = 10             # max slippage in basis points
@@ -44,7 +44,7 @@ class BracketConfig:
         """Load configuration from environment variables."""
         return cls(
             risk_per_trade_pct=env_float("RISK_PER_TRADE", 0.25),
-            min_rr=env_float("MIN_RR", 1.5),
+            min_rr=env_float("MIN_RR", 1.0),
             atr_mult_stop=env_float("ATR_MULT_STOP", 2.0),
             atr_mult_tp=env_float("ATR_MULT_TP", 3.0),
             max_slippage_bps=int(env_float("MAX_SLIPPAGE_BPS", 10)),
