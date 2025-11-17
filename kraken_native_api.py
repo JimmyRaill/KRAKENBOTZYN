@@ -192,73 +192,66 @@ class KrakenNativeAPI:
             print(f"[KRAKEN-NATIVE-EXCEPTION] {error_msg}")
             return False, f"Exception: {error_msg}", None
     
-    def place_oco_bracket_order(
+    def place_entry_with_stop_loss(
         self,
         symbol: str,
         side: str,
         quantity: float,
-        entry_type: str = 'market',
-        entry_price: Optional[float] = None,
-        stop_loss_price: Optional[float] = None,
-        take_profit_price: Optional[float] = None,
+        entry_price: float,
+        stop_loss_price: float,
         validate: bool = False
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
-        Place OCO bracket order with BOTH take-profit and stop-loss.
+        Place LIMIT entry order with immediate stop-loss protection.
         
-        Uses Kraken's native 'stop-loss-profit' ordertype which creates
-        true exchange-level OCO behavior:
-        - When TP fills -> SL auto-cancels
-        - When SL fills -> TP auto-cancels
+        IMPORTANT: Kraken REST API does NOT support stop-loss-profit.
+        This function places a LIMIT entry with SL protection only.
+        Take-profit must be placed as separate order after entry fills.
         
-        CRITICAL: Works on SPOT accounts (no margin/leverage required).
+        Sequential bracket approach:
+        1. Place LIMIT entry + SL (this function)
+        2. Monitor fill (caller's responsibility)
+        3. Place TP limit order (separate call)
         
         Args:
-            symbol: Trading pair in CCXT format (e.g., 'BTC/USD', 'AR/USD')
+            symbol: Trading pair in CCXT format (e.g., 'BTC/USD', 'ASTER/USD')
             side: 'buy' or 'sell'
             quantity: Order quantity
-            entry_type: 'market' or 'limit'
-            entry_price: Required if entry_type='limit'
+            entry_price: LIMIT entry price (slightly aggressive for quick fill)
             stop_loss_price: Stop loss trigger price (absolute)
-            take_profit_price: Take profit trigger price (absolute)
             validate: If True, validates without executing
             
         Returns:
-            (success, message, result_dict)
+            (success, message, result_dict) - result includes entry order ID
         """
-        # Normalize symbol to Kraken format (BTC/USD -> XBTUSD)
+        # Normalize symbol to Kraken format (BTC/USD -> xbtusd)
         kraken_pair = self._normalize_symbol_to_kraken_pair(symbol)
         
-        if not stop_loss_price or not take_profit_price:
-            return False, "Both stop_loss_price and take_profit_price are required for OCO brackets", None
+        if not stop_loss_price:
+            return False, "stop_loss_price is required", None
         
-        # Build order parameters
+        if not entry_price:
+            return False, "entry_price is required for limit orders", None
+        
+        # Build order parameters - LIMIT order with conditional SL
         data = {
             'nonce': str(int(time.time() * 1000)),
             'pair': kraken_pair,
             'type': side,
-            'ordertype': entry_type,
+            'ordertype': 'limit',
+            'price': str(entry_price),
             'volume': str(quantity),
             'validate': 'true' if validate else 'false'
         }
         
-        # Add entry price for limit orders
-        if entry_type == 'limit':
-            if entry_price is None:
-                return False, "entry_price required for limit orders", None
-            data['price'] = str(entry_price)
+        # Add stop-loss protection (ONLY ordertype supported for conditional close)
+        data['close[ordertype]'] = 'stop-loss'
+        data['close[price]'] = str(stop_loss_price)
         
-        # Add OCO bracket using stop-loss-profit ordertype
-        # CRITICAL: This creates TRUE OCO behavior at exchange level
-        data['close[ordertype]'] = 'stop-loss-profit'
-        data['close[price]'] = str(stop_loss_price)   # SL trigger
-        data['close[price2]'] = str(take_profit_price)  # TP trigger
-        
-        print(f"[KRAKEN-OCO] Placing {side} {entry_type} order: {quantity} {symbol}")
-        print(f"[KRAKEN-OCO] Pair: {kraken_pair}")
-        print(f"[KRAKEN-OCO] Stop-Loss: ${stop_loss_price:.4f}")
-        print(f"[KRAKEN-OCO] Take-Profit: ${take_profit_price:.4f}")
-        print(f"[KRAKEN-OCO-PAYLOAD] {data}")
+        print(f"[KRAKEN-BRACKET] Placing {side} LIMIT entry: {quantity} {symbol} @ ${entry_price:.4f}")
+        print(f"[KRAKEN-BRACKET] Pair: {kraken_pair}")
+        print(f"[KRAKEN-BRACKET] Stop-Loss: ${stop_loss_price:.4f}")
+        print(f"[KRAKEN-BRACKET-PAYLOAD] {data}")
         
         try:
             response = self._make_request('/0/private/AddOrder', data)
@@ -266,8 +259,8 @@ class KrakenNativeAPI:
             # Check for errors
             if response.get('error') and len(response['error']) > 0:
                 error_msg = ', '.join(response['error'])
-                print(f"[KRAKEN-OCO-ERROR] {error_msg}")
-                return False, f"Kraken OCO error: {error_msg}", response
+                print(f"[KRAKEN-BRACKET-ERROR] {error_msg}")
+                return False, f"Kraken API error: {error_msg}", response
             
             # Extract result
             result = response.get('result', {})
@@ -279,40 +272,105 @@ class KrakenNativeAPI:
                 order_descr = descr.get('order', 'no description')
                 close_descr = descr.get('close', '')
                 
-                print(f"[KRAKEN-OCO-SUCCESS] ✅ Order placed: {order_id}")
-                print(f"[KRAKEN-OCO-SUCCESS] Entry: {order_descr}")
+                print(f"[KRAKEN-BRACKET-SUCCESS] ✅ Entry order placed: {order_id}")
+                print(f"[KRAKEN-BRACKET-SUCCESS] Entry: {order_descr}")
                 if close_descr:
-                    print(f"[KRAKEN-OCO-SUCCESS] OCO Bracket: {close_descr}")
+                    print(f"[KRAKEN-BRACKET-SUCCESS] SL protection: {close_descr}")
                 
-                # For market orders, query fill details after brief wait
+                # Monitor fill status for limit orders
+                print(f"[KRAKEN-BRACKET] Monitoring entry fill...")
+                time.sleep(2)  # Wait for potential fill
+                
                 fill_data = None
-                if entry_type == 'market' and not validate:
-                    print(f"[KRAKEN-OCO] Querying order details for fill data...")
-                    time.sleep(1)  # Brief wait for market order to fill
+                order_query = self.query_orders([order_id])
+                if order_query.get('result'):
+                    order_details = order_query['result'].get(order_id, {})
+                    status = order_details.get('status', '')
+                    vol_exec = float(order_details.get('vol_exec', 0))
+                    avg_price = float(order_details.get('price', 0)) if order_details.get('price') else None
                     
-                    order_query = self.query_orders([order_id])
-                    if order_query.get('result'):
-                        order_details = order_query['result'].get(order_id, {})
-                        fill_data = {
-                            'status': order_details.get('status'),
-                            'filled': float(order_details.get('vol_exec', 0)),
-                            'average': float(order_details.get('price', 0)) if order_details.get('price') else None,
-                            'remaining': float(order_details.get('vol', 0)) - float(order_details.get('vol_exec', 0))
-                        }
-                        print(f"[KRAKEN-OCO] Fill: {fill_data['filled']:.8f} @ ${fill_data['average']:.4f}" if fill_data['average'] else "[KRAKEN-OCO] Fill data retrieved")
+                    fill_data = {
+                        'status': status,
+                        'filled': vol_exec,
+                        'average': avg_price,
+                        'remaining': float(order_details.get('vol', 0)) - vol_exec
+                    }
+                    
+                    if status == 'closed' and vol_exec > 0:
+                        print(f"[KRAKEN-BRACKET] ✅ FILLED: {vol_exec:.8f} @ ${avg_price:.4f}")
+                    else:
+                        print(f"[KRAKEN-BRACKET] Status: {status}, Filled: {vol_exec:.8f}")
                 
-                # Include fill data in result if available
+                # Include fill data in result
                 enriched_result = result.copy()
                 if fill_data:
                     enriched_result['fill_data'] = fill_data
                 
-                return True, f"OCO bracket order {order_id} placed successfully", enriched_result
+                return True, f"Entry order {order_id} placed with SL protection", enriched_result
             else:
                 return False, "No transaction ID returned", response
                 
         except Exception as e:
             error_msg = str(e)
-            print(f"[KRAKEN-OCO-EXCEPTION] {error_msg}")
+            print(f"[KRAKEN-BRACKET-EXCEPTION] {error_msg}")
+            return False, f"Exception: {error_msg}", None
+    
+    def place_take_profit_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        take_profit_price: float,
+        validate: bool = False
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Place take-profit LIMIT order after entry fills.
+        
+        Args:
+            symbol: Trading pair in CCXT format
+            side: 'sell' for closing long, 'buy' for closing short
+            quantity: Quantity to close (should match entry fill)
+            take_profit_price: TP limit price
+            validate: If True, validates without executing
+            
+        Returns:
+            (success, message, result_dict)
+        """
+        kraken_pair = self._normalize_symbol_to_kraken_pair(symbol)
+        
+        data = {
+            'nonce': str(int(time.time() * 1000)),
+            'pair': kraken_pair,
+            'type': side,
+            'ordertype': 'limit',
+            'price': str(take_profit_price),
+            'volume': str(quantity),
+            'validate': 'true' if validate else 'false'
+        }
+        
+        print(f"[KRAKEN-TP] Placing TP limit: {quantity} {symbol} @ ${take_profit_price:.4f}")
+        
+        try:
+            response = self._make_request('/0/private/AddOrder', data)
+            
+            if response.get('error') and len(response['error']) > 0:
+                error_msg = ', '.join(response['error'])
+                print(f"[KRAKEN-TP-ERROR] {error_msg}")
+                return False, f"Kraken API error: {error_msg}", response
+            
+            result = response.get('result', {})
+            tx_ids = result.get('txid', [])
+            
+            if tx_ids:
+                order_id = tx_ids[0]
+                print(f"[KRAKEN-TP-SUCCESS] ✅ TP order placed: {order_id}")
+                return True, f"TP order {order_id} placed successfully", result
+            else:
+                return False, "No transaction ID returned", response
+                
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[KRAKEN-TP-EXCEPTION] {error_msg}")
             return False, f"Exception: {error_msg}", None
     
     def query_orders(self, order_ids: list) -> Dict[str, Any]:

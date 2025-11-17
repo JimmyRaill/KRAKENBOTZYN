@@ -30,7 +30,7 @@ def env_bool(key: str, default: bool) -> bool:
 class BracketConfig:
     """Configuration for bracket orders."""
     risk_per_trade_pct: float = 0.25      # % of equity max loss per position
-    min_rr: float = 1.0                    # minimum reward:risk ratio (TEMPORARILY LOWERED FOR OCO TESTING)
+    min_rr: float = 1.5                    # minimum reward:risk ratio
     atr_mult_stop: float = 2.0             # ATR multiplier for stop
     atr_mult_tp: float = 3.0               # ATR multiplier for TP
     max_slippage_bps: int = 10             # max slippage in basis points
@@ -44,7 +44,7 @@ class BracketConfig:
         """Load configuration from environment variables."""
         return cls(
             risk_per_trade_pct=env_float("RISK_PER_TRADE", 0.25),
-            min_rr=env_float("MIN_RR", 1.0),
+            min_rr=env_float("MIN_RR", 1.5),
             atr_mult_stop=env_float("ATR_MULT_STOP", 2.0),
             atr_mult_tp=env_float("ATR_MULT_TP", 3.0),
             max_slippage_bps=int(env_float("MAX_SLIPPAGE_BPS", 10)),
@@ -366,17 +366,20 @@ class BracketOrderManager:
         exchange
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
-        Place entry order WITH brackets attached using Kraken's NATIVE API.
+        Place entry order with sequential bracket protection.
         
-        CRITICAL: This is an ATOMIC operation - entry + TP + SL in ONE order using
-        Kraken's 'stop-loss-profit' ordertype which CCXT doesn't support properly.
+        IMPORTANT: Kraken REST API does NOT support stop-loss-profit ordertype.
+        Sequential approach:
+        1. Place LIMIT entry + SL protection (atomic)
+        2. Monitor entry fill (2 second wait)
+        3. If filled, place TP limit order separately
         
         Args:
             bracket: Validated BracketOrder with calculated prices and quantity
             exchange: CCXT exchange instance (used for symbol precision only)
             
         Returns:
-            (success, message, order_dict) - order_dict contains the Kraken API response
+            (success, message, order_dict) - order_dict contains entry order result
         """
         # Final validation
         is_valid, error = bracket.validate(self.config)
@@ -391,48 +394,102 @@ class BracketOrderManager:
         except Exception as e:
             return False, f"Precision error: {e}", None
         
-        # OCO BRACKET SOLUTION: Entry + TP + SL in ONE atomic request
-        # Uses Kraken's native 'stop-loss-profit' ordertype for TRUE exchange-level OCO
-        # Works with SPOT accounts (no margin/leverage required)
-        # TRUE OCO: When TP fills -> SL auto-cancels; when SL fills -> TP auto-cancels
+        # SEQUENTIAL BRACKET SOLUTION: Entry+SL first, then TP after fill
+        # Required because Kraken REST API doesn't support stop-loss-profit ordertype
         try:
             from kraken_native_api import get_kraken_native_api
             
             native_api = get_kraken_native_api()
             
-            print(f"[BRACKET-OCO] Using Kraken native OCO bracket orders (SPOT-compatible)")
-            print(f"[BRACKET-OCO] Entry: market {bracket.side} {qty_p:.6f} {bracket.symbol}")
-            print(f"[BRACKET-OCO] Take-Profit: ${bracket.take_profit_price:.4f}")
-            print(f"[BRACKET-OCO] Stop-Loss: ${bracket.stop_price:.4f}")
+            # Calculate aggressive limit entry price for quick fill
+            # Buy: slightly above current price | Sell: slightly below current price
+            ticker = exchange.fetch_ticker(bracket.symbol)
+            current_price = float(ticker['last'])
             
-            # Place OCO bracket order with native Kraken API
-            # CRITICAL: Entry + TP + SL attached in ONE atomic request
-            success, message, result = native_api.place_oco_bracket_order(
+            if bracket.side.lower() == 'buy':
+                raw_entry_price = current_price * 1.001  # 0.1% above market (aggressive fill)
+            else:
+                raw_entry_price = current_price * 0.999  # 0.1% below market
+            
+            # Apply exchange price precision (critical for Kraken)
+            entry_limit_price = float(exchange.price_to_precision(bracket.symbol, raw_entry_price))
+            stop_price_p = float(exchange.price_to_precision(bracket.symbol, bracket.stop_price))
+            tp_price_p = float(exchange.price_to_precision(bracket.symbol, bracket.take_profit_price))
+            
+            print(f"[BRACKET-SEQ] Using sequential bracket approach (Kraken REST limitation)")
+            print(f"[BRACKET-SEQ] Step 1: LIMIT entry + SL protection")
+            print(f"[BRACKET-SEQ]   Entry: {bracket.side} {qty_p:.6f} {bracket.symbol} @ ${entry_limit_price:.5f}")
+            print(f"[BRACKET-SEQ]   Stop-Loss: ${stop_price_p:.5f}")
+            print(f"[BRACKET-SEQ] Step 2: TP limit order after fill")
+            print(f"[BRACKET-SEQ]   Take-Profit: ${tp_price_p:.5f}")
+            
+            # Step 1: Place LIMIT entry with SL protection (atomic)
+            success, message, result = native_api.place_entry_with_stop_loss(
                 symbol=bracket.symbol,
                 side=bracket.side,
                 quantity=qty_p,
-                entry_type='market',
-                entry_price=None,  # Market order doesn't need entry price
-                stop_loss_price=bracket.stop_price,
-                take_profit_price=bracket.take_profit_price,
-                validate=False  # LIVE order
+                entry_price=entry_limit_price,
+                stop_loss_price=stop_price_p,
+                validate=False
             )
             
-            if success:
-                print(f"[BRACKET-COMPLETE] 🎯 OCO BRACKET PLACED SUCCESSFULLY!")
-                print(f"[BRACKET-COMPLETE] Entry + TP/SL protection in ONE order (true OCO)")
-                print(f"[BRACKET-COMPLETE] Order ID: {result.get('txid', ['unknown'])[0] if result else 'unknown'}")
-                return True, message, result
-            else:
-                print(f"[BRACKET-FAILED] ❌ OCO bracket order failed: {message}")
+            if not success:
+                print(f"[BRACKET-FAILED] ❌ Entry+SL placement failed: {message}")
                 return False, message, result
+            
+            # Extract entry order ID
+            entry_order_id = result.get('txid', ['unknown'])[0] if result and 'txid' in result else 'unknown'
+            print(f"[BRACKET-SEQ] ✅ Entry+SL placed: {entry_order_id}")
+            
+            # Step 2: Check if entry filled (fill_data already queried in place_entry_with_stop_loss)
+            fill_data = result.get('fill_data') if result else None
+            
+            if fill_data and fill_data.get('status') == 'closed' and fill_data.get('filled', 0) > 0:
+                filled_qty = fill_data['filled']
+                fill_price = fill_data.get('average', entry_limit_price)
+                
+                print(f"[BRACKET-SEQ] ✅ Entry FILLED: {filled_qty:.8f} @ ${fill_price:.4f}")
+                print(f"[BRACKET-SEQ] Step 2: Placing TP limit order...")
+                
+                # Determine TP order side (opposite of entry)
+                tp_side = 'sell' if bracket.side.lower() == 'buy' else 'buy'
+                
+                # Step 3: Place TP limit order
+                tp_success, tp_message, tp_result = native_api.place_take_profit_order(
+                    symbol=bracket.symbol,
+                    side=tp_side,
+                    quantity=filled_qty,  # Use actual filled quantity
+                    take_profit_price=tp_price_p,  # Use precision-corrected TP price
+                    validate=False
+                )
+                
+                if tp_success:
+                    tp_order_id = tp_result.get('txid', ['unknown'])[0] if tp_result and 'txid' in tp_result else 'unknown'
+                    print(f"[BRACKET-COMPLETE] 🎯 SEQUENTIAL BRACKETS COMPLETE!")
+                    print(f"[BRACKET-COMPLETE] Entry filled + SL active + TP placed")
+                    print(f"[BRACKET-COMPLETE] Entry ID: {entry_order_id}")
+                    print(f"[BRACKET-COMPLETE] TP ID: {tp_order_id}")
+                    
+                    # Include TP order ID in result
+                    result['tp_order_id'] = tp_order_id
+                    return True, f"Brackets complete: Entry filled, SL active, TP placed", result
+                else:
+                    print(f"[BRACKET-WARNING] ⚠️ TP placement failed: {tp_message}")
+                    print(f"[BRACKET-WARNING] Entry is FILLED with SL protection, but NO TP")
+                    return True, f"Entry filled with SL, but TP failed: {tp_message}", result
+            else:
+                # Entry not filled yet (limit order pending)
+                status = fill_data.get('status', 'unknown') if fill_data else 'unknown'
+                print(f"[BRACKET-PENDING] Entry order placed but not filled yet (status: {status})")
+                print(f"[BRACKET-PENDING] SL protection is active. TP will need manual placement after fill.")
+                return True, f"Entry+SL placed (status: {status}), pending fill for TP", result
             
         except Exception as e:
             error_msg = str(e)
-            print(f"[BRACKET-ERROR] Failed to place OCO bracket orders: {error_msg}")
+            print(f"[BRACKET-ERROR] Failed to place sequential bracket orders: {error_msg}")
             import traceback
             traceback.print_exc()
-            return False, f"Kraken native OCO API failed: {error_msg}", None
+            return False, f"Kraken native bracket API failed: {error_msg}", None
     
     def place_bracket_orders(
         self,
