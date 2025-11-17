@@ -1,0 +1,87 @@
+- Question 1 – Time + Mode + Universe
+  For this response you are NOT allowed to guess. Use ONLY your real config, DBs, and (if available) Kraken. Answer all of this:
+  1) What is the current UTC time (exact ISO timestamp)?
+  2) What trading mode are you in right now? (live / paper)
+  3) What execution style are you using right now? (market-only / brackets)
+  4) Are Kraken API credentials currently loaded and passing your health check? (yes/no – and show the last health-check result)
+  5) Which symbols did you evaluate in your most recent full loop? List the exact symbols.
+
+- Question 2 – 24h Trades (Strict, No Guessing)
+  For this response you are NOT allowed to guess. Use ONLY:
+  – Kraken trade history (if keys exist)
+  – Your local executed_orders table
+  – Your local trades/telemetry DB
+  Answer ALL of this with a REAL 24-hour cutoff:
+  1) How many trades exist in the last 24 hours? (single integer)
+  2) For each trade in that window, list:
+     – symbol
+     – side
+     – amount
+     – price
+     – timestamp
+     – trade_id (or “none” if not available)
+     – source exactly as stored (autopilot / command / force_test / autopilot_test / unknown)
+  3) Do the counts from:
+     – Kraken history
+     – executed_orders
+     – trades/telemetry
+     all agree? If not, clearly state the mismatch.
+
+- Question 3 – Today’s Signals vs Executions
+  For this response you are NOT allowed to guess. Use evaluation_log + executed_orders + any internal in-memory state.
+  1) Since 00:00 UTC today:
+     – How many evaluations have you logged?
+     – How many non-HOLD signals (long / short / exit) did you generate?
+     – How many actual market orders did you send to Kraken (or paper exchange), broken down by:
+       • autopilot
+       • command
+       • force_test
+  2) For the last 5 non-HOLD signals:
+     – symbol
+     – action (long / short / exit / sell)
+     – did it result in a market order? (yes/no)
+     – if NO, state the exact reason (risk limit, daily limit, execution error, etc.).
+
+- Question 4 – Single-Symbol Autopilot Sanity
+  For this response you are NOT allowed to guess. Check ONLY your real state and logs.
+  1) Pick one currently-tradable symbol with decent volume (for example AR/USD or 1INCH/USD) that you are actively evaluating.
+  2) For that symbol:
+     – Are you currently in a position? (yes/no)
+     – If yes, show:
+       • side (long/short)
+       • size
+       • average entry price
+       • how you would exit (what signal / logic would close it)
+     – If no, show:
+       • the last 3 non-HOLD decisions you’ve made on that symbol
+       • whether any of those decisions actually produced a market order.
+
+- Question 5 – Fee Awareness Check
+  For this response you are NOT allowed to guess or use hard-coded assumptions if live fee fetching fails. Explain exactly what you did.
+  1) Can you currently fetch real Kraken trading fee info? (yes/no)
+  2) If yes:
+     – Show the taker fee you are using for a common symbol (e.g., ETH/USD), and where you got it from (which function/endpoint).
+  3) If no:
+     – Say explicitly: “I cannot fetch real live fees right now; I am using fallback values only,” and state those fallback values.
+
+- Question 6 – Closed-Trade PnL Reality Check
+  For this response you are NOT allowed to guess. Use ONLY trades where you have both entry AND exit recorded.
+  1) How many fully closed live trades (entry + exit) do you have in your DB with enough data to compute fee-adjusted PnL?
+  2) If the number is > 0:
+     – For the last 3 closed trades, show:
+       • symbol
+       • entry price and timestamp
+       • exit price and timestamp
+       • total fees for the round trip (if known)
+       • net % return AFTER fees.
+  3) If the number is 0:
+     – Say exactly: “I currently have 0 fully closed, fee-aware live trades. I cannot estimate edge or profitability yet.”
+
+- Question 7 – Final Honesty Check
+  Answer this plainly and with NO guessing:
+  1) In the last 7 days, can you confirm at least one REAL autopilot trade that:
+     – was actually sent to Kraken (or real exchange),
+     – is visible in Kraken’s trade history,
+     – and is logged in your local executed_orders table with source='autopilot'?
+  2) If yes, list that trade with full details and explicitly say: “This trade is confirmed both in Kraken and in executed_orders as an autopilot trade.”
+  3) If no, say exactly: “I cannot confirm any fully verified LIVE autopilot trades in the last 7 days.”

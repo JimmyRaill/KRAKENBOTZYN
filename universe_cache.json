@@ -1,155 +1,115 @@
 {
-  "last_scan": "2025-11-16T20:33:07.062637",
+  "last_scan": "2025-11-17T20:51:21.025055",
   "assets": [
     {
       "symbol": "ADA/USD",
       "base": "ADA",
       "quote": "USD",
-      "volume_24h": 3330575.3042731103,
-      "price": 0.48489,
-      "volatility": 0.09059532931338907,
-      "liquidity_score": 10.705866771876071,
+      "volume_24h": 6856163.595606932,
+      "price": 0.461241,
+      "volatility": 0.09030987137877025,
+      "liquidity_score": 11.211623243390967,
       "rank": 1
     },
     {
       "symbol": "ASTER/USD",
       "base": "ASTER",
       "quote": "USD",
-      "volume_24h": 3339488.295164716,
-      "price": 1.2539,
-      "volatility": 0.11750967749851232,
-      "liquidity_score": 10.679304548997656,
+      "volume_24h": 3652728.468008778,
+      "price": 1.16691,
+      "volatility": 0.12581419831336277,
+      "liquidity_score": 10.734910485105758,
       "rank": 2
     },
     {
-      "symbol": "ALGO/USD",
-      "base": "ALGO",
+      "symbol": "AERO/USD",
+      "base": "AERO",
       "quote": "USD",
-      "volume_24h": 797033.6850458914,
-      "price": 0.15884,
-      "volatility": 0.08963059101563255,
-      "liquidity_score": 9.706067324991412,
+      "volume_24h": 1841137.869722378,
+      "price": 0.7732,
+      "volatility": 0.2097675991881889,
+      "liquidity_score": 10.207309221260846,
       "rank": 3
     },
     {
       "symbol": "AAVE/USD",
       "base": "AAVE",
       "quote": "USD",
-      "volume_24h": 723228.487194607,
-      "price": 173.51,
-      "volatility": 0.11238545328799493,
-      "liquidity_score": 9.613159559839547,
+      "volume_24h": 1427276.680008721,
+      "price": 166.53,
+      "volatility": 0.11188559233956459,
+      "liquidity_score": 10.089496287547242,
       "rank": 4
     },
     {
-      "symbol": "AERO/USD",
-      "base": "AERO",
+      "symbol": "ALGO/USD",
+      "base": "ALGO",
       "quote": "USD",
-      "volume_24h": 461158.26512710704,
-      "price": 0.8293,
-      "volatility": 0.20219091170495967,
-      "liquidity_score": 9.241326868020158,
+      "volume_24h": 1164949.59840094,
+      "price": 0.15188,
+      "volatility": 0.09145884402666071,
+      "liquidity_score": 9.969475581620639,
       "rank": 5
-    },
-    {
-      "symbol": "0G/USD",
-      "base": "0G",
-      "quote": "USD",
-      "volume_24h": 412620.4235568146,
-      "price": 1.232,
-      "volatility": 0.23776223776223773,
-      "liquidity_score": 9.150286019096596,
-      "rank": 6
-    },
-    {
-      "symbol": "ALCX/USD",
-      "base": "ALCX",
-      "quote": "USD",
-      "volume_24h": 300361.22378480324,
-      "price": 12.57,
-      "volatility": 0.323174836301328,
-      "liquidity_score": 8.906203538436747,
-      "rank": 7
-    },
-    {
-      "symbol": "ARB/USD",
-      "base": "ARB",
-      "quote": "USD",
-      "volume_24h": 243052.07751878188,
-      "price": 0.2328,
-      "volatility": 0.10841263547449119,
-      "liquidity_score": 8.8537194815549,
-      "rank": 8
-    },
-    {
-      "symbol": "AKT/USD",
-      "base": "AKT",
-      "quote": "USD",
-      "volume_24h": 168907.1281999929,
-      "price": 0.5529,
-      "volatility": 0.12016361283859932,
-      "liquidity_score": 8.587991887590679,
-      "rank": 9
     },
     {
       "symbol": "APT/USD",
       "base": "APT",
       "quote": "USD",
-      "volume_24h": 138478.32467211987,
-      "price": 2.8199,
-      "volatility": 0.09918791446505197,
-      "liquidity_score": 8.469645832215623,
-      "rank": 10
+      "volume_24h": 265556.03587489494,
+      "price": 2.706,
+      "volatility": 0.09808687247711638,
+      "liquidity_score": 8.926657849923558,
+      "rank": 6
     },
     {
-      "symbol": "AB/USD",
-      "base": "AB",
+      "symbol": "ARB/USD",
+      "base": "ARB",
       "quote": "USD",
-      "volume_24h": 128839.12063169412,
-      "price": 0.006902,
-      "volatility": 0.08407819361166216,
-      "liquidity_score": 8.437660519720795,
-      "rank": 11
-    },
-    {
-      "symbol": "AR/USD",
-      "base": "AR",
-      "quote": "USD",
-      "volume_24h": 137850.263405261,
-      "price": 4.33,
-      "volatility": 0.2526203588559247,
-      "liquidity_score": 8.378198712764998,
-      "rank": 12
-    },
-    {
-      "symbol": "1INCH/USD",
-      "base": "1INCH",
-      "quote": "USD",
-      "volume_24h": 124000.87773775576,
-      "price": 0.1831,
-      "volatility": 0.15086333655421585,
-      "liquidity_score": 8.348607565845528,
-      "rank": 13
-    },
-    {
-      "symbol": "ALLO/USD",
-      "base": "ALLO",
-      "quote": "USD",
-      "volume_24h": 111789.23829587144,
-      "price": 0.1981,
-      "volatility": 0.5084300858152447,
-      "liquidity_score": 8.189376156291871,
-      "rank": 14
+      "volume_24h": 239830.50756541954,
+      "price": 0.2249,
+      "volatility": 0.10671409515340158,
+      "liquidity_score": 8.846090426569786,
+      "rank": 7
     },
     {
       "symbol": "AI16Z/USD",
       "base": "AI16Z",
       "quote": "USD",
-      "volume_24h": 108456.54045549654,
-      "price": 0.0256,
-      "volatility": 0.5646033653846153,
-      "liquidity_score": 8.163522422493367,
-      "rank": 15
+      "volume_24h": 258653.53933441432,
+      "price": 0.0254,
+      "volatility": 0.5578437310720775,
+      "liquidity_score": 8.772437506211144,
+      "rank": 8
+    },
+    {
+      "symbol": "1INCH/USD",
+      "base": "1INCH",
+      "quote": "USD",
+      "volume_24h": 152228.76833883428,
+      "price": 0.1828,
+      "volatility": 0.1532991078942939,
+      "liquidity_score": 8.49062392902101,
+      "rank": 9
+    },
+    {
+      "symbol": "ALCX/USD",
+      "base": "ALCX",
+      "quote": "USD",
+      "volume_24h": 163031.39495074766,
+      "price": 11.4,
+      "volatility": 0.36801619433198374,
+      "liquidity_score": 8.470470121328539,
+      "rank": 10
+    },
+    {
+      "symbol": "AKT/USD",
+      "base": "AKT",
+      "quote": "USD",
+      "volume_24h": 120413.67206208382,
+      "price": 0.5269,
+      "volatility": 0.12146517365724051,
+      "liquidity_score": 8.349969805007825,
+      "rank": 11
     }
   ]
 }
