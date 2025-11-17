@@ -14,52 +14,43 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 The bot provides a chat interface on port 5000 for real-time interaction and a dashboard for displaying accurate trading status, open positions, balances, and P&L directly from Kraken data.
 
 ### Technical Implementations
-The system is designed with a strong emphasis on mode isolation (LIVE vs. PAPER), ensuring no cross-contamination of data.
+The system is designed with a strong emphasis on mode isolation (LIVE vs. PAPER), ensuring no cross-contamination of data. Key architectural components include:
 
-**CRITICAL FIX (Nov 15, 2025) - Invisible Trades Bug Resolved**: Fixed "dual database syndrome" where manual/command trades weren't appearing in "trades in last 24 hours" reporting. Root cause: `commands.py` only logged to `executed_orders` table (evaluation_log.db) but NOT to `trades` table (trading_memory.db) which powers trade count statistics. Solution: Added `log_trade()` calls to ALL manual trade execution paths (buy, sell, bracket, force_trade_test) ensuring complete dual-database logging for accurate reporting.
-
-**TIMESTAMP FILTERING FIX (Nov 15, 2025) - End of Fake Statistics**: Replaced evaluation-counting with real timestamp-based queries. Changes: (1) **telemetry_db.py**: Changed `log_trade()` source default from "autopilot" to "unknown", forcing explicit source attribution. Added `get_trading_stats_24h()` function with proper `timestamp > cutoff` WHERE clauses and source breakdown (autopilot/command/force_test/unknown). (2) **commands_addon.py**: Updated `_debug_status()` to use real timestamp-filtered stats instead of counting evaluations. Added `_trades_24h_status()` command for full transparency. (3) **llm_agent.py**: Expanded anti-hallucination rules to enforce timestamp verification, source field validation, and prohibition on time-window claims without data proof. (4) **Verification**: All `log_trade()` calls now use explicit source parameters (autopilot.py→"autopilot", commands.py→"command", commands_addon.py→"force_trade_test").
-
-**TP/SL FILL LOGGING SYSTEM (Nov 16, 2025) - Complete Bracket Order Transparency**: Fixed three critical bugs preventing TP/SL fills from appearing in logs and statistics. (1) **"[Trade not available]" bug fixed (account_state.py)**: Added robust field extraction with fallbacks for TP/SL fills that have incomplete data from Kraken (missing symbol/side), now returns "UNKNOWN_SYMBOL" placeholder instead of crashing. (2) **Comprehensive reconciliation sweep (reconciliation_service.py)**: Added `reconcile_all_kraken_fills()` function that fetches ALL Kraken trades from last 48 hours and logs any missing fills to BOTH databases (executed_orders forensic log + trades telemetry). Uses parent-order linkage from pending_child_orders table to correctly classify fills as entry vs TP/SL (preventing misclassification of legitimate limit entry orders). Runs automatically every 10 minutes via autopilot heartbeat. (3) **Dual-database logging**: All retroactive fills are logged to both executed_orders (forensic) and trades (telemetry) tables, ensuring they appear in 24h/7d statistics and debug commands. System verified by architect and approved for production.
-
-**SEQUENTIAL BRACKET SYSTEM (Nov 17, 2025) - Guaranteed TP Placement for SPOT Accounts**: Implemented production-grade sequential bracket order system for Kraken SPOT (non-margin) accounts with complete TP placement guarantees. **ARCHITECTURE**: (1) **Phase 1 - Entry+SL Atomic**: Places LIMIT entry with embedded stop-loss via `close[ordertype]=stop-loss` parameter (single API call, SL activates immediately on fill). Uses `exchange.price_to_precision()` for all prices to prevent precision errors. (2) **Phase 2 - Persistent Monitoring**: `register_pending_entry()` stores entry metadata in `pending_child_orders` table with `order_type='entry_pending_tp'` (survives restarts). (3) **Phase 3 - TP Placement**: Two paths: *Immediate fill* (entry fills instantly → TP placed → entry marked filled), *Delayed fill* (reconciliation checks every 60s → places TP when detected → marks filled). (4) **Phase 4 - TP Retry Logic**: If TP placement fails, entry stays `status='pending'`, reconciliation retries every cycle until success. **ISOLATION**: `reconcile_tp_sl_fills()` explicitly filters out `entry_pending_tp` orders (preventing interference), entry monitoring exclusively handled by `reconcile_pending_entries()`. **VERIFICATION**: Min R:R ratio 1.5 enforced, all prices precision-corrected, tested with ASTER/USD successfully. System architect-verified with PASS approval for production deployment.
-
-- **Account State (`account_state.py`)**: Provides canonical, mode-aware account data, including balances, trade history, and portfolio snapshots, ensuring complete isolation between LIVE and PAPER trading. Paper trading state is persisted via `paper_ledger.json`. **CRITICAL ARCHITECTURE (Nov 13, 2025)**: The `PaperLedger` singleton is the single source of truth for ALL paper orders - both execution and query paths use this unified ledger to prevent data disconnection.
-- **Status Service (`status_service.py`)**: Acts as a centralized single source of truth for all trading data, rigorously enforcing mode isolation by routing data requests through `account_state.py` and skipping Kraken API calls in PAPER mode where appropriate.
-- **Self-Learning Components**:
-    - **Telemetry Database (`telemetry_db.py`)**: An SQLite database (`trading_memory.db`) for persistent storage of all trades, decisions, performance, insights, errors, and conversations to facilitate continuous learning.
-    - **Trade Analyzer (`trade_analyzer.py`)**: An intelligence engine that calculates performance metrics and identifies successful strategies.
-    - **Time Context (`time_context.py`)**: Provides temporal awareness for pattern recognition.
-    - **LLM Agent (`llm_agent.py`)**: Integrates OpenAI GPT-4o with function calling for natural language command execution. Includes enhanced parsing for percentage-based bracket orders with symbol-specific precision and robust anti-hallucination safeguards to prevent reporting non-existent trades. Supports natural language conversation with memory, decision explanations, and real-time market data fetching.
-    - **Trade Result Validator (`trade_result_validator.py`)**: **COMPREHENSIVE ANTI-HALLUCINATION SYSTEM (Nov 15, 2025)**: Multi-layered validation preventing LLM from claiming non-existent trade executions. (1) **Kraken Error Detection**: Catches ALL error patterns (EOrder, EGeneral, EService, EFunding, ETAPI, insufficient funds, invalid nonce, etc.). (2) **Success Pattern Matching**: COMPREHENSIVE regex coverage of all trade execution claim phrasings including auxiliaries (is/was/has been), adverbs (just/now), light verbs (got/gets), contractions (order's filled), plurals, multi-word descriptors, and all tenses. (3) **Query Command Exclusion**: Context-aware detection of diagnostic/query language (check balance, show orders, evaluation history) prevents false errors on legitimate informational responses. (4) **Tool Result Validation**: Skips validation for non-trade commands (bal, open, price, debug) while enforcing strict verification for actual trade executions. System tested comprehensively against edge cases and architect-verified for production readiness.
-    - **Evaluation Log (`evaluation_log.py`)**: **EXECUTION LOGGING ADDED (Nov 15, 2025)**: SQLite database (`evaluation_log.db`) providing forensic-level transparency into trading decisions and executions. Captures indicator values, market regimes, decision reasons, position snapshots, AND **executed_orders table** recording all market order fills with strict Kraken validation (order ID, fill price, fill quantity, timestamp). Includes `log_order_execution()` for recording fills and `get_executed_orders()` for querying. **CURRENT SCOPE**: Logs market buy/sell/bracket ENTRY fills only (not TP/SL fills, which require separate monitoring). Use `debug_trade <symbol>` command for complete lifecycle transparency including TP/SL fills from Kraken history.
-- **Trading Components**:
-    - **Autopilot (`autopilot.py`)**: The autonomous trading loop executing a 5-minute closed-candle strategy, evaluating signals only upon candle closure. It integrates mandatory risk gatekeepers for daily trade limits, per-trade risk validation (with ATR-based SL), and portfolio-wide risk checks.
-    - **Trading Config (`trading_config.py`)**: A centralized configuration system using dataclasses for indicator settings, market filters, risk parameters, and regime classification. Tuned for aggressive trading by lowering various thresholds.
-    - **Signal Engine (`signal_engine.py`)**: A multi-signal decision engine that orchestrates various technical filters (RSI, SMA trend, volume, volatility, chop, ATR spike) to generate trade signals.
-    - **Strategy Orchestrator (`strategy_orchestrator.py`)**: A regime-aware selector that routes trades to specific strategies based on market conditions, with an enhanced aggressive range trading strategy.
-    - **Candle Strategy (`candle_strategy.py`)**: A module for pure indicator calculation using closed-candle data, including RSI, volume, chop, volatility, ATR spike detection, and trend strength analysis.
-    - **Paper Trading (`paper_trading.py`)**: A complete simulation system offering realistic fills, slippage, fees, bracket order management, position tracking, and P&L calculation, with state persistence.
-    - **Paper Exchange Wrapper (`paper_exchange_wrapper.py`)**: An infrastructure layer that intercepts ccxt calls, routing them to the `PaperTradingSimulator` in PAPER mode and passing them to the real Kraken API in LIVE mode. It manages paper orders and positions with persistence. **CRITICAL FIX (Nov 15, 2025)**: All LIVE mode pass-through methods now guard against passing `params=None` to ccxt, which causes "'NoneType' object is not iterable" crashes. Fixed methods: fetch_balance, fetch_open_orders, create_market_sell_order, create_limit_buy_order, create_limit_sell_order, create_order, and cancel_order.
-    - **Exchange Manager (`exchange_manager.py`)**: A singleton wrapper for ccxt instances, ensuring consistent data fetching and mode awareness. **VERIFIED (Nov 15, 2025)**: This is the ONLY location in the entire codebase that creates ccxt.kraken() instances - all other modules route through this single source of truth. No rogue exchange instances exist.
-    - **Risk Manager (`risk_manager.py`)**: Provides functions for calculating per-trade risk (ATR-based stop-loss) and aggregating portfolio-wide active risk.
-    - **Trading Limits (`trading_limits.py`)**: Enforces daily trade limits (e.g., max 10 trades/symbol, 30 total/day) with JSON state persistence and daily resets.
-    - **Commands (`commands.py`)**: Handles manual trading commands for order placement and management. **EXECUTION LOGGING INTEGRATED (Nov 15, 2025)**: All market order paths (buy, sell, bracket entry) now log fills to executed_orders table using strict Kraken validation (status="closed"/"filled", remaining=0, actual fill data from exchange response). Added `debug_trade <symbol>` command showing complete trade lifecycle (evaluations → executed orders → Kraken fills → open orders). Exception handling intentionally returns error strings for LLM interface, validated by trade_result_validator.py.
-    - **Run (`run.py`)**: Provides an interactive shell for direct command execution.
-- **Advanced Modules (Feature-flagged)**: Includes modules for crypto universe management, profit targeting, multi-timeframe analysis, API watchdog for self-healing, and historical backtesting.
+-   **Sequential Bracket Order System**: Production-grade sequential bracket order system for Kraken SPOT accounts with guaranteed TP placement. It involves an atomic entry+SL phase, persistent monitoring of pending orders, and a robust TP placement retry logic.
+-   **Settlement Detection & Synthetic OCO**: Intelligent balance-based settlement detection replaces hardcoded delays. A synthetic OCO (One-Cancels-Other) system monitors active brackets, detects executed legs, and cancels opposing orders.
+-   **Account State (`account_state.py`)**: Provides canonical, mode-aware account data, ensuring complete isolation between LIVE and PAPER trading. Paper trading state is persisted via `paper_ledger.json`.
+-   **Status Service (`status_service.py`)**: Centralized single source of truth for all trading data, rigorously enforcing mode isolation.
+-   **Self-Learning Components**:
+    -   **Telemetry Database (`telemetry_db.py`)**: SQLite database (`trading_memory.db`) for persistent storage of all trades, decisions, performance, insights, errors, and conversations to facilitate continuous learning. Includes comprehensive timestamp-based filtering for statistics.
+    -   **Trade Analyzer (`trade_analyzer.py`)**: Intelligence engine for performance metrics and strategy identification.
+    -   **Time Context (`time_context.py`)**: Provides temporal awareness for pattern recognition.
+    -   **LLM Agent (`llm_agent.py`)**: Integrates OpenAI GPT-4o for natural language command execution, including robust anti-hallucination safeguards and real-time market data fetching.
+    -   **Trade Result Validator (`trade_result_validator.py`)**: Comprehensive multi-layered anti-hallucination system preventing the LLM from claiming non-existent trade executions, validating against Kraken errors and success patterns.
+    -   **Evaluation Log (`evaluation_log.py`)**: SQLite database (`evaluation_log.db`) for forensic-level transparency into trading decisions and executions, capturing executed orders with strict Kraken validation.
+-   **Trading Components**:
+    -   **Autopilot (`autopilot.py`)**: Autonomous trading loop executing a 5-minute closed-candle strategy, integrating mandatory risk gatekeepers.
+    -   **Trading Config (`trading_config.py`)**: Centralized configuration system for indicator settings, market filters, and risk parameters.
+    -   **Signal Engine (`signal_engine.py`)**: Multi-signal decision engine orchestrating technical filters (RSI, SMA, volume, volatility, chop, ATR) for trade signals.
+    -   **Strategy Orchestrator (`strategy_orchestrator.py`)**: Regime-aware selector routing trades to specific strategies based on market conditions.
+    -   **Paper Trading (`paper_trading.py`)**: Complete simulation system with realistic fills, slippage, fees, bracket order management, position tracking, and P&L calculation.
+    -   **Paper Exchange Wrapper (`paper_exchange_wrapper.py`)**: Infrastructure layer intercepting ccxt calls, routing to `PaperTradingSimulator` or real Kraken API based on mode.
+    -   **Exchange Manager (`exchange_manager.py`)**: Singleton wrapper for ccxt instances, ensuring consistent data fetching and mode awareness.
+    -   **Risk Manager (`risk_manager.py`)**: Functions for calculating per-trade risk (ATR-based stop-loss) and aggregating portfolio-wide active risk.
+    -   **Trading Limits (`trading_limits.py`)**: Enforces daily trade limits with JSON state persistence and daily resets.
+    -   **Commands (`commands.py`)**: Handles manual trading commands for order placement and management, with integrated execution logging.
 
 ### Feature Specifications
-- **Conversational AI**: Enables user interaction for performance inquiries, market insights, and command execution.
-- **Autonomous Trading**: Executes trades based on learned patterns and strategies, with automated position sizing and bracket orders.
-- **Continuous Learning**: Analyzes trade outcomes and market patterns to improve decision-making.
-- **Risk Management**: Configurable risk parameters, daily loss kill-switch, and ATR-based levels.
-- **Safety Features**: Validation mode, pre-trade checks, auto-adjustment of position sizes, emergency flatten procedures, and comprehensive telemetry.
-- **SMS Notifications**: Alerts for trade executions and performance reports.
+-   **Conversational AI**: User interaction for performance inquiries, market insights, and command execution.
+-   **Autonomous Trading**: Executes trades based on learned patterns and strategies, with automated position sizing and bracket orders.
+-   **Continuous Learning**: Analyzes trade outcomes and market patterns to improve decision-making.
+-   **Risk Management**: Configurable risk parameters, daily loss kill-switch, and ATR-based levels.
+-   **Safety Features**: Validation mode, pre-trade checks, auto-adjustment of position sizes, emergency flatten procedures, and comprehensive telemetry.
+-   **SMS Notifications**: Alerts for trade executions and performance reports.
 
 ## External Dependencies
-- **Kraken API**: For real-time market data, order placement, and account management.
-- **ccxt**: Python library for interacting with cryptocurrency exchanges.
-- **loguru**: For enhanced logging.
-- **tenacity**: For robust retry logic in API calls.
-- **python-dotenv**: For managing environment variables.
-- **OpenAI API**: For the LLM agent (GPT-4o integration).
+-   **Kraken API**: For real-time market data, order placement, and account management.
+-   **ccxt**: Python library for interacting with cryptocurrency exchanges.
+-   **loguru**: For enhanced logging.
+-   **tenacity**: For robust retry logic in API calls.
+-   **python-dotenv**: For managing environment variables.
+-   **OpenAI API**: For the LLM agent (GPT-4o integration).
