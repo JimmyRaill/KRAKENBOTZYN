@@ -50,7 +50,8 @@ class ExchangeManager:
         config = {
             "apiKey": api_key,
             "secret": api_secret,
-            "options": {"validate": self._validate_mode}
+            "options": {"validate": self._validate_mode},
+            "nonce": lambda: ccxt.Exchange.milliseconds()
         }
         
         ccxt_exchange = ccxt.kraken(config)  # type: ignore[arg-type]
@@ -109,7 +110,8 @@ class ExchangeManager:
         config = {
             "apiKey": api_key,
             "secret": api_secret,
-            "options": {"validate": self._validate_mode}
+            "options": {"validate": self._validate_mode},
+            "nonce": lambda: ccxt.Exchange.milliseconds()
         }
         
         ccxt_exchange = ccxt.kraken(config)  # type: ignore[arg-type]
