@@ -11,7 +11,6 @@ from typing import Optional, Dict, Any, Tuple
 from loguru import logger
 
 from exchange_manager import get_exchange, get_mode_str
-from account_state import get_account_state
 from rate_limiter import wait_for_rate_limit, record_order_executed
 
 
@@ -233,22 +232,24 @@ def execute_market_exit(
     try:
         exchange = get_exchange()
         mode_str = get_mode_str()
-        account_state = get_account_state()
         
         # Determine quantity to sell
         if quantity is None:
             if full_position:
-                # Fetch current position from account_state
-                positions = account_state.get_positions()
-                position = positions.get(symbol)
+                # Fetch current balance directly from exchange
+                # symbol is like "BTC/USD", we need the base currency (BTC)
+                base_currency = symbol.split('/')[0]
                 
-                if not position or position.get('quantity', 0) <= 0:
-                    error_msg = f"No open position for {symbol}"
+                balance = exchange.fetch_balance()
+                available = balance.get(base_currency, {}).get('free', 0)
+                
+                if not available or available <= 0:
+                    error_msg = f"No balance available for {base_currency} (symbol: {symbol})"
                     logger.warning(f"[MARKET-EXIT] {error_msg}")
                     return ExecutionResult(success=False, error=error_msg)
                 
-                quantity = float(position['quantity'])
-                logger.info(f"[MARKET-EXIT] {symbol} - Auto-detected position: {quantity:.6f} units")
+                quantity = float(available)
+                logger.info(f"[MARKET-EXIT] {symbol} - Auto-detected available balance: {quantity:.6f} {base_currency}")
             else:
                 error_msg = "Quantity must be specified if full_position=False"
                 logger.error(f"[MARKET-EXIT] {error_msg}")
