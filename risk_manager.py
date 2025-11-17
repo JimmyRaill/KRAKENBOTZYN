@@ -114,6 +114,90 @@ def get_max_active_risk(
     }
 
 
+def calculate_market_position_size(
+    equity: float,
+    entry_price: float,
+    risk_per_trade_pct: float = 0.005,  # 0.5% default (more aggressive than bracket mode)
+    atr: Optional[float] = None,
+    use_synthetic_sl: bool = True,
+    synthetic_sl_multiplier: float = 2.0,
+    max_position_pct: float = 0.10  # Max 10% of equity in one position
+) -> Dict[str, float]:
+    """
+    Calculate position size for market-only mode (no real stop-loss orders).
+    
+    This function supports two sizing modes:
+    1. Fixed fraction mode: Position size = equity * risk_per_trade_pct
+    2. Synthetic SL mode: Uses ATR-based "virtual" SL for sizing (not placed)
+    
+    Args:
+        equity: Account equity in USD
+        entry_price: Entry price for the position
+        risk_per_trade_pct: Risk per trade as decimal (e.g., 0.005 for 0.5%)
+        atr: Average True Range (optional, used for synthetic SL sizing)
+        use_synthetic_sl: If True and ATR available, use ATR-based sizing
+        synthetic_sl_multiplier: ATR multiplier for synthetic SL (default 2.0x)
+        max_position_pct: Max position as % of equity (default 10%)
+    
+    Returns:
+        Dict with:
+            - position_size_usd: Position size in USD
+            - quantity: Position quantity (shares/coins)
+            - method: "fixed_fraction" or "synthetic_sl"
+            - synthetic_sl_price: Synthetic SL price (if applicable)
+            - risk_usd: Estimated risk in USD
+    """
+    max_position_usd = equity * max_position_pct
+    
+    if use_synthetic_sl and atr and atr > 0:
+        # Mode 2: Synthetic SL sizing (more sophisticated)
+        # Calculate "virtual" SL distance based on ATR
+        sl_distance = synthetic_sl_multiplier * atr
+        synthetic_sl_price = entry_price - sl_distance  # Long position
+        
+        # Size position based on synthetic SL
+        risk_usd = equity * risk_per_trade_pct
+        quantity = risk_usd / sl_distance if sl_distance > 0 else 0
+        position_size_usd = quantity * entry_price
+        
+        # Enforce max position cap
+        if position_size_usd > max_position_usd:
+            position_size_usd = max_position_usd
+            quantity = position_size_usd / entry_price
+            risk_usd = quantity * sl_distance  # Recalculate risk after cap
+        
+        return {
+            "position_size_usd": position_size_usd,
+            "quantity": quantity,
+            "method": "synthetic_sl",
+            "synthetic_sl_price": synthetic_sl_price,
+            "synthetic_sl_distance": sl_distance,
+            "risk_usd": risk_usd,
+            "risk_pct": (risk_usd / equity) * 100 if equity > 0 else 0
+        }
+    
+    else:
+        # Mode 1: Fixed fraction sizing (simpler, safer)
+        # Position size = fixed % of equity
+        position_size_usd = equity * risk_per_trade_pct
+        
+        # Enforce max position cap
+        if position_size_usd > max_position_usd:
+            position_size_usd = max_position_usd
+        
+        quantity = position_size_usd / entry_price if entry_price > 0 else 0
+        
+        return {
+            "position_size_usd": position_size_usd,
+            "quantity": quantity,
+            "method": "fixed_fraction",
+            "synthetic_sl_price": None,
+            "synthetic_sl_distance": None,
+            "risk_usd": position_size_usd,  # In fixed fraction mode, entire position is "risk"
+            "risk_pct": risk_per_trade_pct * 100
+        }
+
+
 @dataclass
 class TrailingStop:
     """Trailing stop-loss manager for a position."""

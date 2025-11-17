@@ -7,6 +7,7 @@ Critical: limits do NOT reset when switching modes - only on new trading day.
 
 import json
 import time
+import os
 from pathlib import Path
 from typing import Dict, Optional, Any
 from datetime import datetime, date
@@ -179,17 +180,42 @@ class DailyTradeLimits:
 _limits_instance: Optional[DailyTradeLimits] = None
 
 
-def get_daily_limits(max_trades_per_symbol: int = 10, max_total_trades: int = 30) -> DailyTradeLimits:
+def get_daily_limits(
+    max_trades_per_symbol: Optional[int] = None,
+    max_total_trades: Optional[int] = None
+) -> DailyTradeLimits:
     """
     Get or create singleton DailyTradeLimits instance.
+    
+    Limits are sourced in this order (first defined wins):
+    1. Function parameters (if provided)
+    2. Environment variables (MAX_TRADES_PER_SYMBOL_PER_DAY, MAX_TRADES_PER_DAY)
+    3. Hardcoded defaults (10 per symbol, 30 total)
     
     This ensures ONE shared counter across all components (paper and live).
     """
     global _limits_instance
     if _limits_instance is None:
+        # Resolve limits: parameters -> env vars -> defaults (ALWAYS integers, never None)
+        if max_trades_per_symbol is not None:
+            final_per_symbol = max_trades_per_symbol
+        else:
+            final_per_symbol = int(os.getenv("MAX_TRADES_PER_SYMBOL_PER_DAY", "10"))
+        
+        if max_total_trades is not None:
+            final_total = max_total_trades
+        else:
+            final_total = int(os.getenv("MAX_TRADES_PER_DAY", "30"))
+        
+        # Ensure we NEVER pass None to load() - this would break comparisons
+        assert isinstance(final_per_symbol, int) and final_per_symbol > 0, \
+            f"Invalid final_per_symbol: {final_per_symbol}"
+        assert isinstance(final_total, int) and final_total > 0, \
+            f"Invalid final_total: {final_total}"
+        
         _limits_instance = DailyTradeLimits.load(
-            max_trades_per_symbol=max_trades_per_symbol,
-            max_total_trades=max_total_trades
+            max_trades_per_symbol=final_per_symbol,
+            max_total_trades=final_total
         )
     return _limits_instance
 

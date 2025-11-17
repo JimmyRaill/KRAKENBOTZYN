@@ -126,6 +126,10 @@ class TradingConfig:
     timeframe: str = "5m"
     timeframe_seconds: int = 300
     
+    # Execution mode
+    execution_mode: str = "MARKET_ONLY"  # "MARKET_ONLY" or "BRACKET"
+    use_brackets: bool = False  # Enable bracket orders (TP/SL)
+    
     # Feature flags
     enable_profit_target: bool = False
     enable_api_watchdog: bool = False
@@ -191,6 +195,11 @@ class TradingConfig:
         aggressive_rsi = os.getenv("AGGRESSIVE_RSI_MAX")
         if aggressive_rsi:
             config.regime.aggressive_rsi_max = float(aggressive_rsi)
+        
+        # Execution mode
+        execution_mode_env = os.getenv("EXECUTION_MODE", "MARKET_ONLY")
+        config.execution_mode = execution_mode_env if execution_mode_env in ("MARKET_ONLY", "BRACKET") else "MARKET_ONLY"
+        config.use_brackets = os.getenv("USE_BRACKETS", "0") == "1" or config.execution_mode == "BRACKET"
         
         # Feature flags
         config.enable_profit_target = os.getenv("ENABLE_PROFIT_TARGET", "0") == "1"

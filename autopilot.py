@@ -25,10 +25,19 @@ from exchange_manager import get_manager
 from strategy_orchestrator import get_orchestrator
 
 # RISK MANAGEMENT: Portfolio-wide risk controls and daily trade limits
-from risk_manager import calculate_trade_risk, get_max_active_risk, PositionSnapshot
+from risk_manager import calculate_trade_risk, get_max_active_risk, PositionSnapshot, calculate_market_position_size
 from trading_limits import can_open_new_trade, record_trade_opened, get_daily_limits
 
-# Bracket order manager - MANDATORY for all trades
+# TRADING CONFIG: Centralized config with execution mode flags
+from trading_config import get_config
+
+# FEE MODEL: Real-time Kraken fee tracking for fee-aware trading
+from fee_model import get_minimum_edge_pct, get_taker_fee
+
+# MARKET EXECUTION: Simplified market-only order execution
+from execution_manager import execute_market_entry, execute_market_exit, has_open_position
+
+# Bracket order manager - OPTIONAL (only used if USE_BRACKETS=True)
 # Type hints for LSP
 get_bracket_manager = None
 BracketOrder = None
@@ -38,10 +47,10 @@ BRACKET_MANAGER_ENABLED = False
 try:
     from bracket_order_manager import get_bracket_manager, BracketOrder, BracketConfig
     BRACKET_MANAGER_ENABLED = True
-    print("[INIT] ✅ Bracket Order Manager enabled - NO NAKED POSITIONS")
+    print("[INIT] ✅ Bracket Order Manager enabled (available but may be disabled via config)")
 except ImportError as e:
     BRACKET_MANAGER_ENABLED = False
-    print(f"[CRITICAL] Bracket Order Manager import failed: {e}")
+    print(f"[INIT] Bracket Order Manager not available: {e}")
 
 # Self-learning imports
 TELEMETRY_ENABLED = False
@@ -849,21 +858,63 @@ def loop_once(ex, symbols: List[str]) -> None:
                 print(f"🎯 [EXEC-PATH] {sym} - ENTERING BUY EXECUTION (action={action}, exec_action={exec_action}, pos_qty={pos_qty})")
                 eq_full: Dict[str, Any] = ex.fetch_balance()
                 eq_usd = account_equity_usd(eq_full)
-                qty = qty_from_atr(eq_usd, atr, price)
-                usd_to_spend = qty * price
+                
+                # ═══════════════════════════════════════════════════════════════
+                # POSITION SIZING: Market-only vs. Bracket mode
+                # ═══════════════════════════════════════════════════════════════
+                
+                if not config.use_brackets:
+                    # MARKET-ONLY MODE: Use SL-independent position sizing
+                    print(f"[MARKET-SIZING] {sym} - Using calculate_market_position_size() (no SL dependency)")
+                    
+                    sizing_result = calculate_market_position_size(
+                        equity=eq_usd,
+                        entry_price=price,
+                        risk_per_trade_pct=0.005,  # 0.5% risk per trade
+                        atr=atr,
+                        use_synthetic_sl=True,  # Use ATR-based sizing if ATR available
+                        synthetic_sl_multiplier=2.0,
+                        max_position_pct=0.10  # Max 10% of equity
+                    )
+                    
+                    usd_to_spend = sizing_result["position_size_usd"]
+                    approx_qty = sizing_result["quantity"]
+                    sizing_method = sizing_result["method"]
+                    
+                    print(
+                        f"[MARKET-SIZING] {sym} - Method: {sizing_method}, "
+                        f"Position: ${usd_to_spend:.2f}, Qty: {approx_qty:.6f}, "
+                        f"Risk: ${sizing_result['risk_usd']:.2f} ({sizing_result['risk_pct']:.2f}%)"
+                    )
+                    
+                else:
+                    # BRACKET MODE: Use traditional ATR-based sizing (SL-dependent)
+                    print(f"[BRACKET-SIZING] {sym} - Using qty_from_atr() (SL-dependent)")
+                    qty = qty_from_atr(eq_usd, atr, price)
+                    usd_to_spend = qty * price
+                    approx_qty = qty
 
+                # Validate position size
                 if usd_to_spend <= 0.0:
                     print(f"[SKIP] {sym} qty=0 ({why})")
                     continue
 
-                usd_to_spend = min(usd_to_spend, env_float("MAX_POSITION_USD", 10.0))
+                # Apply global position cap (backup safety check)
+                max_position_env = env_float("MAX_POSITION_USD", 10.0)
+                if usd_to_spend > max_position_env:
+                    print(f"[POSITION-CAP] {sym} - Capping ${usd_to_spend:.2f} → ${max_position_env:.2f}")
+                    usd_to_spend = max_position_env
+                    approx_qty = usd_to_spend / price if price else 0.0
+                
+                # Check available cash
                 if usd_to_spend > usd_cash + 1e-6:
+                    print(f"[CASH-LIMIT] {sym} - Reducing ${usd_to_spend:.2f} → ${usd_cash:.2f}")
                     usd_to_spend = max(0.0, usd_cash)
+                    approx_qty = usd_to_spend / price if price else 0.0
+                
                 if usd_to_spend <= 0.0:
                     print(f"[SKIP] {sym} no cash ({why})")
                     continue
-
-                approx_qty = usd_to_spend / price if price else 0.0
                 
                 # ═══════════════════════════════════════════════════════════════
                 # RISK MANAGEMENT CHECKS (MANDATORY - ALL MUST PASS)
@@ -1044,9 +1095,94 @@ def loop_once(ex, symbols: List[str]) -> None:
                 # Recalculate final qty after adjustments
                 approx_qty = usd_to_spend / price if price else 0.0
                 
-                # CRITICAL PRE-TRADE VALIDATION: Verify brackets can be placed BEFORE executing entry
-                # This implements "NO NAKED POSITIONS" rule from spec
-                if BRACKET_MANAGER_ENABLED and get_bracket_manager is not None:
+                # ═══════════════════════════════════════════════════════════════
+                # EXECUTION MODE ROUTING: Market-only vs. Bracket orders
+                # ═══════════════════════════════════════════════════════════════
+                
+                config = get_config()
+                
+                if not config.use_brackets:
+                    # ────────────────────────────────────────────────────────────
+                    # MARKET_ONLY MODE: Simple market buy, no brackets
+                    # ────────────────────────────────────────────────────────────
+                    
+                    # ═══════════════════════════════════════════════════════════════
+                    # FEE CHECK: Block trades that can't cover transaction costs
+                    # ═══════════════════════════════════════════════════════════════
+                    try:
+                        min_edge_required = get_minimum_edge_pct(safety_margin=0.15)  # 0.15% safety buffer
+                        taker_fee_pct = get_taker_fee(sym) * 100  # Convert to percentage
+                        
+                        # edge_pct is calculated earlier as: ((price - sma20) / sma20) * 100
+                        # For a profitable trade: edge_pct must exceed round-trip fees + buffer
+                        if edge_pct is not None:
+                            if edge_pct < min_edge_required:
+                                print(f"🚫 [FEE-BLOCK] {sym} - Edge {edge_pct:.2f}% < required {min_edge_required:.2f}%")
+                                print(f"   Taker fee: {taker_fee_pct:.4f}%, Round-trip: {taker_fee_pct*2:.4f}%, Required with buffer: {min_edge_required:.2f}%")
+                                print(f"   SKIPPING: Trade cannot profitably cover fees")
+                                
+                                # Log fee block event
+                                if TELEMETRY_ENABLED and log_decision:
+                                    try:
+                                        log_decision(
+                                            sym, "fee_block", 
+                                            f"Edge {edge_pct:.2f}% < required {min_edge_required:.2f}%", 
+                                            price, edge_pct, atr, pos_qty, eq_usd, executed=False
+                                        )
+                                    except Exception:
+                                        pass
+                                
+                                continue  # Skip this trade
+                            else:
+                                print(f"✅ [FEE-CHECK-PASS] {sym} - Edge {edge_pct:.2f}% > required {min_edge_required:.2f}% (fee-profitable)")
+                        else:
+                            print(f"⚠️  [FEE-CHECK-SKIP] {sym} - No edge_pct available, proceeding with caution")
+                    
+                    except Exception as fee_err:
+                        print(f"[FEE-CHECK-ERR] {sym}: {fee_err} - proceeding without fee validation")
+                    
+                    print(f"[MARKET-MODE] {sym} - Executing market BUY (no brackets)")
+                    
+                    result = execute_market_entry(
+                        symbol=sym,
+                        size_usd=usd_to_spend,
+                        source="autopilot",
+                        atr=atr,
+                        reason=why
+                    )
+                    
+                    if result.success:
+                        print(f"✅ [MARKET-ENTRY-SUCCESS] {sym} - {result}")
+                        
+                        # Record trade for daily limits
+                        try:
+                            record_trade_opened(sym, mode_str)
+                            print(f"[DAILY-LIMIT] {sym} - Trade recorded (mode: {mode_str})")
+                        except Exception as record_err:
+                            print(f"[DAILY-LIMIT-RECORD-ERR] {sym}: {record_err}")
+                        
+                        # Log to telemetry (if enabled)
+                        if TELEMETRY_ENABLED and log_decision:
+                            try:
+                                log_decision(sym, "buy", why, result.fill_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
+                                if notify_trade:
+                                    notify_trade(sym, "buy", result.filled_qty, result.fill_price, why)
+                            except Exception as log_err:
+                                print(f"[TELEMETRY-ERR] {log_err}")
+                        
+                        trade_log.append({"symbol": sym, "action": "market_buy", "usd": float(f"{usd_to_spend:.2f}")})
+                        print(f"🎯 [MARKET-BUY-COMPLETE] {sym} - Position opened, monitoring for exit signals")
+                    else:
+                        print(f"❌ [MARKET-ENTRY-FAILED] {sym} - {result.error}")
+                        continue
+                
+                elif BRACKET_MANAGER_ENABLED and get_bracket_manager is not None:
+                    # ────────────────────────────────────────────────────────────
+                    # BRACKET MODE: Traditional bracket orders with TP/SL
+                    # ────────────────────────────────────────────────────────────
+                    
+                    # CRITICAL PRE-TRADE VALIDATION: Verify brackets can be placed BEFORE executing entry
+                    # This implements "NO NAKED POSITIONS" rule from spec
                     try:
                         manager = get_bracket_manager()
                         test_bracket = manager.calculate_bracket_prices(
@@ -1269,15 +1405,40 @@ def loop_once(ex, symbols: List[str]) -> None:
                 # Calculate profit before executing
                 sell_value = pos_qty * price if price else 0.0
                 
-                # Execute trade (or simulate if backtest mode)
-                if BACKTEST_MODE_ENABLED and get_backtest:
-                    backtest = get_backtest()
-                    safe_price = price if price else 0.0
-                    result = backtest.execute_trade(sym, "sell", safe_price, sell_value, why)
-                    result_str = f"[BACKTEST] Sell executed - no real order"
+                # ═══════════════════════════════════════════════════════════════
+                # EXECUTION MODE ROUTING: Market-only vs. Command-based exit
+                # ═══════════════════════════════════════════════════════════════
+                
+                if not config.use_brackets:
+                    # MARKET_ONLY MODE: Use execution_manager for clean exit
+                    print(f"[MARKET-MODE] {sym} - Executing market SELL (exit position)")
+                    
+                    result = execute_market_exit(
+                        symbol=sym,
+                        quantity=None,  # Auto-detect from position
+                        full_position=True,
+                        source="autopilot_exit",
+                        reason=why
+                    )
+                    
+                    if result.success:
+                        print(f"✅ [MARKET-EXIT-SUCCESS] {sym} - {result}")
+                        result_str = f"[MARKET_EXIT] Position closed: {result.filled_qty:.6f} @ ${result.fill_price:.4f}"
+                    else:
+                        print(f"❌ [MARKET-EXIT-FAILED] {sym} - {result.error}")
+                        result_str = f"[MARKET_EXIT_ERROR] {result.error}"
+                
                 else:
-                    result = run_command(f"sell all {sym}")
-                    result_str = str(result)
+                    # BRACKET MODE: Use command-based execution (legacy)
+                    # Execute trade (or simulate if backtest mode)
+                    if BACKTEST_MODE_ENABLED and get_backtest:
+                        backtest = get_backtest()
+                        safe_price = price if price else 0.0
+                        result = backtest.execute_trade(sym, "sell", safe_price, sell_value, why)
+                        result_str = f"[BACKTEST] Sell executed - no real order"
+                    else:
+                        result = run_command(f"sell all {sym}")
+                        result_str = str(result)
                 
                 print(result_str)
                 
