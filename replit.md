@@ -12,6 +12,15 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 - Added defensive fee model wrappers that never crash on import errors
 - System validated and ready for autonomous trading
 
+**Mental SL/TP System (Nov 17, 2025)**:
+- Implemented professional "mental stop-loss/take-profit" system for market-only execution
+- Position Tracker (`position_tracker.py`) calculates ATR-based SL/TP on entry (2x ATR for SL, 3x for TP)
+- Autopilot monitors open positions every cycle and executes market SELL when price triggers either level
+- Interprocess file locking (portalocker) prevents race conditions between autopilot and command handlers
+- Exclusive locks held across entire read-modify-write cycles to ensure data integrity
+- Position state persisted in `open_positions.json` with dedicated lock file for synchronization
+- Complete trade lifecycle: autopilot BUY → store position → monitor every cycle → market SELL on trigger → remove position
+
 ## User Preferences
 - User prefers to be called: jimmy
 - Zyn's role: Financial servant who does ALL the work FOR jimmy
@@ -26,7 +35,8 @@ The bot provides a chat interface on port 5000 for real-time interaction and a d
 The system is designed with a strong emphasis on mode isolation (LIVE vs. PAPER), ensuring no cross-contamination of data. Key architectural components include:
 
 -   **Market-Only Execution System**: Pure market buy/sell orders with no stop-loss or take-profit orders due to Kraken API limitations. System features:
-    -   **Execution Manager (`execution_manager.py`)**: Centralized market order execution with rate limiting, fee logging, and telemetry integration.
+    -   **Execution Manager (`execution_manager.py`)**: Centralized market order execution with rate limiting, fee logging, and telemetry integration. Stores positions after BUY, removes after SELL.
+    -   **Position Tracker (`position_tracker.py`)**: Mental SL/TP system calculating ATR-based exit levels on entry (2x ATR for SL, 3x for TP). Monitors positions every autopilot cycle and triggers market SELL on price breakout. Uses portalocker for interprocess synchronization with exclusive locks across read-modify-write cycles.
     -   **Fee Model (`fee_model.py`)**: Real-time Kraken fee tracking via TradeVolume API with 1-hour caching. Provides fee-adjusted profitability checks before trade execution.
     -   **Rate Limiter (`rate_limiter.py`)**: Rolling 60-second window with configurable limits (default 15 orders/min, 250ms min delay) to prevent API violations.
     -   **Market Position Sizing (`risk_manager.calculate_market_position_size`)**: SL-independent position sizing using fixed-fraction (0.5% equity) or synthetic ATR-based methods with 10% max position cap.
@@ -42,7 +52,7 @@ The system is designed with a strong emphasis on mode isolation (LIVE vs. PAPER)
     -   **Trade Result Validator (`trade_result_validator.py`)**: Comprehensive multi-layered anti-hallucination system preventing the LLM from claiming non-existent trade executions, validating against Kraken errors and success patterns.
     -   **Evaluation Log (`evaluation_log.py`)**: SQLite database (`evaluation_log.db`) for forensic-level transparency into trading decisions and executions, capturing executed orders with strict Kraken validation.
 -   **Trading Components**:
-    -   **Autopilot (`autopilot.py`)**: Autonomous trading loop executing a 5-minute closed-candle strategy, integrating mandatory risk gatekeepers.
+    -   **Autopilot (`autopilot.py`)**: Autonomous trading loop executing a 5-minute closed-candle strategy. Monitors mental SL/TP levels at start of each cycle BEFORE evaluating new trades. Integrates mandatory risk gatekeepers.
     -   **Trading Config (`trading_config.py`)**: Centralized configuration system for indicator settings, market filters, risk parameters, and execution mode (market-only vs bracket). Supports env var overrides.
     -   **Signal Engine (`signal_engine.py`)**: Multi-signal decision engine orchestrating technical filters (RSI, SMA, volume, volatility, chop, ATR) for trade signals.
     -   **Strategy Orchestrator (`strategy_orchestrator.py`)**: Regime-aware selector routing trades to specific strategies based on market conditions.
@@ -51,7 +61,7 @@ The system is designed with a strong emphasis on mode isolation (LIVE vs. PAPER)
     -   **Exchange Manager (`exchange_manager.py`)**: Singleton wrapper for ccxt instances, ensuring consistent data fetching and mode awareness.
     -   **Risk Manager (`risk_manager.py`)**: Functions for calculating per-trade risk (ATR-based stop-loss) and aggregating portfolio-wide active risk.
     -   **Trading Limits (`trading_limits.py`)**: Enforces daily trade limits with JSON state persistence and daily resets. Configurable via MAX_TRADES_PER_DAY and MAX_TRADES_PER_SYMBOL_PER_DAY environment variables.
-    -   **Commands (`commands.py`)**: Handles manual trading commands for order placement and management, with integrated execution logging.
+    -   **Commands (`commands.py`)**: Handles manual trading commands for order placement and management, with integrated execution logging. Includes "force sltp test" command for end-to-end mental SL/TP testing.
 
 ### Feature Specifications
 -   **Conversational AI**: User interaction for performance inquiries, market insights, and command execution.
