@@ -185,18 +185,21 @@ class BracketOrderManager:
             print(f"[BRACKET-ERR] Invalid side: {side}")
             return None
         
-        # Ensure prices are positive BEFORE rounding
+        # Ensure prices are positive BEFORE precision correction
         if stop_price <= 0 or tp_price <= 0:
             print(f"[BRACKET-ERR] Negative price: stop={stop_price}, tp={tp_price}")
             return None
         
-        # Round prices for exchange precision
-        stop_price_rounded = round(stop_price, 2)
-        tp_price_rounded = round(tp_price, 2)
+        # CRITICAL: Use symbol-specific precision (NOT hard-coded decimals)
+        from exchange_manager import get_exchange
+        exchange = get_exchange()
         
-        # CRITICAL: Validate prices again AFTER rounding to prevent zero/negative values
+        stop_price_rounded = float(exchange.price_to_precision(symbol, stop_price))
+        tp_price_rounded = float(exchange.price_to_precision(symbol, tp_price))
+        
+        # CRITICAL: Validate prices again AFTER precision correction to prevent zero/negative values
         if stop_price_rounded <= 0 or tp_price_rounded <= 0:
-            print(f"[BRACKET-ERR] Rounding produced invalid price: stop={stop_price_rounded}, tp={tp_price_rounded}")
+            print(f"[BRACKET-ERR] Precision correction produced invalid price: stop={stop_price_rounded}, tp={tp_price_rounded}")
             return None
         
         # Calculate position size if equity provided
