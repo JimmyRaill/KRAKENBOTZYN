@@ -298,6 +298,69 @@ def init_evaluation_log_db():
     logger.info(f"[EVAL-LOG] Database initialized at {DB_PATH}")
 
 
+def register_executed_order(
+    order_id: str,
+    symbol: str,
+    side: str,
+    order_type: str,
+    quantity: float,
+    price: float,
+    status: str,
+    trading_mode: str,
+    source: str,
+    timestamp_utc: Optional[str] = None,
+    trade_reason: Optional[str] = None,
+    parent_order_id: Optional[str] = None
+):
+    """
+    Register an executed order to the executed_orders table for forensic tracking.
+    
+    This is the SINGLE SOURCE OF TRUTH for what orders were actually executed.
+    Every real order that hits Kraken MUST be logged here.
+    
+    Args:
+        order_id: Kraken order ID
+        symbol: Trading pair (e.g., "BTC/USD")
+        side: "buy" or "sell"
+        order_type: "market", "limit", etc.
+        quantity: Order size (filled amount)
+        price: Fill price
+        status: "filled", "partial", "cancelled"
+        trading_mode: "live" or "paper"
+        source: "autopilot", "command", "force_test", "autopilot_test", etc. (NEVER default to autopilot)
+        timestamp_utc: ISO timestamp (defaults to now)
+        trade_reason: Why this trade was placed
+        parent_order_id: Parent entry order ID (for exits)
+    """
+    try:
+        conn = _get_connection()
+        cursor = conn.cursor()
+        
+        if timestamp_utc is None:
+            timestamp_utc = datetime.now(timezone.utc).isoformat()
+        
+        cursor.execute("""
+            INSERT INTO executed_orders (
+                timestamp_utc, order_id, symbol, side, order_type,
+                quantity, price, status, trading_mode, source,
+                trade_reason, parent_order_id, fill_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            timestamp_utc, order_id, symbol, side, order_type,
+            quantity, price, status, trading_mode, source,
+            trade_reason, parent_order_id, status
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"[EXECUTED-ORDER] Logged {symbol} {side} {order_type} | OrderID:{order_id} | Source:{source} | Mode:{trading_mode}")
+        
+    except Exception as e:
+        logger.error(f"[EXECUTED-ORDER] Failed to log order {order_id}: {e}")
+        raise
+
+
 def register_pending_child_order(
     symbol: str,
     order_id: str,
