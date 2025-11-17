@@ -84,12 +84,16 @@ class KrakenNativeAPI:
         # Create headers
         headers = {
             'API-Key': self.api_key,
-            'API-Sign': signature
+            'API-Sign': signature,
+            'Content-Type': 'application/x-www-form-urlencoded'
         }
         
-        # Make request
+        # URL-encode the data ourselves to ensure proper encoding
+        encoded_data = urllib.parse.urlencode(str_data)
+        
+        # Make request with pre-encoded data
         url = self.api_url + endpoint
-        response = requests.post(url, headers=headers, data=str_data)
+        response = requests.post(url, headers=headers, data=encoded_data)
         
         return response.json()
     
@@ -247,8 +251,10 @@ class KrakenNativeAPI:
         data['close[price2]'] = str(take_profit_price)  # TP trigger
         
         print(f"[KRAKEN-OCO] Placing {side} {entry_type} order: {quantity} {symbol}")
+        print(f"[KRAKEN-OCO] Pair: {kraken_pair}")
         print(f"[KRAKEN-OCO] Stop-Loss: ${stop_loss_price:.4f}")
         print(f"[KRAKEN-OCO] Take-Profit: ${take_profit_price:.4f}")
+        print(f"[KRAKEN-OCO-PAYLOAD] {data}")
         
         try:
             response = self._make_request('/0/private/AddOrder', data)
@@ -332,16 +338,17 @@ class KrakenNativeAPI:
         Convert CCXT symbol format to Kraken pair format.
         
         Examples:
-            'BTC/USD' -> 'XBTUSD'
-            'ETH/USD' -> 'ETHUSD'
-            'AR/USD' -> 'ARUSD'
-            'DOGE/USD' -> 'XDGUSD'
+            'BTC/USD' -> 'xbtusd'
+            'ETH/USD' -> 'ethusd'
+            'AR/USD' -> 'arusd'
+            'DOGE/USD' -> 'xdgusd'
+            'ASTER/USD' -> 'asterusd'
         
         Args:
             symbol: Symbol in CCXT format (e.g., 'BTC/USD')
             
         Returns:
-            Kraken pair format (e.g., 'XBTUSD')
+            Kraken pair format in lowercase (e.g., 'xbtusd')
         """
         # Remove slash
         pair = symbol.replace('/', '')
@@ -360,10 +367,10 @@ class KrakenNativeAPI:
             # Map base if needed
             base = symbol_map.get(base, base)
             
-            return base + quote
+            return (base + quote).lower()
         
-        # Fallback: just remove slash
-        return pair
+        # Fallback: just remove slash and lowercase
+        return pair.lower()
 
 
 # Global instance
