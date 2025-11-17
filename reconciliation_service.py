@@ -189,28 +189,22 @@ def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
                         f"{symbol} {filled_qty} @ ${fill_price:.5f} (order_id={entry_order_id})"
                     )
                     
-                    # Place TP order now
-                    from kraken_native_api import get_kraken_native_api
-                    import time
+                    # Place TP order with intelligent settlement detection + retry
+                    from settlement_detector import place_tp_with_retry
                     
-                    # CRITICAL: Wait for Kraken SPOT account to settle position
-                    # Kraken needs time to release funds before accepting sell limit orders
-                    logger.info(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] Waiting 10s for position settlement before TP placement...")
-                    time.sleep(10)
-                    
-                    native_api = get_kraken_native_api()
                     tp_side = 'sell' if entry_side.lower() == 'buy' else 'buy'
                     
-                    tp_success, tp_message, tp_result = native_api.place_take_profit_order(
+                    tp_success, tp_message, tp_order_id = place_tp_with_retry(
                         symbol=symbol,
                         side=tp_side,
                         quantity=filled_qty,
-                        take_profit_price=tp_price,
-                        validate=False
+                        tp_price=tp_price,
+                        fill_price=fill_price,
+                        max_attempts=5,
+                        initial_backoff=1.0
                     )
                     
                     if tp_success:
-                        tp_order_id = tp_result.get('txid', ['unknown'])[0] if tp_result and 'txid' in tp_result else 'unknown'
                         tp_placed_count += 1
                         tps_placed.append({
                             "entry_order_id": entry_order_id,
@@ -226,7 +220,7 @@ def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
                         )
                         
                         # Mark entry as filled (no longer needs monitoring)
-                        mark_pending_order_filled(entry_order_id)
+                        mark_pending_order_filled(entry_order_id, tp_order_id=tp_order_id)
                     else:
                         error_msg = f"TP placement failed for entry {entry_order_id}: {tp_message}"
                         logger.error(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] {error_msg}")
@@ -519,10 +513,11 @@ def run_reconciliation_cycle():
     Run reconciliation for current trading mode.
     Called by autopilot heartbeat every 60 seconds.
     
-    THREE-PHASE APPROACH:
+    FOUR-PHASE APPROACH:
     1. Check pending ENTRY orders and place TPs when filled (CRITICAL for sequential brackets)
-    2. Check registered TP/SL orders (fast, targeted)
-    3. Sweep all Kraken fills every 10 cycles to catch unregistered fills
+    2. Run OCO monitor to cancel opposite orders when TP/SL executes (synthetic OCO logic)
+    3. Check registered TP/SL orders (fast, targeted)
+    4. Sweep all Kraken fills every 10 cycles to catch unregistered fills
     """
     try:
         trading_mode = os.getenv("TRADING_MODE", "PAPER").upper()
@@ -530,14 +525,21 @@ def run_reconciliation_cycle():
         # Phase 1: CRITICAL - Check pending entries and place TPs
         entry_result = reconcile_pending_entries(trading_mode)
         
-        # Phase 2: Check pending TP/SL orders
+        # Phase 2: Synthetic OCO monitoring (cancel opposite when one fills)
+        from oco_monitor import check_and_cancel_opposite_orders
+        oco_result = check_and_cancel_opposite_orders(trading_mode)
+        
+        # Phase 3: Check pending TP/SL orders
         result = reconcile_tp_sl_fills(trading_mode)
         
-        # Merge entry results into main result
+        # Merge entry and OCO results into main result
         result['entry_pending_count'] = entry_result.get('pending_count', 0)
         result['entry_filled_count'] = entry_result.get('filled_count', 0)
         result['tp_placed_count'] = entry_result.get('tp_placed_count', 0)
         result['tps_placed'] = entry_result.get('tps_placed', [])
+        result['oco_checked'] = oco_result.get('checked', 0)
+        result['oco_tp_cancelled'] = oco_result.get('tp_cancelled', 0)
+        result['oco_sl_cancelled'] = oco_result.get('sl_cancelled', 0)
         
         # Phase 3: Comprehensive sweep (every 10 cycles = ~10 minutes)
         # Use modulo trick with timestamp to spread load
@@ -549,12 +551,15 @@ def run_reconciliation_cycle():
         
         if (result['filled_count'] > 0 or 
             result.get('sweep_newly_logged', 0) > 0 or 
-            result.get('tp_placed_count', 0) > 0):
+            result.get('tp_placed_count', 0) > 0 or
+            result.get('oco_tp_cancelled', 0) > 0 or
+            result.get('oco_sl_cancelled', 0) > 0):
             logger.info(
                 f"[RECONCILE-{trading_mode}] Cycle complete: "
                 f"{result['filled_count']}/{result['pending_count']} TP/SL filled, "
                 f"{result.get('tp_placed_count', 0)} TPs placed for filled entries, "
-                f"{result.get('sweep_newly_logged', 0)} retroactive logged"
+                f"{result.get('sweep_newly_logged', 0)} retroactive logged, "
+                f"OCO: {result.get('oco_tp_cancelled', 0)} TP/{result.get('oco_sl_cancelled', 0)} SL cancelled"
             )
         
         return result

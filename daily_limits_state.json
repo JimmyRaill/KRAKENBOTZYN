@@ -1,13 +1,13 @@
 {
   "current_date": "2025-11-17",
-  "total_trades_today": 15,
+  "total_trades_today": 18,
   "trades_by_symbol": {
     "AR/USD": 2,
     "AKT/USD": 2,
     "APT/USD": 3,
     "AAVE/USD": 3,
     "ASTER/USD": 4,
-    "1INCH/USD": 1
+    "1INCH/USD": 4
   },
   "max_trades_per_symbol": 10,
   "max_total_trades": 30

@@ -469,34 +469,31 @@ class BracketOrderManager:
                 print(f"[BRACKET-SEQ] ✅ Entry FILLED: {filled_qty:.8f} @ ${fill_price:.4f}")
                 print(f"[BRACKET-SEQ] Step 2: Placing TP limit order...")
                 
-                # CRITICAL: Wait for Kraken SPOT account to settle position
-                # Kraken needs time to release funds before accepting sell limit orders
-                print(f"[BRACKET-SEQ] Waiting 10 seconds for position settlement...")
-                import time
-                time.sleep(10)
-                
                 # Determine TP order side (opposite of entry)
                 tp_side = 'sell' if bracket.side.lower() == 'buy' else 'buy'
                 
-                # Step 3: Place TP limit order
-                tp_success, tp_message, tp_result = native_api.place_take_profit_order(
+                # Step 3: Place TP with intelligent settlement detection + retry
+                from settlement_detector import place_tp_with_retry
+                
+                tp_success, tp_message, tp_order_id = place_tp_with_retry(
                     symbol=bracket.symbol,
                     side=tp_side,
-                    quantity=filled_qty,  # Use actual filled quantity
-                    take_profit_price=tp_price_p,  # Use precision-corrected TP price
-                    validate=False
+                    quantity=filled_qty,
+                    tp_price=tp_price_p,
+                    fill_price=fill_price,
+                    max_attempts=5,
+                    initial_backoff=1.0
                 )
                 
                 if tp_success:
-                    tp_order_id = tp_result.get('txid', ['unknown'])[0] if tp_result and 'txid' in tp_result else 'unknown'
                     print(f"[BRACKET-COMPLETE] 🎯 SEQUENTIAL BRACKETS COMPLETE!")
                     print(f"[BRACKET-COMPLETE] Entry filled + SL active + TP placed")
                     print(f"[BRACKET-COMPLETE] Entry ID: {entry_order_id}")
                     print(f"[BRACKET-COMPLETE] TP ID: {tp_order_id}")
                     
-                    # Mark entry as filled (no longer needs monitoring)
+                    # Mark entry as filled and store TP/SL IDs (for OCO monitoring)
                     from evaluation_log import mark_pending_order_filled
-                    mark_pending_order_filled(entry_order_id)
+                    mark_pending_order_filled(entry_order_id, tp_order_id=tp_order_id)
                     
                     # Include TP order ID in result
                     result['tp_order_id'] = tp_order_id
@@ -504,6 +501,7 @@ class BracketOrderManager:
                 else:
                     print(f"[BRACKET-WARNING] ⚠️ TP placement failed: {tp_message}")
                     print(f"[BRACKET-WARNING] Entry is FILLED with SL protection, but NO TP")
+                    print(f"[BRACKET-WARNING] Reconciliation will retry TP placement...")
                     return True, f"Entry filled with SL, but TP failed: {tp_message}", result
             else:
                 # Entry not filled yet (limit order pending)

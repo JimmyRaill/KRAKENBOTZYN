@@ -252,6 +252,21 @@ def init_evaluation_log_db():
         )
     """)
     
+    # Add tp_order_id and sl_order_id columns for OCO tracking (if not exist)
+    cursor.execute("PRAGMA table_info(pending_child_orders)")
+    pending_columns = [row[1] for row in cursor.fetchall()]
+    
+    if 'tp_order_id' not in pending_columns:
+        cursor.execute("ALTER TABLE pending_child_orders ADD COLUMN tp_order_id TEXT DEFAULT NULL")
+    if 'sl_order_id' not in pending_columns:
+        cursor.execute("ALTER TABLE pending_child_orders ADD COLUMN sl_order_id TEXT DEFAULT NULL")
+    if 'exit_reason' not in pending_columns:
+        cursor.execute("ALTER TABLE pending_child_orders ADD COLUMN exit_reason TEXT DEFAULT NULL")
+    if 'entry_order_id' not in pending_columns:
+        cursor.execute("ALTER TABLE pending_child_orders ADD COLUMN entry_order_id TEXT DEFAULT NULL")
+    if 'created_at' not in pending_columns:
+        cursor.execute("ALTER TABLE pending_child_orders ADD COLUMN created_at INTEGER DEFAULT 0")
+    
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_pending_orders_status 
         ON pending_child_orders(status, trading_mode)
@@ -425,22 +440,44 @@ def get_pending_child_orders(trading_mode: Optional[str] = None, status: str = "
         return []
 
 
-def mark_pending_order_filled(order_id: str):
-    """Mark a pending order as filled (so it's not checked again)."""
+def mark_pending_order_filled(order_id: str, tp_order_id: Optional[str] = None, sl_order_id: Optional[str] = None):
+    """
+    Mark a pending order as filled and optionally store TP/SL order IDs for OCO monitoring.
+    
+    Args:
+        order_id: Entry order ID to mark as filled
+        tp_order_id: Optional take-profit order ID (for OCO tracking)
+        sl_order_id: Optional stop-loss order ID (for OCO tracking)
+    """
     try:
         conn = _get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("""
-            UPDATE pending_child_orders
-            SET status = 'filled', last_checked_utc = ?
-            WHERE order_id = ?
-        """, (datetime.utcnow().isoformat(), order_id))
+        # Build UPDATE query dynamically based on provided IDs
+        update_fields = ["status = 'filled'", "last_checked_utc = ?"]
+        params = [datetime.utcnow().isoformat()]
         
+        if tp_order_id:
+            update_fields.append("tp_order_id = ?")
+            params.append(tp_order_id)
+        
+        if sl_order_id:
+            update_fields.append("sl_order_id = ?")
+            params.append(sl_order_id)
+        
+        params.append(order_id)  # WHERE clause parameter
+        
+        query = f"""
+            UPDATE pending_child_orders
+            SET {', '.join(update_fields)}
+            WHERE order_id = ?
+        """
+        
+        cursor.execute(query, params)
         conn.commit()
         conn.close()
         
-        logger.debug(f"[PENDING-ORDER] Marked {order_id} as filled")
+        logger.debug(f"[PENDING-ORDER] Marked {order_id} as filled (TP: {tp_order_id}, SL: {sl_order_id})")
         
     except Exception as e:
         logger.error(f"[PENDING-ORDER] Failed to mark filled: {e}")
