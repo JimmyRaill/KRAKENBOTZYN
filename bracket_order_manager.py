@@ -471,9 +471,9 @@ class BracketOrderManager:
                 
                 # CRITICAL: Wait for Kraken SPOT account to settle position
                 # Kraken needs time to release funds before accepting sell limit orders
-                print(f"[BRACKET-SEQ] Waiting 5 seconds for position settlement...")
+                print(f"[BRACKET-SEQ] Waiting 10 seconds for position settlement...")
                 import time
-                time.sleep(5)
+                time.sleep(10)
                 
                 # Determine TP order side (opposite of entry)
                 tp_side = 'sell' if bracket.side.lower() == 'buy' else 'buy'
