@@ -37,6 +37,9 @@ from fee_model import get_minimum_edge_pct, get_taker_fee
 # MARKET EXECUTION: Simplified market-only order execution
 from execution_manager import execute_market_entry, execute_market_exit, has_open_position
 
+# POSITION TRACKING: Mental SL/TP for market-only mode
+from position_tracker import add_position, check_all_positions_for_exits, get_position_summary
+
 # Bracket order manager - OPTIONAL (only used if USE_BRACKETS=True)
 # Type hints for LSP
 get_bracket_manager = None
@@ -592,6 +595,60 @@ def loop_once(ex, symbols: List[str]) -> None:
     except Exception as e:
         print("[BAL-ERR]", e)
         eq_now = 0.0
+
+    # 2b. MENTAL SL/TP MONITORING - Check all open positions for exit triggers
+    try:
+        print(f"\n{get_position_summary()}")
+        
+        # Define price fetcher for position monitoring
+        def fetch_current_price(symbol: str) -> float:
+            try:
+                ticker = ex.fetch_ticker(symbol)
+                return ticker.get('last') or ticker.get('close') or ticker.get('bid', 0)
+            except Exception as e:
+                print(f"[PRICE-FETCH-ERR] {symbol}: {e}")
+                return 0.0
+        
+        # Check all positions for SL/TP triggers
+        exit_signals = check_all_positions_for_exits(fetch_current_price)
+        
+        # Execute market exits for triggered positions
+        for signal in exit_signals:
+            sym = signal['symbol']
+            trigger = signal['trigger']
+            current_price = signal['current_price']
+            position = signal['position']
+            
+            print(f"\n{'='*60}")
+            print(f"🚨 [EXIT-TRIGGER-DETECTED] {sym} - {trigger.upper()} HIT")
+            print(f"   Entry: ${position.entry_price:.4f} → Current: ${current_price:.4f}")
+            print(f"   Target: ${position.stop_loss_price if trigger == 'stop_loss' else position.take_profit_price:.4f}")
+            print(f"{'='*60}\n")
+            
+            # Execute market SELL
+            reason = f"{trigger}_trigger_{current_price:.4f}"
+            result = execute_market_exit(
+                symbol=sym,
+                quantity=position.quantity,
+                full_position=True,
+                source="autopilot_sl_tp",
+                reason=reason
+            )
+            
+            if result.success:
+                pnl_usd = (result.fill_price - position.entry_price) * result.filled_qty
+                pnl_pct = ((result.fill_price - position.entry_price) / position.entry_price) * 100
+                
+                print(f"✅ [EXIT-EXECUTED] {sym} - {trigger.upper()}")
+                print(f"   Fill: {result.filled_qty:.6f} @ ${result.fill_price:.4f}")
+                print(f"   P&L: ${pnl_usd:.2f} ({pnl_pct:+.2f}%)")
+                print(f"   Fee: ${result.fee:.4f}")
+            else:
+                print(f"❌ [EXIT-FAILED] {sym} - {result.error}")
+                print(f"   WARNING: Position may still be tracked - manual intervention may be required")
+    
+    except Exception as monitor_err:
+        print(f"[POSITION-MONITOR-ERR] {monitor_err}")
 
     # 3. PROFIT TARGET - Check if we should trade
     if PROFIT_TARGET_ENABLED and get_target_system:
@@ -1184,6 +1241,21 @@ def loop_once(ex, symbols: List[str]) -> None:
                                     notify_trade(sym, "buy", result.filled_qty, result.fill_price, why)
                             except Exception as log_err:
                                 print(f"[TELEMETRY-ERR] {log_err}")
+                        
+                        # MENTAL SL/TP: Store position with calculated exit levels
+                        try:
+                            position = add_position(
+                                symbol=sym,
+                                entry_price=result.fill_price,
+                                quantity=result.filled_qty,
+                                atr=atr if atr and atr > 0 else result.fill_price * 0.02,
+                                atr_sl_multiplier=2.0,
+                                atr_tp_multiplier=3.0,
+                                source="autopilot"
+                            )
+                            print(f"📍 [POSITION-STORED] {sym} - SL=${position.stop_loss_price:.4f}, TP=${position.take_profit_price:.4f}")
+                        except Exception as pos_err:
+                            print(f"[POSITION-TRACKER-ERR] {sym}: {pos_err} - position not tracked!")
                         
                         trade_log.append({"symbol": sym, "action": "market_buy", "usd": float(f"{usd_to_spend:.2f}")})
                         print(f"🎯 [MARKET-BUY-COMPLETE] {sym} - Position opened, monitoring for exit signals")

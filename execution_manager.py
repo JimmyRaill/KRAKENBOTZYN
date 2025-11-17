@@ -318,29 +318,6 @@ def execute_market_exit(
             except Exception as log_err:
                 logger.error(f"[MARKET-EXIT] Failed to log to executed_orders: {log_err}")
         
-        # Log to telemetry (exit - PnL will be calculated by telemetry system)
-        if TELEMETRY_ENABLED:
-            try:
-                log_trade(
-                    symbol=symbol,
-                    side='sell',  # FIXED: Use 'sell', not 'exit'
-                    action='close',  # ADDED: Required parameter
-                    quantity=filled_qty,
-                    price=fill_price,  # FIXED: Use 'price' for exit price
-                    usd_amount=filled_qty * fill_price if filled_qty and fill_price else None,
-                    order_id=order.get('id') if order else None,
-                    reason=reason or 'market_exit',
-                    source=source,  # CRITICAL: Pass through source from caller
-                    mode=mode_str,
-                    trade_id=order.get('id') if order else None,
-                    exit_price=fill_price,  # Lifecycle field
-                    position_size=filled_qty
-                )
-                logger.debug(f"[MARKET-EXIT] Logged to telemetry_db with source={source}")
-            except Exception as telem_err:
-                logger.error(f"[MARKET-EXIT] Failed to log to telemetry: {telem_err}")
-        
-        return ExecutionResult(
             success=True,
             order_id=order_id,
             filled_qty=filled_qty,
