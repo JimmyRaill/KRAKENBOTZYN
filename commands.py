@@ -27,6 +27,7 @@ HELP = (
     "  cancel <order_id> [symbol]\n"
     "  debug status                        show diagnostics\n"
     "  force trade test <symbol>           test LIVE order placement (requires ENABLE_FORCE_TRADE=1)\n"
+    "  force sltp test <symbol>            test mental SL/TP system (requires ENABLE_FORCE_TRADE=1)\n"
     "  help\n"
 )
 
@@ -1464,6 +1465,183 @@ def handle(text: str) -> str:
             
             return json.dumps(result, indent=2)
         
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "ok": False,
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }, indent=2)
+
+    # force sltp test [symbol] - Test mental SL/TP system with market orders
+    m = re.fullmatch(r"(?i)force\s+sltp\s+test(?:\s+([A-Za-z0-9:/\-\._]+))?", s)
+    if m:
+        from datetime import datetime, timezone
+        import json
+        import time
+        from execution_manager import execute_market_entry, execute_market_exit
+        from position_tracker import add_position, get_position_summary, get_position, remove_position
+        from candle_strategy import calculate_atr
+        from exchange_manager import get_manager
+        
+        symbol = _norm_sym(m.group(1) or "BTC/USD")
+        
+        try:
+            print(f"\n{'='*70}")
+            print(f"🧪 MENTAL SL/TP SYSTEM TEST - {symbol}")
+            print(f"{'='*70}\n")
+            
+            # Check ENABLE_FORCE_TRADE flag
+            enable_force_trade = os.getenv("ENABLE_FORCE_TRADE", "0").strip().lower() in ("1", "true", "yes", "on")
+            if not enable_force_trade:
+                return json.dumps({
+                    "ok": False,
+                    "error": "ENABLE_FORCE_TRADE is not enabled. Set ENABLE_FORCE_TRADE=1 in .env to allow force tests."
+                }, indent=2)
+            
+            ex = _ex()
+            mode = get_mode_str()
+            
+            # STEP 1: Get current price and ATR
+            print("[STEP 1] Fetching market data...")
+            ticker = ex.fetch_ticker(symbol)
+            current_price = ticker.get('last') or ticker.get('close') or ticker.get('bid', 0)
+            
+            # Get ATR for SL/TP calculation
+            manager = get_manager()
+            ohlcv = manager.fetch_ohlc(symbol, timeframe='5m', limit=20)
+            atr = calculate_atr(ohlcv, period=14)
+            
+            print(f"   Price: ${current_price:.4f}")
+            print(f"   ATR: {atr:.4f}\n")
+            
+            # STEP 2: Execute market BUY
+            test_usd = 10.0  # Small test amount
+            print(f"[STEP 2] Executing market BUY (${test_usd})")
+            buy_result = execute_market_entry(
+                symbol=symbol,
+                size_usd=test_usd,
+                source="force_sltp_test",
+                atr=atr,
+                reason="force_sltp_test"
+            )
+            
+            if not buy_result.success:
+                return json.dumps({
+                    "ok": False,
+                    "error": f"Market BUY failed: {buy_result.error}"
+                }, indent=2)
+            
+            print(f"   ✅ BUY filled: {buy_result.filled_qty:.6f} @ ${buy_result.fill_price:.4f}")
+            print(f"   Cost: ${buy_result.total_cost:.2f}, Fee: ${buy_result.fee:.4f}\n")
+            
+            # STEP 3: Store position with mental SL/TP
+            print("[STEP 3] Storing position with mental SL/TP...")
+            position = add_position(
+                symbol=symbol,
+                entry_price=buy_result.fill_price,
+                quantity=buy_result.filled_qty,
+                atr=atr,
+                atr_sl_multiplier=2.0,
+                atr_tp_multiplier=3.0,
+                source="force_sltp_test"
+            )
+            
+            print(f"   📍 Position stored:")
+            print(f"      Entry: ${position.entry_price:.4f}")
+            print(f"      Stop Loss: ${position.stop_loss_price:.4f} (-{((position.entry_price - position.stop_loss_price) / position.entry_price * 100):.2f}%)")
+            print(f"      Take Profit: ${position.take_profit_price:.4f} (+{((position.take_profit_price - position.entry_price) / position.entry_price * 100):.2f}%)")
+            print(f"      Quantity: {position.quantity:.6f}\n")
+            
+            # STEP 4: Verify position tracking
+            print("[STEP 4] Verifying position tracker...")
+            retrieved_position = get_position(symbol)
+            if not retrieved_position:
+                print(f"   ❌ ERROR: Position not found in tracker!\n")
+            else:
+                print(f"   ✅ Position retrieved from tracker successfully\n")
+            
+            print(f"{get_position_summary()}\n")
+            
+            # STEP 5: Wait a moment then execute market SELL
+            print("[STEP 5] Executing market SELL to close position...")
+            time.sleep(2)  # Brief pause for dramatic effect
+            
+            sell_result = execute_market_exit(
+                symbol=symbol,
+                quantity=buy_result.filled_qty,
+                full_position=True,
+                source="force_sltp_test",
+                reason="force_sltp_test_exit"
+            )
+            
+            if not sell_result.success:
+                return json.dumps({
+                    "ok": False,
+                    "partial": True,
+                    "error": f"Market SELL failed: {sell_result.error}",
+                    "note": "Position may still be open and tracked - manual intervention required"
+                }, indent=2)
+            
+            print(f"   ✅ SELL filled: {sell_result.filled_qty:.6f} @ ${sell_result.fill_price:.4f}")
+            print(f"   Proceeds: ${sell_result.total_cost:.2f}, Fee: ${sell_result.fee:.4f}\n")
+            
+            # Calculate P&L
+            gross_pnl = (sell_result.fill_price - buy_result.fill_price) * sell_result.filled_qty
+            net_pnl = gross_pnl - buy_result.fee - sell_result.fee
+            pnl_pct = (net_pnl / buy_result.total_cost) * 100
+            
+            print(f"   💰 P&L: ${net_pnl:.2f} ({pnl_pct:+.2f}%)")
+            print(f"      Gross: ${gross_pnl:.2f}")
+            print(f"      Fees: ${buy_result.fee + sell_result.fee:.4f}\n")
+            
+            # STEP 6: Verify position was removed
+            print("[STEP 6] Verifying position removed from tracker...")
+            final_position = get_position(symbol)
+            if final_position:
+                print(f"   ⚠️  WARNING: Position still exists in tracker!\n")
+            else:
+                print(f"   ✅ Position removed from tracker successfully\n")
+            
+            print(f"{get_position_summary()}\n")
+            
+            # Final summary
+            print(f"\n{'='*70}")
+            print(f"✅ MENTAL SL/TP SYSTEM TEST COMPLETE")
+            print(f"{'='*70}\n")
+            
+            result = {
+                "ok": True,
+                "mode": mode,
+                "symbol": symbol,
+                "entry": {
+                    "price": buy_result.fill_price,
+                    "quantity": buy_result.filled_qty,
+                    "cost": buy_result.total_cost,
+                    "fee": buy_result.fee
+                },
+                "mental_levels": {
+                    "stop_loss": position.stop_loss_price,
+                    "take_profit": position.take_profit_price,
+                    "atr": atr
+                },
+                "exit": {
+                    "price": sell_result.fill_price,
+                    "quantity": sell_result.filled_qty,
+                    "proceeds": sell_result.total_cost,
+                    "fee": sell_result.fee
+                },
+                "pnl": {
+                    "gross_usd": gross_pnl,
+                    "net_usd": net_pnl,
+                    "pnl_pct": pnl_pct
+                },
+                "position_removed": final_position is None,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat()
+            }
+            
+            return json.dumps(result, indent=2)
+            
         except Exception as e:
             import traceback
             return json.dumps({
