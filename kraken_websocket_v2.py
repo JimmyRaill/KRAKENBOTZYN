@@ -247,7 +247,7 @@ class KrakenWebSocketV2:
         except Exception as e:
             return False, f"Failed to get WebSocket token: {e}", None
         
-        if not self.ws or self.ws.closed:
+        if not self.ws:
             await self.connect()
         
         exit_side = 'sell' if side == 'buy' else 'buy'
@@ -263,7 +263,6 @@ class KrakenWebSocketV2:
                 "orders": [
                     # ORDER 1: Entry market order (no conditional close)
                     {
-                        "symbol": kraken_symbol,  # Per-order symbol (required!)
                         "order_type": "market",
                         "side": side,
                         "order_qty": quantity,
@@ -271,7 +270,6 @@ class KrakenWebSocketV2:
                     },
                     # ORDER 2: Take-profit limit order (reduce_only!)
                     {
-                        "symbol": kraken_symbol,  # Per-order symbol (required!)
                         "order_type": "limit",
                         "side": exit_side,
                         "order_qty": quantity,
@@ -281,7 +279,6 @@ class KrakenWebSocketV2:
                     },
                     # ORDER 3: Stop-loss order (reduce_only!)
                     {
-                        "symbol": kraken_symbol,  # Per-order symbol (required!)
                         "order_type": "stop-loss",
                         "side": exit_side,
                         "order_qty": quantity,
@@ -310,11 +307,30 @@ class KrakenWebSocketV2:
                 # Send the batch request
                 await self.ws.send(json.dumps(batch_request))
                 
-                # Wait for response (timeout after 10 seconds)
-                response = await asyncio.wait_for(self.ws.recv(), timeout=10.0)
-                result = json.loads(response)
+                # Wait for batch_add response, skipping subscription/snapshot messages
+                result = None
+                max_messages = 5  # Read up to 5 messages to find batch_add response
+                for _ in range(max_messages):
+                    response = await asyncio.wait_for(self.ws.recv(), timeout=10.0)
+                    msg = json.loads(response)
+                    
+                    # Skip subscription confirmations and snapshots
+                    if msg.get('method') == 'subscribe' or msg.get('type') == 'snapshot':
+                        print(f"[KRAKEN-WS] Skipping message: {msg.get('method') or msg.get('type')}")
+                        continue
+                    
+                    # Found our batch_add response
+                    if msg.get('method') == 'batch_add' or (not msg.get('method') and not msg.get('type')):
+                        result = msg
+                        break
+                    
+                    print(f"[KRAKEN-WS] Unexpected message type, continuing: {json.dumps(msg, indent=2)}")
                 
-                print(f"[KRAKEN-WS] Response received: {json.dumps(result, indent=2)}")
+                if result is None:
+                    print(f"[KRAKEN-WS] Never received batch_add response after {max_messages} messages")
+                    return False, "No batch_add response received", None
+                
+                print(f"[KRAKEN-WS] Batch response received: {json.dumps(result, indent=2)}")
                 
                 # Check for errors
                 if result.get('error'):
@@ -372,7 +388,7 @@ class KrakenWebSocketV2:
     
     async def close(self):
         """Close WebSocket connection"""
-        if self.ws and not self.ws.closed:
+        if self.ws:
             await self.ws.close()
             print(f"[KRAKEN-WS] Connection closed")
 
