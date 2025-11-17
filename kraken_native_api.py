@@ -278,7 +278,6 @@ class KrakenNativeAPI:
                 fill_data = None
                 if entry_type == 'market' and not validate:
                     print(f"[KRAKEN-OCO] Querying order details for fill data...")
-                    import time
                     time.sleep(1)  # Brief wait for market order to fill
                     
                     order_query = self.query_orders([order_id])
