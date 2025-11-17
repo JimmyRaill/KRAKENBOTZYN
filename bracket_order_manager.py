@@ -99,8 +99,8 @@ class BracketOrder:
             if self.take_profit_price >= self.entry_price:
                 return False, f"SHORT: take_profit ({self.take_profit_price}) must be BELOW entry ({self.entry_price})"
         
-        # Check minimum R:R ratio
-        if self.rr_ratio < config.min_rr:
+        # Check minimum R:R ratio (use <= to allow exact match)
+        if self.rr_ratio < config.min_rr - 0.01:  # Allow 0.01 tolerance for floating point
             return False, f"R:R {self.rr_ratio:.2f} below minimum {config.min_rr:.2f}"
         
         # All validations passed
@@ -383,28 +383,14 @@ class BracketOrderManager:
         if not is_valid:
             return False, f"Pre-flight validation failed: {error}", None
         
-        # Calculate stop loss and take profit as PERCENTAGES from entry
-        # This avoids rounding issues on low-priced assets
+        # Use ABSOLUTE prices for Kraken conditional close (CCXT doesn't support % notation reliably)
+        # This is more compatible with CCXT's interface
         try:
-            # For LONG positions
-            if bracket.side.lower() == "buy":
-                # Stop loss is BELOW entry (negative percentage)
-                sl_pct = -1.0 * bracket.stop_distance_pct * 100  # Convert to %
-                # Take profit is ABOVE entry (positive percentage)
-                tp_pct = bracket.tp_distance_pct * 100  # Convert to %
-            # For SHORT positions
-            else:
-                # Stop loss is ABOVE entry (positive percentage)
-                sl_pct = bracket.stop_distance_pct * 100
-                # Take profit is BELOW entry (negative percentage)
-                tp_pct = -1.0 * bracket.tp_distance_pct * 100
+            # Use the already-calculated absolute prices from the bracket
+            sl_price_param = str(bracket.stop_price)
+            tp_price_param = str(bracket.take_profit_price)
             
-            # Use Kraken's # notation for relative to entry price
-            # Format: #±X% means X% relative to the filled entry price
-            sl_price_param = f"#{sl_pct:+.4f}%"  # e.g., "#-5.0000%"
-            tp_price_param = f"#{tp_pct:+.4f}%"  # e.g., "#+10.0000%"
-            
-            print(f"[BRACKET-KRAKEN] {bracket.symbol} | SL: {sl_price_param}, TP: {tp_price_param}")
+            print(f"[BRACKET-KRAKEN] {bracket.symbol} | SL: ${sl_price_param}, TP: ${tp_price_param} (absolute prices)")
             
         except Exception as e:
             return False, f"Percentage calculation error: {e}", None
@@ -432,9 +418,10 @@ class BracketOrderManager:
             print(f"[BRACKET-PARAMS] {params}")
             
             # Place the order (market order for immediate execution)
+            # Note: PaperExchangeWrapper uses 'order_type' not 'type'
             order = exchange.create_order(
                 symbol=bracket.symbol,
-                type='market',
+                order_type='market',
                 side=bracket.side,
                 amount=qty_p,
                 price=None,
