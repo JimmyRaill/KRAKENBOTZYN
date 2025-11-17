@@ -1,0 +1,350 @@
+You are in PLAN mode. You are Replit’s build agent for my Kraken trading bot “Zyzn / Zyn”.
+
+Your job in this PLAN is to design and then implement a COMPLETE, COHERENT, ERROR-FREE build that:
+
+- Fixes EVERY blocking bug in execution, logging, config loading, and data access.
+- Confirms the bot is ACTUALLY scanning and trading automatically (not just logging fake trades).
+- Uses MARKET-ONLY execution (no brackets, no SL/TP) as the current live mode.
+- Gives the bot full access to all the live information it genuinely needs (balances, fees, trade history, universe, etc.).
+- Enforces strict “no guessing / no hallucination” rules for anything related to trades and PnL.
+- Sets the system up so that I can later tune strategy parameters (edge, risk, frequency) safely.
+
+If something is literally impossible (e.g., you cannot query Kraken because no keys exist), you must:
+- Detect that.
+- Explain it clearly in your final summary.
+- Do NOT invent behavior or fake data to “pretend” it’s working.
+
+Use ONLY real code, real DBs, real configs, and real Kraken API behavior. No hand-waving.
+
+================================
+0. GROUND RULES (NO GUESSING)
+================================
+
+- When dealing with:
+  - Trades in last 24h / 7d
+  - Whether autopilot has traded
+  - PnL or fees
+  - Sources (autopilot / command / force_test)
+  You MUST base your conclusions on:
+  - Kraken API (fetch_balance, fetch_my_trades / full TradeVolume, etc.)
+  - Local SQLite DBs (evaluation_log.db, trading_memory.db, etc.)
+  - executed_orders table (or equivalent)
+- If any of those data sources are unavailable or inconsistent, you must:
+  - Surface that explicitly (in logs and in the final summary).
+  - Never “assume” a trade happened or a PnL exists.
+
+==============================
+1. KRAKEN API CREDENTIALS
+==============================
+
+1.1 Inspect environment:
+
+- Check for KRAKEN_API_KEY, KRAKEN_API_SECRET, and any other required auth env vars.
+- If they are missing or empty:
+  - DO NOT try to proceed as if live trading is possible.
+  - Wire the code so that:
+    - On startup, autopilot clearly logs: “CRITICAL: No Kraken API credentials. Live trading and live data are DISABLED.”
+    - Any attempt to place a live trade fails fast with a clear error.
+
+1.2 If credentials ARE present (properly configured in Replit secrets):
+
+- Build a small, reusable “kraken_health_check()” function (e.g. in a kraken_health.py or existing account_state.py) that:
+  - Calls fetch_balance()
+  - Calls fetch_my_trades(limit=5)
+  - Optionally calls TradeVolume or fetch_trading_fees
+  - Returns a structured result: ok / error + details.
+- On autopilot startup:
+  - Run kraken_health_check().
+  - Log a clear line: “[KRAKEN-HEALTH] OK …” or “[KRAKEN-HEALTH] ERROR: <message>”.
+  - If KRaken health fails, autopilot MUST NOT claim it’s trading live.
+
+=========================================
+2. EXECUTION MODEL – MARKET-ONLY MODE
+=========================================
+
+The current required behavior:
+
+- USE_BRACKETS = False → The bot must:
+  - Use MARKET BUY to open positions.
+  - Use MARKET SELL to close positions.
+  - NO SL/TP, no conditional orders, no brackets.
+
+2.1 Normalize execution configuration:
+
+- Centralize config for:
+  - USE_BRACKETS (bool)
+  - ORDER_MODE (“market_only” vs “limit_brackets”)
+- Ensure that when USE_BRACKETS=False:
+  - Autopilot NEVER calls any bracket manager / TP/SL functions.
+  - All entry/exit orders go through a single market execution path:
+    - execute_market_entry(symbol, qty)
+    - execute_market_exit(symbol, qty_or_all)
+
+2.2 Fix ALL execution path bugs:
+
+- You previously saw errors like:
+  - “cannot access local variable 'config' where it is not associated with a value”
+- In autopilot / execution_manager:
+  - Identify every place where actions like “long”, “short”, “sell”, “exit” are mapped to executions.
+  - Ensure that:
+    - Signals → exec_action mapping is consistent (“long” → market buy, “exit/sell” → market sell).
+    - Any required config is properly defined in scope (no unbound locals).
+    - If a critical config is missing, raise a loud, explicit error and DO NOT silently HOLD.
+
+2.3 Single source of truth for live vs paper:
+
+- Implement a single function get_exchange(mode) that:
+  - Returns a real ccxt.kraken instance when PAPER_TRADING=0 and valid credentials exist.
+  - Returns a paper wrapper when PAPER_TRADING=1.
+- Ensure autopilot is not accidentally using PaperExchangeWrapper when live mode is intended.
+
+==================================
+3. LOGGING & TELEMETRY PIPELINE
+==================================
+
+Right now:
+- executed_orders has only 3 force_test entries.
+- trading_memory.db contains many “autopilot” trades that may not be real.
+- There is a mismatch between Kraken and local logs.
+
+You must fix logging so it is:
+
+- Complete.
+- Consistent.
+- Easy to reconcile with Kraken.
+
+3.1 executed_orders (evaluation_log.db):
+
+- For EVERY market entry/exit that actually reaches the order placement function, you must:
+  - Log a row in executed_orders with:
+    - timestamp_utc (ISO 8601)
+    - symbol
+    - side (buy/sell)
+    - quantity
+    - price (fill price)
+    - order_id (from Kraken)
+    - trading_mode (“live” or “paper”)
+    - source (“autopilot”, “command”, “force_test”, “autopilot_test”, etc.)
+
+- This MUST happen only when the Kraken order is confirmed (not just when we intend to trade).
+- If Kraken returns an error or the order is rejected, DO NOT log a successful execution.
+
+3.2 trading_memory.db trades table:
+
+- Ensure every fill that is “real” is also logged here, or:
+  - Move to using executed_orders as the single source and deprecate duplicate, inconsistent tables.
+- If you keep the trades table:
+  - Enforce same schema fields: symbol, side, amount, price, timestamp, source, order_id, mode.
+  - Fix the default source value:
+    - NO default “autopilot”.
+    - Default to “unknown” if not explicitly set.
+
+3.3 Consistency enforcement:
+
+- Implement a small reconciliation utility (e.g., reconcile_trades.py or a function callable by the LLM) that:
+  - Fetches Kraken trades over a given window (24h, 7d).
+  - Fetches local DB trades over the same window.
+  - Matches by trade id and timestamp.
+  - Produces:
+    - Trades on Kraken not in DB.
+    - Trades in DB not on Kraken.
+  - This must be callable by the chatbot in a read-only “reconcile” command.
+
+- LLM rule:
+  - LLM must NEVER claim a trade exists unless:
+    - It can see it in at least one local DB table, AND
+    - It has been confirmed either:
+      - Via Kraken trade history.
+      - Or via an explicit flag that we’re in PAPER mode and using paper history only.
+
+=================================
+4. EVALUATION & AUTOPILOT LOGIC
+=================================
+
+4.1 Symbol universe:
+
+- Confirm we’re using the dynamic universe scanner with a sane set (e.g., 10–30 high-volume USD pairs).
+- Ensure we log:
+  - “[UNIVERSE] Using dynamic scanner: <list of symbols>”
+- Autopilot MUST NOT silently shrink to 0 symbols.
+
+4.2 Signal → Execution wiring:
+
+- You previously saw the wiring bug: action='long', execution checking for “buy”.
+- Confirm the following:
+
+  - For each 5m loop:
+    - The strategy produces an action: “long”, “short”, “hold”, “exit”, etc.
+    - Non-hold actions:
+      - “long” → market buy (if no position).
+      - “exit” or “sell” → market sell (if position exists).
+    - Ensure no path silently converts signals back to HOLD just because code is incomplete.
+
+- If risk limits, daily limits, or rate-limit checks block a trade:
+  - Log the reason clearly (e.g., “[LIMIT-BLOCK] AR/USD long blocked: max trades per day reached”).
+
+4.3 Daily limits & killer configs:
+
+- Fix env parsing bugs such as MAX_DAILY_LOSS_USD="$50".
+  - Enforce numeric parsing:
+    - Strip $, commas, whitespace.
+    - Log an error and disable live trading if value cannot be parsed.
+- Confirm:
+  - max_trades_per_day
+  - max_trades_per_symbol_per_day
+  - max_daily_loss_usd
+- Ensure these are actually enforced, but do NOT silently block all trades due to parsing errors.
+
+=======================================
+5. FEE MODEL & PROFITABILITY AWARENESS
+=======================================
+
+We are not asking you to guarantee ROI, but we DO need:
+
+- Accurate fee modeling.
+- Realistic break-even logic.
+- No “positive PnL” claims unless fees are included.
+
+5.1 Fee access:
+
+- Implement or fix a function that fetches real Kraken fee info:
+  - Either via ccxt’s fetch_trading_fees()
+  - Or Kraken’s TradeVolume endpoint (tier-based).
+- Cache this result with a timestamp; refresh it periodically (e.g., hourly).
+
+5.2 Fee-aware PnL for closed trades:
+
+- For each COMPLETELY closed live trade (entry + exit) you can find:
+  - Compute net % return AFTER fees:
+    - net_pnl = (exit_value – entry_value – total_fees) / entry_value.
+- Store this net_pnl in your DB for each completed trade.
+
+5.3 LLM behavior:
+
+- LLM must not report PnL without fees.
+- It must clearly say:
+  - “I have N fully closed trades with fee-adjusted PnL. Here are their net % returns: …”
+  - If it cannot compute that, it must say explicitly why (missing data, no exits, fee function broken, etc.).
+
+====================================
+6. STRESS TEST & AUTOPILOT PROOF
+====================================
+
+You must wire a realistic, SAFE smoke test to prove the end-to-end path works.
+
+6.1 Autopilot smoke test (MARKET ONLY):
+
+- Add a dedicated test mode or command, e.g.:
+  - “autopilot_smoke_test ETH/USD” (source="autopilot_test")
+- Behavior when this test is run (and ONLY when explicitly triggered by me, not automatically):
+
+  1) Check we are in LIVE mode and have valid Kraken credentials.
+  2) Place a tiny MARKET BUY on a liquid symbol (e.g. ETH/USD) with very small notional (e.g. $5–10).
+  3) Log it fully:
+     - Kraken order id
+     - executed_orders row
+     - trades table row
+  4) Then place a MARKET SELL to close that position.
+  5) Log that exit the same way.
+  6) Run reconciliation to ensure:
+     - Both entry and exit appear in Kraken history.
+     - Both appear in local DB.
+  7) Return a structured result: PASS/FAIL + reasons.
+
+- This proves:
+  - Execution path works.
+  - Logging path works.
+  - Kraken connectivity is real.
+  - Reconciliation logic works.
+
+6.2 Autopilot real-time confirmation:
+
+- In normal operation (no test mode), ensure autopilot:
+
+  - Logs each non-HOLD decision and whether:
+    - It resulted in a trade, OR
+    - It was blocked (and why).
+  - On a status command, the LLM must be able to answer:
+
+    - “Today:
+       - Evaluations: X
+       - Non-HOLD signals: Y
+       - Live trades that hit Kraken: Z
+       - Source breakdown: <counts>”
+
+  - Those Z trades must match both:
+    - Kraken’s trade history (by timestamp and id)
+    - Local DB.
+
+=========================================
+7. ANTI-HALLUCINATION TRADE REPORTING
+=========================================
+
+You must enforce constraints so Zyn cannot:
+
+- Claim “I traded X times” when the DB is empty.
+- Claim something happened in “last 24h” when timestamps are older.
+
+7.1 Time-window enforcement:
+
+- For 24h or 7d questions:
+  - Always compute cutoff_now – 24h / 7d.
+  - Filter trades by timestamp >= cutoff.
+  - If there are 0 trades, answer “0 trades in last 24 hours” with no embellishment.
+
+7.2 Source fields:
+
+- For every trade in DB:
+  - source must be one of:
+    - “autopilot”
+    - “command”
+    - “force_test”
+    - “autopilot_test”
+    - “unknown”
+- Never assume autopilot. If unknown, say “unknown”.
+
+7.3 Diagnostic command:
+
+- Implement a robust “full_diagnostic_status” tool that the LLM can call which returns:
+
+  - current UTC time
+  - trading_mode, USE_BRACKETS, order style
+  - symbol universe in last loop
+  - trades_24h (with strict time filter)
+  - trades_7d counts by source
+  - last 10 executed_orders
+  - any recent execution errors
+  - whether at least one confirmed LIVE autopilot trade exists in the last 7 days
+
+- This tool must use only:
+  - Kraken API
+  - Local DBs
+  - No hard-coded counts or assumptions.
+
+=========================================
+8. FINAL HEALTH CHECK + SUMMARY
+=========================================
+
+At the end of BUILD:
+
+- Run:
+  - kraken_health_check()
+  - full_diagnostic_status
+  - autopilot_smoke_test (if I explicitly allow it or you can simulate in PAPER mode)
+
+- Confirm, in your final PLAN summary:
+
+  - Whether Kraken credentials are actually present and working.
+  - Whether the bot is truly in LIVE + MARKET-ONLY mode with no brackets.
+  - Whether the execution path (signal → market order → logging → reconciliation) is now clean and error-free.
+  - Whether there is at least ONE fully confirmed test trade (if I let you run the smoke test).
+  - Whether any known limitations remain (e.g., you can’t guarantee profitability, you don’t have enough closed trades to estimate edge, etc.).
+
+IMPORTANT:
+- Do NOT claim the strategy is “profitable” or give a specific annual return. That is impossible to know right now.
+- Your job is to:
+  - Make the system logically consistent.
+  - Make trading + logging + reconciliation robust.
+  - Make Zyn honest and accurate when reporting what actually happened.
+
+Design your tasks, implement all required changes, fix any errors you encounter, restart the workflows as needed, and then give me a clear, concise final status report summarizing exactly what is working, what was fixed, and what is still unknown.

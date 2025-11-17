@@ -1,0 +1,114 @@
+- You are not allowed to guess in any way. You must use ONLY:
+  - Live Kraken API data for my account
+  - Your SQLite databases (evaluation_log.db, trading_memory.db, etc.)
+  - Your executed_orders table/log
+  - Your current .env/config values
+  Do not infer, assume, or “probably” anything. If some data is unavailable, say exactly what’s missing and why.
+
+- What is the current UTC time right now, according to your system?
+
+- What is your current trading mode and config?
+  - trading_mode (live or paper)
+  - USE_BRACKETS (True / False)
+  - order style currently used by AUTOPILOT (market only, limit only, or mix – based on actual config, not marketing text)
+  - AUTONOMOUS flag (0/1)
+
+- What symbol universe are you actually evaluating right now?
+  - Are you using the dynamic universe scanner or static SYMBOLS?
+  - List every symbol you evaluated in the LAST FULL AUTOPILOT LOOP (not “in general”, but from the most recent loop).
+
+- Trades in the LAST 24 HOURS (REAL, timestamp-filtered):
+  - Apply a hard cutoff: now_utc - 24 hours.
+  - How many trades exist in that window from the REAL Kraken API for my account? Give a single integer.
+  - Then list each of those trades with:
+    - symbol
+    - side
+    - amount
+    - price
+    - timestamp
+    - trade id
+  - For each of those same trades, if you have a matching record in ANY internal DB (trades table / executed_orders), show:
+    - which table it appears in
+    - source field exactly as stored (autopilot / command / force_test / unknown)
+  - For any Kraken trade in that window that does NOT appear in your internal DBs, explicitly say: “Missing from internal logs: [trade id]”.
+
+- Trades in the LAST 7 DAYS:
+  - Apply a real 7-day cutoff: now_utc - 7 days.
+  - How many total trades in that 7-day window from Kraken? (single integer)
+  - How many of those 7-day trades are labeled in your DBs as:
+    - source = autopilot
+    - source = command
+    - source = force_test
+    - source = unknown
+
+- Internal executed_orders log:
+  - Show the LAST 10 entries from executed_orders with:
+    - timestamp
+    - symbol
+    - side
+    - quantity
+    - price
+    - order_id
+    - trading_mode
+    - source
+  - If there are fewer than 10, show all.
+  - If there are 0 entries, say exactly: “executed_orders log: 0 entries”.
+
+- Autopilot vs manual/force in the LAST 24 HOURS:
+  - Based ONLY on your internal logs:
+    - How many trades were placed with source="autopilot" in the last 24 hours?
+    - How many with source="command"?
+    - How many with source="force_test"?
+  - Cross-check that the sum of those equals the count of trades you see in your DBs for that same 24-hour window. If they don’t match, say: “Mismatch between source breakdown and DB trade count.”
+
+- Most recent AUTOPILOT trade (not command, not force_test):
+  - Does any trade in your internal logs have source="autopilot"?
+  - If yes:
+    - Give symbol, side, size, price, timestamp, trade id, and order id.
+    - Confirm with Kraken API that this trade actually exists on Kraken (same trade id and timestamp).
+    - If it does NOT exist on Kraken, say: “Internal log shows autopilot trade that does NOT exist on Kraken: [trade id].”
+  - If no autopilot trades exist in your logs, say exactly: “No confirmed autopilot trades exist in my internal logs.”
+
+- Last force trade test status:
+  - Look at your MOST RECENT trade with source="force_test" or “force_trade_test” (from your internal logs).
+  - For that trade only, answer:
+    - Did Kraken confirm the entry order? (yes/no – using Kraken data)
+    - symbol, side, size, price
+    - trade id and order id
+    - Did you place any exit order related to that entry (sell, close, etc.)?
+    - Did you log that exit anywhere in your internal DBs? If yes, where? If not, say it clearly.
+
+- Execution bug check:
+  - During the LAST 10 AUTOPILOT LOOPS:
+    - How many times did you generate a non-HOLD decision (e.g., LONG / SHORT / SELL / EXIT)?
+    - For each such decision, did you:
+      - reach the actual order placement function?
+      - hit any exceptions or errors?
+    - If ANY exception or error happened between signal and order placement, show:
+      - the exact error message
+      - the file and line (if available)
+      - which symbol it affected.
+
+- Strategy evaluation vs actual trades TODAY (UTC day):
+  - How many evaluations have you logged today (count of rows in evaluations for today’s date)?
+  - How many of those evaluations had decision in ('LONG', 'SHORT', 'SELL', 'EXIT')?
+  - How many actual trades (from Kraken) happened today?
+  - If the number of non-HOLD decisions > 0 and the number of trades from Kraken today == 0, explicitly say:
+    - “Signals were generated today but no matching trades executed on Kraken.”
+
+- Fee model + PnL:
+  - Are you currently fetching real fee information from Kraken (via any endpoint like TradeVolume)? Answer yes/no and show the exact function you use.
+  - For the LAST CLOSED TRADE (entry + exit pair) you can find:
+    - Compute the net % return after fees, using your real fee logic.
+    - If you cannot compute this because fees or exits are missing, say exactly what is missing.
+
+- Over-trading / rate limit safety:
+  - In the last 60 minutes:
+    - How many orders did you attempt to place (regardless of success)?
+    - Did you hit any Kraken rate-limit errors?
+    - Did any internal rate-limiter or safety kill-switch block a trade? If so, show the reason string(s).
+
+- Final yes/no:
+  - Based ONLY on everything above, and with zero guessing:
+    - Have you successfully placed even ONE fully-automatic AUTOPILOT trade (source="autopilot", not command/force_test) on LIVE Kraken in the last 7 days?
+    - Answer strictly “yes” or “no”, then justify using concrete trade ids and timestamps (or explicitly say there are none).
