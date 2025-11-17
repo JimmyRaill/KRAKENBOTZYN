@@ -1,0 +1,189 @@
+You are in PLAN MODE.
+
+Goal: Design a clear, IMPLEMENTABLE plan to add proper OCO-style bracket orders (entry + take profit + stop loss) to my trading bot so that every trade has BOTH TP and SL. Right now the bot is effectively trading with only a stop loss, which is causing unnecessary losses and leaving winners unprotected. The Replit BUILD agent has been confused so far – I need you to be extremely concrete and specific.
+
+ASSUME:
+- Exchange: Kraken via ccxt.
+- Bot already has working:
+  - LIVE mode execution pipeline (ccxt calls succeed).
+  - Risk sizing (risk_per_trade_pct, ATR-based stops, etc.).
+  - Some form of “bracket” or “stop loss only” logic (but not a reliable TP+SL OCO bracket).
+- Force trade tests already work for entries.
+
+I DO NOT want vague advice. I want a precise engineering plan that BUILD MODE can follow step-by-step.
+
+────────────────────
+STEP 1 – MAP CURRENT ENTRY & PROTECTION LOGIC
+────────────────────
+
+1. Identify EXACTLY where entry orders are created in the code:
+   - Files and functions (e.g., bracket_order_manager.py, commands.py, autopilot.py).
+   - For each path:
+     - Autopilot entries (strategy-generated).
+     - Manual commands (e.g., "buy", "sell").
+     - Force trade tests (e.g., "force trade test on ETH/USD").
+
+2. For each entry path, answer:
+   - How is the entry order placed? (market or limit?)
+   - Is a take-profit order currently being placed? If yes:
+     - Is it a separate limit order?
+     - Is it reliably created in LIVE mode?
+   - Is a stop-loss order currently being placed? If yes:
+     - Is it a stop-market / stop-loss / conditional order?
+     - Is there retry or rollback logic?
+
+3. Very important:
+   - Confirm whether we are currently using EXCHANGE-LEVEL OCO / linked orders on Kraken (via ccxt params) OR if we are simply placing two independent child orders (one TP, one SL) without true OCO behavior.
+   - If NO real OCO is used, say that explicitly.
+
+Output for STEP 1:
+- A clear list: 
+  - “Autopilot path: file X, function Y, currently does A/B/C.”
+  - “Manual command path: file X, function Y, currently does A/B/C.”
+  - “Force test path: file X, function Y, currently does A/B/C.”
+- Explicit note: “Current behavior is effectively ‘entry + SL only’, entry + SL+TP but NOT OCO, or something else.”
+
+────────────────────
+STEP 2 – DESIGN OCO BRACKET BEHAVIOR (IDEAL & FALLBACK)
+────────────────────
+
+Design a proper OCO system for this bot:
+
+1. IDEAL CASE – TRUE OCO via Kraken/ccxt (if supported):
+
+   - Research how Kraken’s ccxt implementation supports OCO or linked TP/SL for spot or margin (e.g., special ‘oflags’, ‘reduce_only’, or explicit OCO params).
+   - Define EXACT ccxt.create_order / create_limit_order / create_stop_loss / params structure to:
+     - Place one entry order (market or limit).
+     - Attach BOTH:
+       - Take profit: limit sell (for long).
+       - Stop loss: stop-loss or stop-market order.
+     - Ensure they are linked such that when one fills, the other is automatically canceled by the exchange.
+
+   - Document:
+     - Exact ccxt method signatures.
+     - Required params for Kraken.
+     - How to map this into our existing wrapper (PaperExchangeWrapper, etc.).
+
+2. FALLBACK CASE – BOT-LEVEL OCO EMULATION (if true OCO not available or too messy):
+
+   Design a safe, robust bot-managed OCO:
+
+   - On entry:
+     - Place entry order (market or limit).
+     - Once filled, place:
+       - One TP limit order.
+       - One SL stop-loss order.
+     - Save their order IDs in a persistent store (e.g., DB table: bracket_orders or in existing telemetry DB).
+
+   - Monitoring loop (e.g., safety_monitor or autopilot loop):
+     - On each cycle:
+       - Check status of both child orders.
+       - If TP fills:
+         - Cancel SL if still open.
+       - If SL fills:
+         - Cancel TP if still open.
+       - If both are closed or one is partially filled, handle consistently (close position fully or adjust).
+
+   - This MUST be idempotent and robust to:
+     - Network errors.
+     - Partial fills.
+     - Process restarts (must reload bracket state from DB, not memory only).
+
+3. Decide which approach you recommend:
+   - True OCO if Kraken/ccxt supports it cleanly.
+   - Otherwise, bot-level OCO with strict monitoring as above.
+
+Output for STEP 2:
+- A concrete design decision: “We will use TRUE EXCHANGE-LEVEL OCO” or “We will emulate OCO in the bot.”
+- Exact field mappings and order flows.
+
+────────────────────
+STEP 3 – TAKING PROFIT & STOP LOSS RULES
+────────────────────
+
+Define how TP and SL prices should be calculated in the new OCO system:
+
+1. For LONG positions:
+   - Entry price: from filled order.
+   - Stop-loss:
+     - Either ATR-based: entry_price - k * ATR (e.g., 2×ATR)
+     - Or percentage-based: entry_price * (1 - stop_pct), where stop_pct is configurable.
+
+   - Take-profit:
+     - Either ATR-based: entry_price + m * ATR (e.g., 3×ATR)
+     - Or R-multiple based on risk (e.g., TP at 2R or 3R where R = risk per trade).
+
+2. Ensure these rules are:
+   - Centralized in one function (e.g., compute_bracket_prices(entry_price, atr, config)).
+   - Reused by:
+     - Autopilot entries.
+     - Manual forced entries.
+     - Force trade tests.
+
+Output:
+- Exact formulas and where they should live (file + function).
+
+────────────────────
+STEP 4 – INTEGRATION PLAN FOR BUILD MODE
+────────────────────
+
+Now create a step-by-step implementation plan for BUILD MODE. Be VERY explicit. For example:
+
+1. Create or update a unified bracket manager:
+   - File: bracket_order_manager.py (or equivalent).
+   - Public function: open_position_with_brackets(exchange, symbol, side, quantity, entry_type, stop_loss_price, take_profit_price, source)
+   - This function should:
+     - Place the entry order.
+     - Confirm fill.
+     - Place TP and SL in OCO fashion (or emulated OCO).
+     - Persist all order IDs + source to DB (telemetry + executed_orders).
+     - Return a structured result (success/failure, IDs, errors).
+
+2. Ensure ALL entry paths call this unified bracket function:
+   - Autopilot path in autopilot.py.
+   - Manual buy commands in commands.py.
+   - Force trade test in commands_addon.py (or wherever it lives).
+
+3. Implement or update safety monitoring:
+   - File: safety_monitor.py or autopilot.py.
+   - Add a function that:
+     - Scans for open positions and their associated TP/SL.
+     - Enforces OCO behavior if the exchange does not.
+     - Logs warnings and corrective actions.
+
+4. Update logging:
+   - Ensure every entry + brackets are:
+     - Logged to executed_orders.
+     - Logged to trades/telemetry with:
+       - symbol, side, size, entry price
+       - TP price, SL price
+       - source (autopilot / command / force_test).
+
+5. Add tests / sanity flow:
+   - Design a “force trade test with OCO”:
+     - Very small size (e.g., $10 notional).
+     - Confirms:
+       - One entry order.
+       - Two child orders (TP & SL).
+       - OCO behavior (either via exchange or via safety monitor).
+     - Verifies DB logging looks correct.
+
+Output for STEP 4:
+- A checklist BUILD MODE can literally follow: “1. Edit file X lines Y–Z to do this. 2. Add function in file W. 3. Wire autopilot path to the unified bracket function,” etc.
+
+────────────────────
+STEP 5 – FINAL SUMMARY FOR ME (THE USER)
+────────────────────
+
+At the end of your PLAN response, produce a short, human-readable summary for me that answers:
+
+- What is the current behavior (right now) regarding TP/SL and OCO?
+- What exact approach you recommend (true OCO vs emulated OCO)?
+- Which files/functions BUILD MODE will need to touch.
+- How we will test that:
+  - Every new trade has BOTH TP and SL.
+  - If TP hits, SL is canceled.
+  - If SL hits, TP is canceled.
+  - Logging and diagnostics tell the truth.
+
+Do NOT start editing code in PLAN MODE. Just produce a precise, actionable plan that BUILD MODE can follow to implement proper OCO TP/SL limit orders so my bot stops trading with “stop loss only” behavior.
