@@ -888,7 +888,8 @@ def loop_once(ex, symbols: List[str]) -> None:
             
             # CRITICAL: Exit positions in bearish regimes
             # TREND_DOWN regime with open position → Force exit
-            if regime and regime.value == 'TREND_DOWN' and pos_qty > 0:
+            # Use 0.001 threshold to ignore dust balances
+            if regime and regime.value == 'TREND_DOWN' and pos_qty > 0.001:
                 action = "sell_all"
                 exec_action = "sell_all"  # Update exec_action too
                 confidence_str = f"(confidence={trade_signal.confidence:.2f})" if trade_signal else ""
@@ -897,7 +898,8 @@ def loop_once(ex, symbols: List[str]) -> None:
             
             # Adjust action based on position
             # NOTE: Check the ORIGINAL action (before normalization) because we normalize long→buy on line 763
-            if action == 'long' and pos_qty > 0:
+            # Use 0.001 threshold to ignore dust balances
+            if action == 'long' and pos_qty > 0.001:
                 action = "hold"
                 exec_action = "hold"  # Update exec_action too
                 why = f"LONG signal but already in position ({pos_qty:.6f})"
