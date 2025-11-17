@@ -191,6 +191,12 @@ def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
                     
                     # Place TP order now
                     from kraken_native_api import get_kraken_native_api
+                    import time
+                    
+                    # CRITICAL: Wait for Kraken SPOT account to settle position
+                    # Kraken needs time to release funds before accepting sell limit orders
+                    logger.info(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] Waiting 5s for position settlement before TP placement...")
+                    time.sleep(5)
                     
                     native_api = get_kraken_native_api()
                     tp_side = 'sell' if entry_side.lower() == 'buy' else 'buy'

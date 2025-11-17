@@ -469,6 +469,12 @@ class BracketOrderManager:
                 print(f"[BRACKET-SEQ] ✅ Entry FILLED: {filled_qty:.8f} @ ${fill_price:.4f}")
                 print(f"[BRACKET-SEQ] Step 2: Placing TP limit order...")
                 
+                # CRITICAL: Wait for Kraken SPOT account to settle position
+                # Kraken needs time to release funds before accepting sell limit orders
+                print(f"[BRACKET-SEQ] Waiting 5 seconds for position settlement...")
+                import time
+                time.sleep(5)
+                
                 # Determine TP order side (opposite of entry)
                 tp_side = 'sell' if bracket.side.lower() == 'buy' else 'buy'
                 
