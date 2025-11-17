@@ -1,0 +1,350 @@
+You are in PLAN MODE. Read EVERYTHING below carefully before touching code. Do NOT assume. Confirm by actually opening the files and searching.
+
+==================================================
+HIGH-LEVEL GOAL
+==================================================
+We are pivoting the trading bot to a **simple, fast, robust execution model**:
+
+- **ONLY use MARKET BUY and MARKET SELL orders**.
+- **NO stop-loss orders, NO take-profit orders, NO attached brackets**.
+- The bot must:
+  - Continuously scan the market.
+  - Enter and exit using **market orders only**.
+  - Be **fully fee-aware** (maker/taker fees, per-pair fees, tier).
+  - Be able to place **many trades in a short time window** without breaking Kraken rate limits.
+  - Report **real, accurate performance** (including fees).
+- After all changes, perform a **full-system bug/health sweep**, then **restart both workflows** (autopilot + chat/API) and verify autopilot is truly trading automatically.
+
+The user understands risk and explicitly wants this simplified execution model.
+
+==================================================
+CONSTRAINTS & NON-NEGOTIABLES
+==================================================
+1. **Execution model**:
+   - Autopilot must ONLY use:
+     - `market buy` to open long positions.
+     - `market sell` to close long positions (flatten).
+   - No more TP/SL / bracket behavior automatically attached to entries.
+   - No reliance on Kraken-side OCO for exits.
+
+2. **Fees**:
+   - Bot MUST know and use **real Kraken fee data** (not just paper-mode assumptions).
+   - All performance stats (PnL, edge, etc.) must be **after fees**.
+
+3. **Rate-limits & spam safety**:
+   - Bot **may** place multiple orders within a 1-minute window if the strategy dictates.
+   - BUT it must:
+     - Respect Kraken API rate limits.
+     - Avoid flooding (no risk of temporary bans or 60-minute lockouts).
+     - Still enforce sane daily loss and trade caps.
+
+4. **Truthfulness**:
+   - All diagnostics and status reports MUST be derived from:
+     - Real Kraken trade history.
+     - Internal DB tables (`telemetry_db`, `executed_orders`, etc.).
+   - NO made-up “last 24 hours” claims, NO guessing.
+   - If data is missing or incomplete, say so.
+
+5. **Safety**:
+   - No naked leverage/margin.
+   - No short selling unless explicitly configured (we can assume **long-only** for now).
+   - If anything fails in execution, bot should **fail safe** (stop trading, log clearly).
+
+==================================================
+STEP 1 – EXECUTION ARCHITECTURE: MARKET BUY / MARKET SELL ONLY
+==================================================
+1. Open these files and map the current flow:
+   - `autopilot.py`
+   - `strategy_orchestrator.py`
+   - `signal_engine.py`
+   - `commands.py`
+   - `bracket_order_manager.py`
+   - `kraken_native_api.py`
+   - `paper_trading.py`
+   - `risk_manager.py`
+
+2. Identify and REMOVE or DISABLE all automatic bracket-based logic from autopilot:
+   - Find where autopilot currently:
+     - Calls anything like `open_position_with_brackets()` / `place_entry_with_brackets()` / bracket manager helpers.
+     - Depends on SL/TP distance to size positions.
+   - Introduce a config flag (in `trading_config.py`, for example):
+     - `USE_BRACKETS = False`
+   - When `USE_BRACKETS == False`:
+     - Autopilot should:
+       - On LONG signal → call a simple **market buy** execution function.
+       - On EXIT / SELL signal → call a simple **market sell** execution function.
+   - Keep the old bracket code behind `USE_BRACKETS` or similar, but make sure it is **completely unused** in the current mode.
+
+3. Implement a **central market execution helper** in a single place (e.g. `commands.py` or a new `execution_manager.py`):
+   - `execute_market_entry(symbol: str, size_usd: float or size_units: float, source: str)`
+     - Converts USD risk/position size to quantity.
+     - Calls `exchange.create_market_buy_order(symbol, amount)`.
+     - Waits for confirmation/fill (or uses ccxt fill info).
+     - Logs to:
+       - `executed_orders` table (entry).
+       - `telemetry_db` trades table (entry).
+   - `execute_market_exit(symbol: str, full_position: bool = True, source: str)`
+     - Determines current position size (using `account_state`).
+     - Calls `exchange.create_market_sell_order(symbol, amount)` to flatten.
+     - Logs exit in both DBs with correct source.
+
+4. Wire autopilot to these helpers:
+   - In `autopilot.py`, where it previously triggered bracket entries:
+     - Replace with call to `execute_market_entry(...)`.
+   - Where it previously relied on TP/SL for exits:
+     - Replace with logic that:
+       - Checks strategy exit conditions (e.g., regime change, RSI overbought/oversold, signal flips).
+       - Calls `execute_market_exit(...)` when exit conditions are met.
+
+==================================================
+STEP 2 – RISK SIZING WITHOUT REAL STOP LOSSES
+==================================================
+Right now, risk sizing is hard-coupled to SL distance. We’re removing SL orders, but we still need sane position sizing.
+
+1. In `bracket_order_manager.py` / `risk_manager.py` / wherever position size is computed:
+   - Identify the function that currently does:
+     - `quantity = (equity * risk_per_trade_pct) / abs(entry_price - stop_price)`
+   - Introduce a separate **market-mode position sizing** path that **does NOT require a real SL**:
+     - Option A (simpler, safer): fixed fraction of equity per trade:
+       - Example:
+         - `position_notional = equity * risk_per_trade_pct` (e.g., 0.25%–0.5% of equity).
+         - `quantity = position_notional / entry_price`.
+       - This treats “risk per trade” as “capital allocated per trade”, not strict SL-based risk.
+     - Option B (synthetic SL):
+       - Define a synthetic SL distance = `k * ATR` (e.g., 2x ATR) used for sizing **only**, even though we’re not placing an actual SL.
+       - Still compute `position_notional` the same way, but we do not send any SL order.
+   - Make this behavior controlled by a configuration flag:
+     - `EXECUTION_MODE = "MARKET_ONLY"` vs `"BRACKET"`.
+
+2. Ensure:
+   - The new sizing respects:
+     - Kraken minimum order sizes.
+     - A configurable `MAX_POSITION_USD` cap.
+   - If resulting quantity < min size, either:
+     - Skip the trade, OR
+     - Bump to min size and log that you’re over-allocating slightly.
+
+==================================================
+STEP 3 – FEE MODELING (LIVE KRAKEN FEES, NOT JUST PAPER)
+==================================================
+The bot must become **fee-aware** in LIVE mode.
+
+1. Implement fee data retrieval:
+   - Use either:
+     - `ccxt.kraken().fetch_trading_fees()` (if supported), OR
+     - Kraken’s `TradeVolume` endpoint (`/0/private/TradeVolume`) to get current fee tier.
+   - Add a module, e.g. `fee_model.py`, which:
+     - Caches:
+       - Maker and taker fees.
+       - Per-pair overrides if needed.
+     - Exposes:
+       - `get_taker_fee(symbol)` → decimal (e.g., 0.0026 for 0.26%).
+       - `get_maker_fee(symbol)`.
+
+2. Decide and enforce that our simplified model uses **taker fees** for:
+   - Market buy.
+   - Market sell.
+   (Both are taker by nature.)
+
+3. Update PnL calculations:
+   - In `telemetry_db.py` and any PnL-related code:
+     - Store:
+       - `fee_base`, `fee_quote`, or at least `total_fee_usd` per trade when possible.
+     - Net PnL per trade must be:
+       - `PnL_net = (exit_value - entry_value) - (fees_entry + fees_exit)`.
+   - If Kraken returns fee fields, always use them.
+   - If not available, approximate using the fee model and actual notional.
+
+4. Introduce a **minimum edge after fees** check:
+   - Somewhere central (e.g. `autopilot.py` or `strategy_orchestrator.py`), before executing a trade:
+     - Estimate expected “edge” (target % move vs. recent volatility).
+     - Require `expected_move_pct > 2 * taker_fee_pct + safety_margin`.
+     - If edge is too small relative to fees → **skip the trade**.
+   - This is critical for a market-in/market-out scalping regime.
+
+==================================================
+STEP 4 – RATE LIMITS & TRADE FREQUENCY
+==================================================
+We want the ability to place **many orders in a thin time window** but without API bans.
+
+1. Implement a small internal rate limiter:
+   - Centralize all Kraken order submissions (create orders) through one function that:
+     - Tracks a rolling window (e.g. last 60 seconds).
+     - Enforces max N orders per 60 seconds (e.g., 5–10, configurable).
+     - Enforces a minimum sleep between order submissions (e.g., 200–300ms).
+   - If the limit would be exceeded:
+     - Queue / delay the order slightly.
+     - Log a “RATE_LIMIT_DELAY” event.
+
+2. Make daily limits configurable:
+   - Keep `trading_limits.py` but:
+     - Allow `MAX_TRADES_PER_DAY` and `MAX_TRADES_PER_SYMBOL_PER_DAY` to be adjusted via env vars.
+   - This allows a shift to more frequent trading while still keeping a hard daily cap.
+
+3. Preserve safety:
+   - Keep:
+     - Daily loss kill-switch.
+     - Basic cooldowns after losses (we can relax them a bit, but do not remove entirely without explicit user config).
+
+==================================================
+STEP 5 – STRATEGY INTEGRATION (MARKET EXECUTION)
+==================================================
+We are NOT redesigning the entire strategy logic here, but we must ensure it works coherently with market-only execution.
+
+1. Confirm that:
+   - `strategy_orchestrator.py` and `signal_engine.py`:
+     - Still produce clear `action` values: `'long'`, `'sell'` or similar.
+   - Autopilot:
+     - On `action == "long"` (or equivalent):
+       - Calls `execute_market_entry(...)`.
+     - On exit signal (`"sell"`/regime flip/exit conditions):
+       - Calls `execute_market_exit(...)`.
+
+2. Remove any hard dependencies on SL/TP:
+   - Search for uses of actual SL/TP values in:
+     - Entry validation.
+     - Risk validation.
+     - Execution conditions.
+   - Replace them with:
+     - Fee-aware edge checks.
+     - Volatility / ATR sanity checks.
+     - Daily loss guardrails.
+
+3. Ensure **live strategy control**:
+   - The user should be able to switch between:
+     - “Low-frequency conservative” style.
+     - “More active scalper” style.
+   - At minimum, expose env/config parameters for:
+     - Max trades per day.
+     - Max trades per hour per symbol.
+     - Min volatility thresholds.
+     - Min fee-adjusted edge.
+
+==================================================
+STEP 6 – LOGGING, DIAGNOSTICS & TRUTHFUL REPORTING
+==================================================
+We must fix the recurring lying / confusion in reporting.
+
+1. Ensure all tools answering questions like:
+   - “Trades in last 24 hours”
+   - “Did Kraken confirm the last force trade?”
+   - “How many trades were autopilot vs command?”
+   use ONLY:
+   - Real Kraken history (via `account_state.get_trade_history(since=...)`).
+   - `telemetry_db` trades table.
+   - `executed_orders` table.
+
+2. Implement a single diagnostic helper, e.g. `diagnostics.py`:
+   - Functions like:
+     - `get_trades_last_24h()`
+     - `get_trades_last_7d()`
+     - `get_last_force_trade_status()`
+   - Each should:
+     - Explicitly apply timestamp filters.
+     - Cross-check Kraken history vs. internal DB.
+     - Return a structured object indicating:
+       - Counts.
+       - Lists of trades.
+       - Any mismatches.
+
+3. In `llm_agent.py`:
+   - Update system prompt / tool descriptions to:
+     - Forbid the LLM from inventing time windows (“last 24 hours”) unless:
+       - The diagnostic helper explicitly returns that.
+   - Use the anti-hallucination validator to:
+     - Override any LLM answer that conflicts with the tool result.
+
+4. Make sure `executed_orders` is populated for:
+   - Every market entry and market exit.
+   - With correct:
+     - `timestamp`
+     - `symbol`
+     - `side`
+     - `quantity`
+     - `price`
+     - `order_id`
+     - `trading_mode` (paper/live)
+     - `source` (`autopilot`, `command`, `force_test`)
+
+==================================================
+STEP 7 – FULL-SYSTEM BUG SWEEP & HEALTH CHECK
+==================================================
+Before restarting workflows, perform a focused audit.
+
+1. Search the entire repo for:
+   - `stop_loss`, `take_profit`, `TP`, `SL`, `bracket_`, `open_position_with_brackets`, `place_entry_with_brackets`.
+   - Confirm:
+     - None of these are being used in the active (market-only) execution path.
+     - Any remaining code is gated behind explicit flags and **OFF** by default.
+
+2. Validate:
+   - Environment variables used:
+     - `KRAKEN_VALIDATE_ONLY`
+     - `AUTONOMOUS`
+     - `ENABLE_CRYPTO_UNIVERSE`
+     - Any new ones you add (`EXECUTION_MODE`, etc.).
+   - DB migrations:
+     - New fields (fees, net PnL, etc.) are correctly handled (schema matches usage).
+   - Exception handling:
+     - Order errors from Kraken propagate up with clear, actionable messages.
+
+3. Implement or extend a simple **health-check diagnostic command** (PLAN-only or via API), e.g.:
+   - `status full_diagnostics`
+   - It should:
+     - Check DB connectivity.
+     - Check Kraken connectivity.
+     - Validate env modes (live/paper).
+     - Confirm autopilot is running and performing evaluations.
+     - Summarize last N trades and current drawdown.
+
+==================================================
+STEP 8 – RESTART WORKFLOWS & AUTOPILOT VERIFICATION
+==================================================
+After all code changes are complete:
+
+1. Restart both workflows:
+   - Autopilot loop (e.g., `python autopilot.py` in Replit).
+   - Chat/API server (e.g., `uvicorn api:app`).
+   - Confirm via logs that:
+     - Both are running with the new configuration.
+     - Mode = LIVE (if that’s what is requested).
+     - `EXECUTION_MODE = MARKET_ONLY` is actually in effect.
+
+2. Live verification (READ-ONLY + TINY TESTS):
+   - Run a **single small force trade test** in LIVE mode with:
+     - Very small notional (e.g. ~$10–$15).
+   - Confirm:
+     - Kraken shows the trade.
+     - `executed_orders` table records it.
+     - Telemetry DB records it with fees.
+     - Diagnostics report correctly:
+       - Trade in last 24 hours = 1.
+       - Source = `force_test`.
+       - No mismatches.
+
+3. Allow autopilot to run for at least:
+   - A few hours.
+   - Then run diagnostics:
+     - How many trades did autopilot place?
+     - Were they all market orders?
+     - Any rate limit warnings?
+     - Any unexpected errors?
+
+4. Only when diagnostics and logs are clean:
+   - Consider gradually increasing:
+     - Max trades per day.
+     - Max trades per hour.
+   - But always keep fee-aware edge logic active.
+
+==================================================
+FINAL NOTES
+==================================================
+- Do NOT re-introduce limit-entry + bracket logic unless explicitly requested.
+- Prioritize correctness, fee-awareness, and truthful reporting over aggressiveness.
+- Comment your changes clearly:
+  - Mark sections as `# EXECUTION_MODE: MARKET_ONLY` vs `# EXECUTION_MODE: BRACKET`.
+- When finished, summarize:
+  - What changed (files + functions).
+  - How risk sizing now works.
+  - How fees are modeled.
+  - How to toggle between execution modes via config/env.

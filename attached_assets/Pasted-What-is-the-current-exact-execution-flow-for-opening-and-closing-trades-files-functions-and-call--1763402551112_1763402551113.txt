@@ -1,0 +1,41 @@
+What is the current exact execution flow for opening and closing trades (files, functions, and call chain) from strategy signal → order placement → confirmation → logging?
+
+Where in the code is the order type chosen (market vs limit), and how is it currently wired (which file/function decides type='limit' or type='market')?
+
+What timeframes and evaluation cadence is the autopilot currently using (e.g., 5m candles every 60s, any 1m or tick-level logic already present)?
+
+How many orders per minute / per hour is the current system capable of sending at maximum, and where are Kraken API rate limits handled (rate limiter or backoff logic)?
+
+Is there already any global throttle on commands (e.g., max trades per day, per symbol, or per time window), and where is it configured?
+
+How are fees currently handled:
+
+Where is fee information pulled from (Kraken API, ccxt, hardcoded, or ignored)?
+
+Does any existing logic explicitly subtract maker/taker fees when computing PnL or minimum edge per trade?
+
+Does the bot currently distinguish between maker and taker fees, and where is that decision made (config file / risk module / execution module)?
+
+Is there an existing function or module that computes “expected profit per trade” or “edge” in % terms, and if so, where is it and how is it currently calculated?
+
+Where is the risk sizing logic defined (position size per trade, max risk per trade, max active risk), and does it assume stop-loss distances, or can it be decoupled for pure market-in/market-out?
+
+Are there any parts of the strategy that explicitly rely on having a stop-loss or take-profit level (e.g., ATR-based SL/TP distances baked into the signal engine)?
+
+How does the bot currently determine when to exit a trade (what modules/functions drive SELL decisions), and does that logic already support market sells without TP/SL?
+
+Is there a centralized place to query the full Kraken fee schedule (trading fees by pair/tier) in the app, or will this need to be added (e.g., via ccxt fetch_trading_fee(s) or Kraken-specific endpoints)?
+
+Is there already a telemetry or metrics module that tracks realized PnL per trade including fees, and if so, where is it and how does it calculate net PnL?
+
+Are there any safeguards currently in place to prevent over-trading or API bans (such as exponential backoff, global cooldowns, or circuit breakers) and where are they implemented?
+
+What is the target minimum net edge per trade (in % or USD) that we should enforce after accounting for fees, and is that currently configurable in any file?
+
+Where are the current symbols/universe defined, and is there any per-symbol config that might need adjustment for fee-aware scalping (e.g., min volatility, min volume filters)?
+
+Does the system already have a full-app diagnostic or self-check routine (database connections, API keys, mode flags, log integrity, etc.), and if yes, where is it defined and how is it invoked?
+
+How are errors currently surfaced from order placement (Kraken/ccxt exceptions) back up to the LLM layer, and is there already a standardized error object or log format?
+
+After code changes, what is the standard procedure in this project for restarting “both workflows” (which workflows exactly, and how are they started/restarted in this Replit setup)?

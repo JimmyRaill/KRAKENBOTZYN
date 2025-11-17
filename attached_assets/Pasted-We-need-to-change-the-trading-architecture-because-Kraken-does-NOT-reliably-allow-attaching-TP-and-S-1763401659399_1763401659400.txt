@@ -1,0 +1,26 @@
+We need to change the trading architecture because Kraken does NOT reliably allow attaching TP and SL to entry orders (buy limits). The bot keeps failing to create full bracket orders when entering positions. We must pivot to a more reliable approach that Kraken spot fully supports:
+
+NEW ARCHITECTURE (Implement this):
+1. Enter positions using a MARKET BUY (or limit buy only if explicitly requested). Do NOT attach any TP/SL to the entry order itself.
+2. After the market buy is CONFIRMED filled, immediately submit an OCO SELL order (bracket exit) containing:
+   - A take-profit limit sell (TP)
+   - A stop-loss market or stop-limit sell (SL)
+3. The OCO SELL must be tied together so that when one leg fills, the other is automatically canceled.
+4. ALL bracket protection must happen AFTER the entry order fills, never before.
+5. If the OCO SELL fails for any reason (insufficient funds, invalid params, etc.), immediately close the position with a market sell to avoid unprotected exposure.
+6. For logging:
+   - Log the entry fill into executed_orders.
+   - Log BOTH OCO legs (TP and SL) with their order IDs.
+   - Mark the bracket type as “exit_bracket”.
+7. Remove or disable all current code paths that attempt to attach TP/SL to the entry order. Replace them with the new two-step system.
+8. Verify that the bracket manager correctly monitors OCO status and handles cancellations or fills properly.
+
+Your tasks:
+- Refactor commands.py and any order placement helpers to follow this new architecture.
+- Update autopilot.py so strategy signals trigger MARKET BUY entries and then an immediate OCO SELL bracket.
+- Update llm_agent.py tool descriptions to reflect the new workflow.
+- Ensure Kraken API parameters for OCO are correct: TP = limit, SL = stop-loss (market or stop-limit), both placed after entry fill.
+- Add robust error handling with clear messages and rollback if OCO fails.
+- After implementing everything, restart all workflows and run self-tests.
+
+Do not modify the trading strategy logic itself yet. Only update the order execution architecture.
