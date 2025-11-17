@@ -1680,6 +1680,32 @@ def run_forever() -> None:
 
 if __name__ == "__main__":
     try:
+        # CRITICAL: Validate Kraken API credentials and connectivity before trading
+        print("[STARTUP] Running Kraken health check...", flush=True)
+        from kraken_health import kraken_health_check, get_health_summary
+        
+        health_results = kraken_health_check()
+        print(get_health_summary(health_results), flush=True)
+        
+        # Fail-fast if credentials or connectivity issues detected
+        if not all(r.ok for r in health_results.values()):
+            print("\n" + "=" * 60, flush=True)
+            print("🔴 CRITICAL: Kraken API health check FAILED", flush=True)
+            print("=" * 60, flush=True)
+            print("Live trading and live data access are DISABLED.", flush=True)
+            print("Fix the issues above before running autopilot in LIVE mode.", flush=True)
+            print("=" * 60 + "\n", flush=True)
+            
+            # Check if we're in validate/paper mode - if so, we can continue
+            validate_mode = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
+            if not validate_mode:
+                print("ERROR: Cannot run autopilot in LIVE mode without valid Kraken credentials.", flush=True)
+                sys.exit(1)
+            else:
+                print("⚠️  Continuing in PAPER mode (validate mode enabled)", flush=True)
+        else:
+            print("✅ Kraken API health check PASSED - ready for live trading\n", flush=True)
+        
         print("[MAIN] entering run_forever()", flush=True)
         run_forever()
     except Exception as e:
