@@ -289,6 +289,8 @@ class KrakenWebSocketV2:
         # Send and wait for response
         for attempt in range(2):
             try:
+                if not self.ws:
+                    return False, "WebSocket not connected", None
                 await self.ws.send(json.dumps(add_request))
                 
                 # Wait for add_order response, skipping other messages
@@ -372,6 +374,8 @@ class KrakenWebSocketV2:
         }
         
         try:
+            if not self.ws:
+                return False, "WebSocket not connected"
             await self.ws.send(json.dumps(cancel_request))
             response = await asyncio.wait_for(self.ws.recv(), timeout=5.0)
             result = json.loads(response)
@@ -566,7 +570,7 @@ class KrakenWebSocketV2:
         print(f"[BRACKET-SEQ] TP: ${take_profit_price}, SL: ${stop_loss_price}")
         
         exit_side = 'sell' if side == 'buy' else 'buy'
-        result_dict = {
+        result_dict: Dict[str, Optional[str]] = {
             'entry_order_id': None,
             'tp_order_id': None,
             'sl_order_id': None
@@ -749,6 +753,8 @@ class KrakenWebSocketV2:
         # Max 2 attempts: initial + retry on auth errors
         for attempt in range(2):
             try:
+                if not self.ws:
+                    return False, "WebSocket not connected", None
                 # Send the batch request
                 await self.ws.send(json.dumps(batch_request))
                 
@@ -785,7 +791,8 @@ class KrakenWebSocketV2:
                     if attempt == 0 and any(err in str(error_msg) for err in ['TokenExpired', 'TokenInvalid', 'EAuth']):
                         print(f"[KRAKEN-WS] Token expired/invalid, refreshing and retrying...")
                         self.get_websocket_token(force_refresh=True)
-                        await self.ws.close()
+                        if self.ws:
+                            await self.ws.close()
                         await self.connect()
                         # Update token in request
                         batch_request['params']['token'] = self.token
