@@ -1,0 +1,246 @@
+You are in PLAN mode for my Zyn trading bot project. This is a FINAL, FULL SYSTEM AUDIT + FIX pass.
+
+Your job: guarantee that Zyn is:
+
+- Actively trading (autonomous, no human confirmation needed)
+- Using ONLY market buys and market sells (no bracket/limit/stop orders)
+- Fully fee-aware and using REAL Kraken fee + price data
+- Strategically trading for MAXIMUM DAILY PROFIT (subject to safe risk)
+- Able to trade across the full Kraken spot crypto universe (practically all symbols, not just 2–3 majors)
+- Not limited by arbitrary daily trade count caps
+- Enforcing a hard DAILY LOSS LIMIT of **$50** (USD) and stopping for the day if hit
+- 100% honest: no hallucinated trades, no fake stats, no guessing
+
+You must use ONLY real data (Kraken API, SQLite DBs, env vars, logs, actual code). No assumptions that are not explicitly verified.
+
+────────────────────────────────
+SECTION 1 – CONFIG & MODE SANITY
+────────────────────────────────
+1. Verify environment and mode:
+   - Confirm:
+     - `AUTONOMOUS=1`
+     - `PAPER_TRADING=0` (or equivalent) for LIVE mode
+     - `KRAKEN_VALIDATE_ONLY=0`
+   - Confirm Kraken API keys are actually loaded and valid:
+     - Check env for API key/secret
+     - Call a cheap Kraken endpoint (e.g. `Balance` or `TradeBalance`) and verify success
+   - If **any** of this fails, STOP and:
+     - Output a precise error and
+     - DO NOT claim live trading is active.
+
+2. Enforce market-only execution:
+   - Locate all execution code paths:
+     - `execution_manager.py` (or equivalent)
+     - `autopilot.py` execution branch
+     - Any wrapper (`paper_exchange_wrapper.py`, `kraken_native_api.py`, etc.)
+   - Guarantee:
+     - All **autopilot** entries use:
+       - `type='market', side='buy'` for entries
+       - `type='market', side='sell'` for exits
+     - No autopilot path uses:
+       - `limit`, `stop`, `stop-loss`, `take-profit`, or any bracket-style order type.
+   - Disable/ignore any bracket / OCO / limit-specific configuration:
+     - e.g. `USE_BRACKETS=False`, ignore bracket configs if present.
+   - Clean up any unreachable or misleading code paths (e.g. dead bracket logic that could confuse future debugging).
+
+3. Daily loss limit:
+   - Ensure there is ONE canonical daily loss limit:
+     - Hard-coded or env-driven, but effectively: **USD 50.00**
+     - If using env var, enforce exactly numeric (e.g. `MAX_DAILY_LOSS_USD=50`, not `"$50"`).
+   - Implement this as:
+     - Cumulative realized PnL (AFTER FEES) for the day in USD.
+     - If daily PnL <= -50, autopilot stops opening **new** positions for the rest of that UTC day.
+     - Log a clear message: `"DAILY LOSS LIMIT HIT, AUTOPILOT DISABLED UNTIL NEXT UTC DAY"`.
+
+────────────────────────────────
+SECTION 2 – UNIVERSE & EVALUATION
+────────────────────────────────
+4. Symbol universe:
+   - Enable the dynamic universe scanner if present (e.g. `crypto_universe.py::CryptoUniverseScanner`):
+     - Universe = all spot crypto pairs on Kraken with USD (or main quote currency you configured).
+     - Apply sane filters to avoid illiquid garbage:
+       - e.g. `min_24h_volume_usd` threshold (like 50k–100k USD / day).
+       - `max_assets` can be set high enough (e.g. 50–100) to approximate “all reasonable coins” without killing rate limits.
+   - Confirm in logs that on startup you print:
+     - The full evaluated symbol list.
+     - The number of symbols actually actively traded.
+
+5. Evaluation cadence:
+   - Confirm:
+     - Main loop is driven by closed candles (e.g. 5m).
+     - For each symbol in the universe, you:
+       - Pull fresh OHLCV data from Kraken (or via ccxt).
+       - Run your strategy logic (RSI, bands, etc.).
+   - Make sure every evaluation uses **fresh** data from Kraken, not stale cached prices, except where caching is explicitly needed and bounded by time.
+
+────────────────────────────────
+SECTION 3 – EXECUTION PIPELINE (MARKET ONLY)
+────────────────────────────────
+6. Signal → Execution wiring:
+   - Trace the full flow:
+     - Strategy signal: `action='long' / 'short' / 'exit' / 'sell' / 'hold'`
+     - Autopilot decides whether to act (risk, regime, etc.).
+     - Execution manager issues **market** order:
+       - LONG/BUY: market buy
+       - EXIT/SELL: market sell (full flatten).
+   - Fix any lingering bugs like:
+     - `action='long'` vs `action='buy'` mismatches
+     - Local variable errors (`config` not defined, etc.)
+   - Ensure that for any non-HOLD action that passes risk checks:
+     - A **single, well-formed market order** is sent.
+     - The result (success or failure) is logged and surfaced clearly.
+
+7. Remove/relax trade-count caps:
+   - Find all daily trade limit logic (e.g. `trading_limits.py`, `MAX_TRADES_PER_DAY`, `MAX_TRADES_PER_SYMBOL_PER_DAY`).
+   - Set these so they **do not block** trades under normal conditions, e.g.:
+     - `MAX_TRADES_PER_DAY` = very high (e.g. 10,000) OR disabled.
+     - `MAX_TRADES_PER_SYMBOL_PER_DAY` = similarly high or disabled.
+   - Keep only these primary controls:
+     - Per-trade risk constraint (if still using).
+     - Daily loss limit: -$50.
+     - Basic rate limiting so Kraken doesn’t ban us.
+   - Verify in code and logs that:
+     - No “max trades per day” conditions are triggered under normal high-frequency operation.
+
+────────────────────────────────
+SECTION 4 – FEE & PRICE AWARENESS
+────────────────────────────────
+8. Live fee model:
+   - Implement or validate a **real-time** fee model using Kraken/ccxt:
+     - Use Kraken’s `TradeVolume` + `fetch_trading_fees` or ccxt equivalents.
+     - Cache results for a reasonable period (e.g. 1 hour), but refresh regularly.
+   - Fee fields:
+     - Maker fee (if ever relevant in future).
+     - Taker fee (PRIMARY for market orders).
+   - In your execution/risk logic:
+     - For each potential trade, compute **expected fee cost** for entry+exit at market.
+     - Adjust minimum edge / target profit to ensure expected net PnL after fees is positive.
+
+9. Fee-aware PnL:
+   - Update your PnL computation so that for each closed trade:
+     - Net PnL = (exit_value - entry_value) - (fees_entry + fees_exit).
+   - Store at minimum:
+     - Fees per trade in telemetry DB and/or executed_orders table.
+   - Today’s PnL for daily limit:
+     - Use **fee-adjusted** net PnL only.
+     - Use this for enforcing the -$50 cutoff.
+
+────────────────────────────────
+SECTION 5 – STRATEGY FOR MAXIMUM DAILY PROFIT
+────────────────────────────────
+10. Strategy adjustments for market-only:
+   - Confirm that strategy now assumes:
+     - No bracket TP/SL.
+     - Entries and exits are both **market** orders.
+   - Update logic so:
+     - Entry signals still rely on your indicators (RSI, volatility, regime, etc.).
+     - Exit signals are active and aggressive enough to:
+       - Capture intraday moves.
+       - Avoid holding losing trades indefinitely.
+   - Ensure:
+     - Strategy is designed to trade frequently when edge appears.
+     - No unnecessary “cooldowns” (like 15–30 min blocks) that conflict with high-frequency intraday trading.
+       - If cooldowns exist, trim them or make them optional, provided daily loss limit is enforced.
+
+11. Max daily profit objective (practical version):
+   - Introduce tuning parameters aimed at **maximizing daily net PnL**, within safe risk:
+     - E.g.:
+       - Minimum expected edge (after fees).
+       - Maximum capital allocation per trade (position sizing).
+       - Avoid overly tight micro-scalping that gets eaten by fees.
+   - In code comments/logs, state explicitly:
+     - “Objective: maximize daily fee-adjusted PnL under a -$50 daily loss cap and rate limits.”
+
+────────────────────────────────
+SECTION 6 – LOGGING, HONESTY & HEALTH
+────────────────────────────────
+12. Logging integrity:
+   - For **every** successful market order:
+     - Log to `executed_orders` table with:
+       - timestamp
+       - symbol
+       - side
+       - quantity
+       - price
+       - order_id
+       - trading_mode (live/paper)
+       - source: EXACTLY one of {`autopilot`, `command`, `force_test`, `autopilot_test`, `unknown`}
+   - For **every** trade you show in any status report:
+     - Make sure it is backed by:
+       - Kraken trade history (LIVE) OR
+       - A clearly marked paper-trade source.
+   - Never fabricate:
+     - If you can’t find a matching trade in DB or Kraken, say so.
+
+13. Status / debug functions:
+   - Implement a strong diagnostic function (if not already) that can answer:
+     - Current UTC time
+     - Mode (live/paper)
+     - Universe of symbols
+     - Trades in last 24h, 7d (with real time filters)
+     - Today’s fee-adjusted PnL
+     - Whether daily loss limit is hit
+   - This function must:
+     - Use only real data sources (Kraken, DBs).
+     - Never “guess” counts or time windows.
+   - Add explicit comments in code: “NO GUESSING – status endpoints must match real DB/API data.”
+
+────────────────────────────────
+SECTION 7 – END-TO-END LIVE TEST & CONFIRMATION
+────────────────────────────────
+14. Dry-run checks (NO live trades yet):
+   - Run a full autopilot cycle in a controlled way:
+     - Confirm that:
+       - Evaluations are running.
+       - Signals are being generated.
+       - The system attempts to construct **market** orders (but you can temporarily bypass sending them by pointing to paper exchange or mock).
+   - Fix ALL errors/exceptions you encounter:
+     - Config loading (no more `"$50"` issues).
+     - Missing `config` variables.
+     - DB schema mismatches.
+     - Any rate limit or connection errors.
+
+15. SINGLE tiny live test trade:
+   - Once everything above passes:
+     - Use a **force_test** / test command to trigger exactly ONE tiny live trade:
+       - Example: market buy and sell with notional around $5–$10 on a liquid pair (e.g. `ETH/USD` or `BTC/USD`).
+   - Confirm:
+     - Kraken shows both trades (entry & exit).
+     - `executed_orders` table logs both with `source='force_test'`.
+     - Fee-aware PnL is computed and stored.
+   - DO NOT proceed until all three sources (Kraken, executed_orders, telemetry DB) match.
+
+16. Confirm at least one fully automatic LIVE trade:
+   - Put the bot in fully autonomous mode for a bit (still respecting -$50 loss limit).
+   - Wait until:
+     - At least one autopilot-generated signal triggers a **real market buy**, later followed by a **real market sell** (exit).
+   - Then verify:
+     - Kraken trade history shows both.
+     - `executed_orders` has both with `source='autopilot'`.
+     - Fee-adjusted PnL is computed and included in today’s PnL.
+   - If you cannot confirm at least one such trade:
+     - Do NOT claim that “autopilot live trading is working.”
+     - Instead, surface a clear error and explain what broke.
+
+────────────────────────────────
+SECTION 8 – FINAL SUMMARY OUTPUT
+────────────────────────────────
+At the end of all changes and tests, output a concise but detailed report including:
+
+- Whether Kraken API keys are valid and tested.
+- Current mode: live/paper, market-only confirmed.
+- Whether brackets/limits are fully disabled for autopilot.
+- Daily loss limit value and proof it’s enforced on fee-adjusted PnL.
+- Symbol universe size and example symbols.
+- Fee model status: live or fallback, and exact taker fee used.
+- Today’s:
+  - number of evaluations,
+  - number of non-HOLD signals,
+  - number of real autopilot trades (market-only),
+  - today’s fee-adjusted PnL.
+- A clear YES/NO:
+  - “YES: I have at least one fully verified LIVE autopilot trade (entry + exit) confirmed in both Kraken and executed_orders.”
+  - OR
+  - “NO: I cannot yet confirm a fully verified LIVE autopilot trade; here is the exact blocker: …”
+
+Do NOT gloss over problems. Fix what you can. For anything that truly cannot be done in this environment, state clearly why and what would be needed.
