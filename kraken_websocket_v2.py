@@ -388,6 +388,109 @@ class KrakenWebSocketV2:
             print(f"[KRAKEN-WS] Cancel exception: {e}")
             return False, f"Cancel exception: {e}"
     
+    def _place_limit_order_rest(self, symbol: str, side: str, quantity: float, price: float) -> Tuple[bool, Optional[str]]:
+        """Place limit order via REST API"""
+        try:
+            kraken_symbol = self._normalize_kraken_symbol(symbol)
+            
+            urlpath = "/0/private/AddOrder"
+            nonce = str(int(time.time() * 1000))
+            data = {
+                "nonce": nonce,
+                "ordertype": "limit",
+                "type": side,
+                "volume": str(quantity),
+                "pair": kraken_symbol,
+                "price": str(price)
+            }
+            
+            headers = {
+                "API-Key": self.api_key,
+                "API-Sign": self._get_kraken_signature(urlpath, data)
+            }
+            
+            response = requests.post(self.rest_url + urlpath, headers=headers, data=data)
+            result = response.json()
+            
+            if result.get('error') and len(result['error']) > 0:
+                print(f"[REST-API] Limit order error: {result['error']}")
+                return False, None
+            
+            order_ids = result.get('result', {}).get('txid', [])
+            if order_ids:
+                return True, order_ids[0]
+            return False, None
+            
+        except Exception as e:
+            print(f"[REST-API] Limit order exception: {e}")
+            return False, None
+    
+    def _place_stop_loss_order_rest(self, symbol: str, side: str, quantity: float, stop_price: float) -> Tuple[bool, Optional[str]]:
+        """Place stop-loss order via REST API"""
+        try:
+            kraken_symbol = self._normalize_kraken_symbol(symbol)
+            
+            urlpath = "/0/private/AddOrder"
+            nonce = str(int(time.time() * 1000))
+            data = {
+                "nonce": nonce,
+                "ordertype": "stop-loss",
+                "type": side,
+                "volume": str(quantity),
+                "pair": kraken_symbol,
+                "price": str(stop_price)
+            }
+            
+            headers = {
+                "API-Key": self.api_key,
+                "API-Sign": self._get_kraken_signature(urlpath, data)
+            }
+            
+            response = requests.post(self.rest_url + urlpath, headers=headers, data=data)
+            result = response.json()
+            
+            if result.get('error') and len(result['error']) > 0:
+                print(f"[REST-API] Stop-loss order error: {result['error']}")
+                return False, None
+            
+            order_ids = result.get('result', {}).get('txid', [])
+            if order_ids:
+                return True, order_ids[0]
+            return False, None
+            
+        except Exception as e:
+            print(f"[REST-API] Stop-loss order exception: {e}")
+            return False, None
+    
+    def _cancel_order_rest(self, order_id: str) -> bool:
+        """Cancel order via REST API"""
+        try:
+            urlpath = "/0/private/CancelOrder"
+            nonce = str(int(time.time() * 1000))
+            data = {
+                "nonce": nonce,
+                "txid": order_id
+            }
+            
+            headers = {
+                "API-Key": self.api_key,
+                "API-Sign": self._get_kraken_signature(urlpath, data)
+            }
+            
+            response = requests.post(self.rest_url + urlpath, headers=headers, data=data)
+            result = response.json()
+            
+            if result.get('error') and len(result['error']) > 0:
+                print(f"[REST-API] Cancel order error: {result['error']}")
+                return False
+            
+            print(f"[REST-API] Order {order_id} canceled")
+            return True
+            
+        except Exception as e:
+            print(f"[REST-API] Cancel order exception: {e}")
+            return False
+    
     def _check_order_filled(self, order_id: str) -> Tuple[bool, Optional[float]]:
         """
         Check if order is filled using REST API.
@@ -503,50 +606,53 @@ class KrakenWebSocketV2:
             if not filled:
                 return False, f"Entry order {entry_order_id} not filled within 5 seconds", result_dict
         
-        # STEP 3: Place take-profit limit order
-        tp_userref = 1000 + int(time.time() % 100000) + 1
-        success, message, tp_result = await self.add_order(
-            symbol=symbol,
-            side=exit_side,
-            order_type='limit',
-            quantity=quantity,
-            limit_price=take_profit_price,
-            order_userref=tp_userref,
-            validate=validate
-        )
+        # STEP 3: Place take-profit limit order via REST API (more reliable than WebSocket)
+        print(f"[BRACKET-SEQ] Placing TP via REST API...")
+        try:
+            tp_success, tp_order_id = self._place_limit_order_rest(
+                symbol=symbol,
+                side=exit_side,
+                quantity=quantity,
+                price=take_profit_price
+            )
+            
+            if not tp_success:
+                print(f"[BRACKET-SEQ] ❌ Take-profit failed, NO ROLLBACK NEEDED (entry already filled)")
+                return False, f"Take-profit order failed. Entry filled but no TP protection!", result_dict
+            
+            result_dict['tp_order_id'] = tp_order_id
+            print(f"[BRACKET-SEQ] ✅ Take-profit placed: {tp_order_id}")
+            
+        except Exception as e:
+            print(f"[BRACKET-SEQ] ❌ TP exception: {e}")
+            return False, f"Take-profit exception: {e}. Entry filled but no TP protection!", result_dict
         
-        if not success:
-            print(f"[BRACKET-SEQ] ❌ Take-profit failed, NO ROLLBACK NEEDED (entry already filled)")
-            return False, f"Take-profit order failed: {message}. Entry filled but no TP protection!", result_dict
-        
-        result_dict['tp_order_id'] = tp_result.get('result', {}).get('order_id') if tp_result else None
-        print(f"[BRACKET-SEQ] ✅ Take-profit placed: {result_dict['tp_order_id']}")
-        
-        # STEP 4: Place stop-loss order
-        sl_userref = tp_userref + 1
-        success, message, sl_result = await self.add_order(
-            symbol=symbol,
-            side=exit_side,
-            order_type='stop-loss',
-            quantity=quantity,
-            stop_price=stop_loss_price,
-            order_userref=sl_userref,
-            validate=validate
-        )
-        
-        if not success:
-            # Rollback: Cancel TP order (entry already filled, can't cancel)
-            print(f"[BRACKET-SEQ] ❌ Stop-loss failed, CANCELING TP ORDER for safety...")
+        # STEP 4: Place stop-loss order via REST API
+        print(f"[BRACKET-SEQ] Placing SL via REST API...")
+        try:
+            sl_success, sl_order_id = self._place_stop_loss_order_rest(
+                symbol=symbol,
+                side=exit_side,
+                quantity=quantity,
+                stop_price=stop_loss_price
+            )
+            
+            if not sl_success:
+                # Rollback: Cancel TP order
+                print(f"[BRACKET-SEQ] ❌ Stop-loss failed, CANCELING TP ORDER for safety...")
+                if result_dict['tp_order_id'] and not validate:
+                    self._cancel_order_rest(result_dict['tp_order_id'])
+                return False, f"Stop-loss order failed. Entry filled, TP canceled for safety.", result_dict
+            
+            result_dict['sl_order_id'] = sl_order_id
+            print(f"[BRACKET-SEQ] ✅ Stop-loss placed: {sl_order_id}")
+            
+        except Exception as e:
+            print(f"[BRACKET-SEQ] ❌ SL exception: {e}")
+            # Rollback: Cancel TP order
             if result_dict['tp_order_id'] and not validate:
-                cancel_success, cancel_msg = await self.cancel_order(result_dict['tp_order_id'])
-                if cancel_success:
-                    print(f"[BRACKET-SEQ] ✅ TP order canceled successfully")
-                else:
-                    print(f"[BRACKET-SEQ] ⚠️  TP cancel failed: {cancel_msg}")
-            return False, f"Stop-loss order failed: {message}. Entry filled, TP canceled for safety.", result_dict
-        
-        result_dict['sl_order_id'] = sl_result.get('result', {}).get('order_id') if sl_result else None
-        print(f"[BRACKET-SEQ] ✅ Stop-loss placed: {result_dict['sl_order_id']}")
+                self._cancel_order_rest(result_dict['tp_order_id'])
+            return False, f"Stop-loss exception: {e}. Entry filled, TP canceled for safety.", result_dict
         
         print(f"[BRACKET-SEQ] 🎉 COMPLETE! Entry: {result_dict['entry_order_id']}, TP: {result_dict['tp_order_id']}, SL: {result_dict['sl_order_id']}")
         
