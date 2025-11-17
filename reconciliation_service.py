@@ -23,6 +23,9 @@ def reconcile_tp_sl_fills(trading_mode: str) -> Dict[str, Any]:
     """
     Check pending TP/SL orders and log any fills.
     
+    CRITICAL: Only processes TP/SL child orders, NOT entries pending TP placement.
+    Entry monitoring is handled exclusively by reconcile_pending_entries().
+    
     Args:
         trading_mode: "live" or "paper"
     
@@ -30,10 +33,13 @@ def reconcile_tp_sl_fills(trading_mode: str) -> Dict[str, Any]:
         Summary of reconciliation results
     """
     try:
-        pending_orders = get_pending_child_orders(trading_mode=trading_mode.lower(), status="pending")
+        all_pending = get_pending_child_orders(trading_mode=trading_mode.lower(), status="pending")
+        
+        # CRITICAL: Skip entry_pending_tp orders (handled by reconcile_pending_entries)
+        pending_orders = [p for p in all_pending if p['order_type'] != 'entry_pending_tp']
         
         if not pending_orders:
-            logger.debug(f"[RECONCILE-{trading_mode.upper()}] No pending orders to check")
+            logger.debug(f"[RECONCILE-{trading_mode.upper()}] No pending TP/SL orders to check")
             return {
                 "pending_count": 0,
                 "filled_count": 0,
@@ -41,7 +47,7 @@ def reconcile_tp_sl_fills(trading_mode: str) -> Dict[str, Any]:
                 "fills_logged": []
             }
         
-        logger.info(f"[RECONCILE-{trading_mode.upper()}] Checking {len(pending_orders)} pending orders")
+        logger.info(f"[RECONCILE-{trading_mode.upper()}] Checking {len(pending_orders)} pending TP/SL orders")
         
         exchange = get_exchange()
         filled_count = 0
@@ -117,6 +123,130 @@ def reconcile_tp_sl_fills(trading_mode: str) -> Dict[str, Any]:
             "filled_count": 0,
             "errors": [str(e)],
             "fills_logged": []
+        }
+
+
+def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
+    """
+    Monitor pending ENTRY orders and place TP orders when they fill.
+    
+    CRITICAL: Solves the sequential bracket gap - ensures TP is placed even if
+    entry fills hours after initial placement.
+    
+    Args:
+        trading_mode: "live" or "paper"
+    
+    Returns:
+        Summary of reconciliation results
+    """
+    try:
+        from evaluation_log import get_pending_child_orders, mark_pending_order_filled
+        
+        # Get all pending entries awaiting TP placement
+        all_pending = get_pending_child_orders(trading_mode=trading_mode.lower(), status="pending")
+        pending_entries = [p for p in all_pending if p['order_type'] == 'entry_pending_tp']
+        
+        if not pending_entries:
+            logger.debug(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] No pending entries to check")
+            return {
+                "pending_count": 0,
+                "filled_count": 0,
+                "tp_placed_count": 0,
+                "errors": [],
+                "tps_placed": []
+            }
+        
+        logger.info(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] Checking {len(pending_entries)} pending entries")
+        
+        exchange = get_exchange()
+        filled_count = 0
+        tp_placed_count = 0
+        errors = []
+        tps_placed = []
+        
+        for entry in pending_entries:
+            try:
+                entry_order_id = entry['order_id']
+                symbol = entry['symbol']
+                entry_side = entry['side']
+                tp_price = entry['limit_price']  # TP price stored in limit_price field
+                
+                # Check if entry filled
+                is_filled, fill_data = _check_order_status(
+                    exchange=exchange,
+                    order_id=entry_order_id,
+                    symbol=symbol,
+                    trading_mode=trading_mode
+                )
+                
+                if is_filled and fill_data:
+                    filled_qty = fill_data['quantity']
+                    fill_price = fill_data['price']
+                    
+                    filled_count += 1
+                    logger.info(
+                        f"[RECONCILE-ENTRIES-{trading_mode.upper()}] ✅ Entry filled: "
+                        f"{symbol} {filled_qty} @ ${fill_price:.5f} (order_id={entry_order_id})"
+                    )
+                    
+                    # Place TP order now
+                    from kraken_native_api import get_kraken_native_api
+                    
+                    native_api = get_kraken_native_api()
+                    tp_side = 'sell' if entry_side.lower() == 'buy' else 'buy'
+                    
+                    tp_success, tp_message, tp_result = native_api.place_take_profit_order(
+                        symbol=symbol,
+                        side=tp_side,
+                        quantity=filled_qty,
+                        take_profit_price=tp_price,
+                        validate=False
+                    )
+                    
+                    if tp_success:
+                        tp_order_id = tp_result.get('txid', ['unknown'])[0] if tp_result and 'txid' in tp_result else 'unknown'
+                        tp_placed_count += 1
+                        tps_placed.append({
+                            "entry_order_id": entry_order_id,
+                            "tp_order_id": tp_order_id,
+                            "symbol": symbol,
+                            "tp_price": tp_price,
+                            "quantity": filled_qty
+                        })
+                        
+                        logger.info(
+                            f"[RECONCILE-ENTRIES-{trading_mode.upper()}] 🎯 TP placed: "
+                            f"{symbol} {tp_side} {filled_qty} @ ${tp_price:.5f} (tp_id={tp_order_id})"
+                        )
+                        
+                        # Mark entry as filled (no longer needs monitoring)
+                        mark_pending_order_filled(entry_order_id)
+                    else:
+                        error_msg = f"TP placement failed for entry {entry_order_id}: {tp_message}"
+                        logger.error(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] {error_msg}")
+                        errors.append(error_msg)
+                        
+            except Exception as e:
+                error_msg = f"Error processing entry {entry.get('order_id', 'unknown')}: {e}"
+                logger.error(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] {error_msg}")
+                errors.append(error_msg)
+        
+        return {
+            "pending_count": len(pending_entries),
+            "filled_count": filled_count,
+            "tp_placed_count": tp_placed_count,
+            "errors": errors,
+            "tps_placed": tps_placed
+        }
+        
+    except Exception as e:
+        logger.error(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] CRITICAL: {e}")
+        return {
+            "pending_count": 0,
+            "filled_count": 0,
+            "tp_placed_count": 0,
+            "errors": [str(e)],
+            "tps_placed": []
         }
 
 
@@ -383,17 +513,27 @@ def run_reconciliation_cycle():
     Run reconciliation for current trading mode.
     Called by autopilot heartbeat every 60 seconds.
     
-    TWO-PHASE APPROACH:
-    1. Check registered pending orders (fast, targeted)
-    2. Sweep all Kraken fills every 10 cycles to catch unregistered TP/SL fills
+    THREE-PHASE APPROACH:
+    1. Check pending ENTRY orders and place TPs when filled (CRITICAL for sequential brackets)
+    2. Check registered TP/SL orders (fast, targeted)
+    3. Sweep all Kraken fills every 10 cycles to catch unregistered fills
     """
     try:
         trading_mode = os.getenv("TRADING_MODE", "PAPER").upper()
         
-        # Phase 1: Check pending orders
+        # Phase 1: CRITICAL - Check pending entries and place TPs
+        entry_result = reconcile_pending_entries(trading_mode)
+        
+        # Phase 2: Check pending TP/SL orders
         result = reconcile_tp_sl_fills(trading_mode)
         
-        # Phase 2: Comprehensive sweep (every 10 cycles = ~10 minutes)
+        # Merge entry results into main result
+        result['entry_pending_count'] = entry_result.get('pending_count', 0)
+        result['entry_filled_count'] = entry_result.get('filled_count', 0)
+        result['tp_placed_count'] = entry_result.get('tp_placed_count', 0)
+        result['tps_placed'] = entry_result.get('tps_placed', [])
+        
+        # Phase 3: Comprehensive sweep (every 10 cycles = ~10 minutes)
         # Use modulo trick with timestamp to spread load
         import time
         if trading_mode == "LIVE" and int(time.time()) % 600 < 60:  # Run once per 10min
@@ -401,10 +541,13 @@ def run_reconciliation_cycle():
             result['sweep_newly_logged'] = sweep_result.get('newly_logged', 0)
             result['sweep_errors'] = sweep_result.get('errors', [])
         
-        if result['filled_count'] > 0 or result.get('sweep_newly_logged', 0) > 0:
+        if (result['filled_count'] > 0 or 
+            result.get('sweep_newly_logged', 0) > 0 or 
+            result.get('tp_placed_count', 0) > 0):
             logger.info(
                 f"[RECONCILE-{trading_mode}] Cycle complete: "
-                f"{result['filled_count']}/{result['pending_count']} pending filled, "
+                f"{result['filled_count']}/{result['pending_count']} TP/SL filled, "
+                f"{result.get('tp_placed_count', 0)} TPs placed for filled entries, "
                 f"{result.get('sweep_newly_logged', 0)} retroactive logged"
             )
         

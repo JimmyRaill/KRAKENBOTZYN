@@ -441,6 +441,21 @@ class BracketOrderManager:
             entry_order_id = result.get('txid', ['unknown'])[0] if result and 'txid' in result else 'unknown'
             print(f"[BRACKET-SEQ] ✅ Entry+SL placed: {entry_order_id}")
             
+            # CRITICAL: Register entry for monitoring (ensures TP placement if fills later)
+            from evaluation_log import register_pending_entry
+            from exchange_manager import get_mode_str
+            
+            register_pending_entry(
+                symbol=bracket.symbol,
+                entry_order_id=entry_order_id,
+                entry_side=bracket.side,
+                entry_quantity=qty_p,
+                entry_price=entry_limit_price,
+                tp_price=tp_price_p,
+                sl_price=stop_price_p,
+                trading_mode=get_mode_str().lower()
+            )
+            
             # Step 2: Check if entry filled (fill_data already queried in place_entry_with_stop_loss)
             fill_data = result.get('fill_data') if result else None
             
@@ -469,6 +484,10 @@ class BracketOrderManager:
                     print(f"[BRACKET-COMPLETE] Entry filled + SL active + TP placed")
                     print(f"[BRACKET-COMPLETE] Entry ID: {entry_order_id}")
                     print(f"[BRACKET-COMPLETE] TP ID: {tp_order_id}")
+                    
+                    # Mark entry as filled (no longer needs monitoring)
+                    from evaluation_log import mark_pending_order_filled
+                    mark_pending_order_filled(entry_order_id)
                     
                     # Include TP order ID in result
                     result['tp_order_id'] = tp_order_id

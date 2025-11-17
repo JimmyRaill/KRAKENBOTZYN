@@ -331,6 +331,62 @@ def register_pending_child_order(
         logger.error(f"[PENDING-ORDER] Failed to register: {e}")
 
 
+def register_pending_entry(
+    symbol: str,
+    entry_order_id: str,
+    entry_side: str,
+    entry_quantity: float,
+    entry_price: float,
+    tp_price: float,
+    sl_price: float,
+    trading_mode: str
+):
+    """
+    Register an ENTRY order that needs TP placement after fill.
+    
+    Uses order_type='entry_pending_tp' to track entries awaiting TP placement.
+    The reconciliation service will monitor this entry and place the TP when it fills.
+    
+    Args:
+        symbol: Trading pair
+        entry_order_id: The entry order ID from exchange
+        entry_side: "buy" or "sell"
+        entry_quantity: Entry order size
+        entry_price: Entry limit price
+        tp_price: Take-profit price to place after fill
+        sl_price: Stop-loss price (for reference/logging)
+        trading_mode: "live" or "paper"
+    """
+    try:
+        conn = _get_connection()
+        cursor = conn.cursor()
+        
+        timestamp_utc = datetime.utcnow().isoformat()
+        
+        # Use order_type='entry_pending_tp' to distinguish from TP/SL child orders
+        # parent_order_id is empty since this IS the parent
+        # limit_price stores the TP price for later placement
+        # status explicitly set to 'pending' (though default would apply)
+        cursor.execute("""
+            INSERT OR REPLACE INTO pending_child_orders (
+                timestamp_created_utc, symbol, order_id, order_type,
+                parent_order_id, side, quantity, limit_price, trading_mode, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            timestamp_utc, symbol, entry_order_id, "entry_pending_tp",
+            f"tp={tp_price},sl={sl_price},entry_price={entry_price}",  # Store TP/SL in parent_order_id field
+            entry_side, entry_quantity, tp_price, trading_mode, 'pending'
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"[PENDING-ENTRY] Registered {symbol} entry={entry_order_id} awaiting fill to place TP @ ${tp_price:.5f}")
+        
+    except Exception as e:
+        logger.error(f"[PENDING-ENTRY] Failed to register: {e}")
+
+
 def get_pending_child_orders(trading_mode: Optional[str] = None, status: str = "pending") -> List[Dict[str, Any]]:
     """
     Get pending TP/SL orders for monitoring.
