@@ -391,62 +391,48 @@ class BracketOrderManager:
         except Exception as e:
             return False, f"Precision error: {e}", None
         
-        # SEQUENTIAL BRACKET SOLUTION: Entry → Wait for fill → TP + SL
+        # OCO BRACKET SOLUTION: Entry + TP + SL in ONE atomic request
+        # Uses Kraken's native 'stop-loss-profit' ordertype for TRUE exchange-level OCO
         # Works with SPOT accounts (no margin/leverage required)
-        # Provides full TP+SL protection with ~2-3 second execution window
+        # TRUE OCO: When TP fills -> SL auto-cancels; when SL fills -> TP auto-cancels
         try:
-            import asyncio
-            from kraken_websocket_v2 import get_kraken_websocket_v2
+            from kraken_native_api import get_kraken_native_api
             
-            ws_client = get_kraken_websocket_v2()
+            native_api = get_kraken_native_api()
             
-            print(f"[BRACKET-WS] Using Kraken WebSocket v2 SEQUENTIAL bracket orders (SPOT-compatible)")
-            print(f"[BRACKET-WS] Entry: market {bracket.side} {qty_p:.6f} {bracket.symbol}")
-            print(f"[BRACKET-WS] Take-Profit: ${bracket.take_profit_price:.4f}")
-            print(f"[BRACKET-WS] Stop-Loss: ${bracket.stop_price:.4f}")
+            print(f"[BRACKET-OCO] Using Kraken native OCO bracket orders (SPOT-compatible)")
+            print(f"[BRACKET-OCO] Entry: market {bracket.side} {qty_p:.6f} {bracket.symbol}")
+            print(f"[BRACKET-OCO] Take-Profit: ${bracket.take_profit_price:.4f}")
+            print(f"[BRACKET-OCO] Stop-Loss: ${bracket.stop_price:.4f}")
             
-            # Place SEQUENTIAL bracket order via WebSocket v2
-            # Step 1: Entry market order
-            # Step 2: Wait for fill (max 5 sec)
-            # Step 3: TP limit order
-            # Step 4: SL stop-loss order
+            # Place OCO bracket order with native Kraken API
+            # CRITICAL: Entry + TP + SL attached in ONE atomic request
+            success, message, result = native_api.place_oco_bracket_order(
+                symbol=bracket.symbol,
+                side=bracket.side,
+                quantity=qty_p,
+                entry_type='market',
+                entry_price=None,  # Market order doesn't need entry price
+                stop_loss_price=bracket.stop_price,
+                take_profit_price=bracket.take_profit_price,
+                validate=False  # LIVE order
+            )
             
-            # Run async WebSocket call
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            try:
-                success, message, result = loop.run_until_complete(
-                    ws_client.place_sequential_bracket_order(
-                        symbol=bracket.symbol,
-                        side=bracket.side,
-                        quantity=qty_p,
-                        take_profit_price=bracket.take_profit_price,
-                        stop_loss_price=bracket.stop_price,
-                        validate=False  # LIVE order
-                    )
-                )
-                
-                if success:
-                    print(f"[BRACKET-COMPLETE] 🎯 SEQUENTIAL BRACKET PLACED SUCCESSFULLY!")
-                    print(f"[BRACKET-COMPLETE] Entry filled, TP and SL protection active")
-                    print(f"[BRACKET-COMPLETE] Result: {result}")
-                    return True, message, result
-                else:
-                    print(f"[BRACKET-FAILED] ❌ Sequential bracket order failed: {message}")
-                    return False, message, result
-                    
-            finally:
-                # Clean up async resources
-                loop.run_until_complete(ws_client.close())
-                loop.close()
+            if success:
+                print(f"[BRACKET-COMPLETE] 🎯 OCO BRACKET PLACED SUCCESSFULLY!")
+                print(f"[BRACKET-COMPLETE] Entry + TP/SL protection in ONE order (true OCO)")
+                print(f"[BRACKET-COMPLETE] Order ID: {result.get('txid', ['unknown'])[0] if result else 'unknown'}")
+                return True, message, result
+            else:
+                print(f"[BRACKET-FAILED] ❌ OCO bracket order failed: {message}")
+                return False, message, result
             
         except Exception as e:
             error_msg = str(e)
-            print(f"[BRACKET-ERROR] Failed to place bracket orders: {error_msg}")
+            print(f"[BRACKET-ERROR] Failed to place OCO bracket orders: {error_msg}")
             import traceback
             traceback.print_exc()
-            return False, f"Kraken native API failed: {error_msg}", None
+            return False, f"Kraken native OCO API failed: {error_msg}", None
     
     def place_bracket_orders(
         self,

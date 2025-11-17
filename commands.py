@@ -368,7 +368,7 @@ def handle(text: str) -> str:
         except Exception as e:
             return f"[PRICE-ERR] {e}"
 
-    # buy <usd> usd <symbol>
+    # buy <usd> usd <symbol> - WITH OCO BRACKETS
     m = re.fullmatch(r"(?i)buy\s+([0-9]+(?:\.[0-9]+)?)\s*usd\s+([A-Za-z0-9:/\-\._]+)", s)
     if m:
         usd = _safe_float(m.group(1), None)
@@ -376,58 +376,92 @@ def handle(text: str) -> str:
         if usd is None or usd <= 0:
             return "[BUY-ERR] invalid usd amount"
         try:
+            # Get current price
             px = _last_price(ex, sym)
+            
+            # Calculate quantity
             amt = usd / px
             amt = _ensure_min_cost(ex, sym, amt, px)
             amt = _safe_float(ex.amount_to_precision(sym, amt), None)
             if amt is None or amt <= 0:
                 return "[BUY-ERR] amount precision produced zero"
-            order = ex.create_market_buy_order(sym, float(amt))
-            oid = str(order.get("id") or order.get("orderId") or "<no-id>")
             
-            # Log executed order for TRUTH VERIFICATION - use ACTUAL fill data from exchange
-            # CRITICAL: NEVER fall back to requested amounts - only log exchange-confirmed fills
-            actual_filled = _safe_float(order.get("filled"), None)
-            actual_avg_price = _safe_float(order.get("average") or order.get("price"), None)
-            order_status = order.get("status", "unknown")
-            remaining = _safe_float(order.get("remaining"), None)
+            # NEW: Calculate brackets using centralized function
+            from candle_strategy import get_latest_atr
+            from bracket_order_manager import get_bracket_manager
             
-            # STRICT: Only log if fully filled (status closed/filled AND remaining=0 AND we have actual fill data)
-            # Never log partial fills or use requested quantity fallbacks
-            is_fully_filled = (
-                order_status in ["closed", "filled"] and
-                (remaining is None or remaining == 0) and
-                actual_filled is not None and actual_filled > 0 and
-                actual_avg_price is not None
+            # Get ATR for bracket calculation
+            atr = get_latest_atr(sym, exchange=ex)
+            
+            # Calculate bracket prices
+            manager = get_bracket_manager()
+            bracket = manager.calculate_bracket_prices(
+                symbol=sym,
+                side="buy",
+                entry_price=px,
+                atr=atr
             )
             
-            if is_fully_filled:
-                log_order_execution(
-                    symbol=sym,
-                    side="buy",
-                    quantity=actual_filled,
-                    entry_price=actual_avg_price,
-                    order_id=oid,
-                    trading_mode=get_mode_str().lower(),
-                    source="command",
-                    extra_info=f"market buy ~${usd:.2f} status={order_status}"
-                )
-                
-                # CRITICAL FIX: Also log to telemetry DB so "trades in last 24h" reporting works
-                log_trade(
-                    symbol=sym,
-                    side="buy",
-                    action="market_buy",
-                    quantity=actual_filled,
-                    price=actual_avg_price,
-                    usd_amount=actual_filled * actual_avg_price,
-                    order_id=oid,
-                    reason=f"manual buy ${usd:.2f}",
-                    source="command",
-                    mode=get_mode_str().lower()
-                )
+            if not bracket:
+                return "[BUY-ERR] Failed to calculate OCO brackets - cannot execute without protection"
             
-            return f"BUY OK {sym} ~${usd:.2f} (qty≈{amt}) id={oid}"
+            # Set quantity
+            bracket.quantity = float(amt)
+            bracket.recalculate_metrics()
+            
+            # Place entry WITH OCO brackets attached
+            success, message, order_result = manager.place_entry_with_brackets(bracket, ex)
+            
+            if not success:
+                return f"[BUY-ERR] {message}"
+            
+            # Extract order ID and VERIFIED fill data from result
+            oid = "unknown"
+            if order_result and 'txid' in order_result:
+                oid = order_result['txid'][0] if order_result['txid'] else "unknown"
+            
+            # CRITICAL: Only log if we have CONFIRMED fill data from Kraken
+            if order_result and 'fill_data' in order_result:
+                fill_data = order_result['fill_data']
+                status = fill_data.get('status', '')
+                filled_qty = float(fill_data.get('filled', 0))
+                fill_price = fill_data.get('average')
+                
+                # Require closed status AND non-zero fill
+                if status == 'closed' and filled_qty > 0 and fill_price:
+                    from evaluation_log import log_order_execution
+                    
+                    log_order_execution(
+                        symbol=sym,
+                        side="buy",
+                        quantity=filled_qty,
+                        entry_price=fill_price,
+                        order_id=oid,
+                        trading_mode=get_mode_str().lower(),
+                        source="command",
+                        extra_info=f"manual buy ~${usd:.2f} with OCO brackets"
+                    )
+                    
+                    log_trade(
+                        symbol=sym,
+                        side="buy",
+                        action="market_buy_with_oco",
+                        quantity=filled_qty,
+                        price=fill_price,
+                        usd_amount=filled_qty * fill_price,
+                        order_id=oid,
+                        reason=f"manual buy ${usd:.2f} with OCO brackets",
+                        source="command",
+                        mode=get_mode_str().lower()
+                    )
+                    
+                    return f"BUY OK {sym} ~${usd:.2f} (qty={filled_qty:.8f} @ ${fill_price:.4f}) id={oid} | TP: ${bracket.take_profit_price:.4f} SL: ${bracket.stop_price:.4f} (OCO)"
+                else:
+                    # Order placed but fill not confirmed
+                    return f"BUY SUBMITTED {sym} id={oid} | ⚠️  Fill not confirmed (status={status}, filled={filled_qty}) | Check 'open' command for status"
+            else:
+                # Order placed but fill data unavailable
+                return f"BUY SUBMITTED {sym} id={oid} | ⚠️  Fill data unavailable - check 'open' command for status | NOT LOGGED (awaiting confirmation)"
         except Exception as e:
             return f"[BUY-ERR] {e}"
 

@@ -183,6 +183,188 @@ class KrakenNativeAPI:
             error_msg = str(e)
             print(f"[KRAKEN-NATIVE-EXCEPTION] {error_msg}")
             return False, f"Exception: {error_msg}", None
+    
+    def place_oco_bracket_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        entry_type: str = 'market',
+        entry_price: Optional[float] = None,
+        stop_loss_price: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
+        validate: bool = False
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Place OCO bracket order with BOTH take-profit and stop-loss.
+        
+        Uses Kraken's native 'stop-loss-profit' ordertype which creates
+        true exchange-level OCO behavior:
+        - When TP fills -> SL auto-cancels
+        - When SL fills -> TP auto-cancels
+        
+        CRITICAL: Works on SPOT accounts (no margin/leverage required).
+        
+        Args:
+            symbol: Trading pair in CCXT format (e.g., 'BTC/USD', 'AR/USD')
+            side: 'buy' or 'sell'
+            quantity: Order quantity
+            entry_type: 'market' or 'limit'
+            entry_price: Required if entry_type='limit'
+            stop_loss_price: Stop loss trigger price (absolute)
+            take_profit_price: Take profit trigger price (absolute)
+            validate: If True, validates without executing
+            
+        Returns:
+            (success, message, result_dict)
+        """
+        # Normalize symbol to Kraken format (BTC/USD -> XBTUSD)
+        kraken_pair = self._normalize_symbol_to_kraken_pair(symbol)
+        
+        if not stop_loss_price or not take_profit_price:
+            return False, "Both stop_loss_price and take_profit_price are required for OCO brackets", None
+        
+        # Build order parameters
+        data = {
+            'nonce': str(int(time.time() * 1000)),
+            'pair': kraken_pair,
+            'type': side,
+            'ordertype': entry_type,
+            'volume': str(quantity),
+            'validate': 'true' if validate else 'false'
+        }
+        
+        # Add entry price for limit orders
+        if entry_type == 'limit':
+            if entry_price is None:
+                return False, "entry_price required for limit orders", None
+            data['price'] = str(entry_price)
+        
+        # Add OCO bracket using stop-loss-profit ordertype
+        # CRITICAL: This creates TRUE OCO behavior at exchange level
+        data['close[ordertype]'] = 'stop-loss-profit'
+        data['close[price]'] = str(stop_loss_price)   # SL trigger
+        data['close[price2]'] = str(take_profit_price)  # TP trigger
+        
+        print(f"[KRAKEN-OCO] Placing {side} {entry_type} order: {quantity} {symbol}")
+        print(f"[KRAKEN-OCO] Stop-Loss: ${stop_loss_price:.4f}")
+        print(f"[KRAKEN-OCO] Take-Profit: ${take_profit_price:.4f}")
+        
+        try:
+            response = self._make_request('/0/private/AddOrder', data)
+            
+            # Check for errors
+            if response.get('error') and len(response['error']) > 0:
+                error_msg = ', '.join(response['error'])
+                print(f"[KRAKEN-OCO-ERROR] {error_msg}")
+                return False, f"Kraken OCO error: {error_msg}", response
+            
+            # Extract result
+            result = response.get('result', {})
+            tx_ids = result.get('txid', [])
+            descr = result.get('descr', {})
+            
+            if tx_ids:
+                order_id = tx_ids[0] if tx_ids else 'unknown'
+                order_descr = descr.get('order', 'no description')
+                close_descr = descr.get('close', '')
+                
+                print(f"[KRAKEN-OCO-SUCCESS] ✅ Order placed: {order_id}")
+                print(f"[KRAKEN-OCO-SUCCESS] Entry: {order_descr}")
+                if close_descr:
+                    print(f"[KRAKEN-OCO-SUCCESS] OCO Bracket: {close_descr}")
+                
+                # For market orders, query fill details after brief wait
+                fill_data = None
+                if entry_type == 'market' and not validate:
+                    print(f"[KRAKEN-OCO] Querying order details for fill data...")
+                    import time
+                    time.sleep(1)  # Brief wait for market order to fill
+                    
+                    order_query = self.query_orders([order_id])
+                    if order_query.get('result'):
+                        order_details = order_query['result'].get(order_id, {})
+                        fill_data = {
+                            'status': order_details.get('status'),
+                            'filled': float(order_details.get('vol_exec', 0)),
+                            'average': float(order_details.get('price', 0)) if order_details.get('price') else None,
+                            'remaining': float(order_details.get('vol', 0)) - float(order_details.get('vol_exec', 0))
+                        }
+                        print(f"[KRAKEN-OCO] Fill: {fill_data['filled']:.8f} @ ${fill_data['average']:.4f}" if fill_data['average'] else "[KRAKEN-OCO] Fill data retrieved")
+                
+                # Include fill data in result if available
+                enriched_result = result.copy()
+                if fill_data:
+                    enriched_result['fill_data'] = fill_data
+                
+                return True, f"OCO bracket order {order_id} placed successfully", enriched_result
+            else:
+                return False, "No transaction ID returned", response
+                
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[KRAKEN-OCO-EXCEPTION] {error_msg}")
+            return False, f"Exception: {error_msg}", None
+    
+    def query_orders(self, order_ids: list) -> Dict[str, Any]:
+        """
+        Query order details from Kraken.
+        
+        Args:
+            order_ids: List of Kraken order IDs to query
+            
+        Returns:
+            Kraken API response with order details
+        """
+        data = {
+            'nonce': str(int(time.time() * 1000)),
+            'txid': ','.join(order_ids)
+        }
+        
+        try:
+            response = self._make_request('/0/private/QueryOrders', data)
+            return response
+        except Exception as e:
+            print(f"[KRAKEN-QUERY] Error querying orders: {e}")
+            return {'error': [str(e)]}
+    
+    def _normalize_symbol_to_kraken_pair(self, symbol: str) -> str:
+        """
+        Convert CCXT symbol format to Kraken pair format.
+        
+        Examples:
+            'BTC/USD' -> 'XBTUSD'
+            'ETH/USD' -> 'ETHUSD'
+            'AR/USD' -> 'ARUSD'
+            'DOGE/USD' -> 'XDGUSD'
+        
+        Args:
+            symbol: Symbol in CCXT format (e.g., 'BTC/USD')
+            
+        Returns:
+            Kraken pair format (e.g., 'XBTUSD')
+        """
+        # Remove slash
+        pair = symbol.replace('/', '')
+        
+        # Apply Kraken symbol mappings
+        symbol_map = {
+            'BTC': 'XBT',
+            'DOGE': 'XDG',
+        }
+        
+        # Split into base and quote
+        if 'USD' in pair:
+            base = pair.replace('USD', '')
+            quote = 'USD'
+            
+            # Map base if needed
+            base = symbol_map.get(base, base)
+            
+            return base + quote
+        
+        # Fallback: just remove slash
+        return pair
 
 
 # Global instance

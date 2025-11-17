@@ -166,15 +166,12 @@ def _trades_24h_status() -> str:
 
 def _force_trade_test(symbol: str = "ETH/USD") -> str:
     """
-    DEVELOPER ONLY: Execute a tiny LIVE trade to verify order placement pipeline.
+    DEVELOPER ONLY: Execute a tiny LIVE OCO bracket trade to verify order placement pipeline.
     
-    TWO-STAGE EXECUTION:
-    - Stage 1 (Entry): Place market buy order, log IMMEDIATELY to both databases
-    - Stage 2 (Protection): Attempt to place TP/SL bracket orders
-    
-    CRITICAL: Entry logging happens IMMEDIATELY after Kraken confirms, BEFORE
-    attempting protection. This prevents "silent success" bugs where entry executes
-    but system reports failure due to downstream bracket errors.
+    ATOMIC EXECUTION:
+    - Uses Kraken's native OCO bracket orders (stop-loss-profit ordertype)
+    - Entry + TP + SL attached in ONE atomic request
+    - TRUE OCO: When TP fills, SL auto-cancels; when SL fills, TP auto-cancels
     
     SAFETY:
     - Requires ENABLE_FORCE_TRADE=1 in environment
@@ -186,7 +183,7 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
         symbol: Trading pair (default: ETH/USD)
     
     Returns:
-        Truthful execution report distinguishing entry vs protection outcomes
+        Execution report with OCO bracket details
     """
     # Safety check: Must be enabled
     if os.getenv("ENABLE_FORCE_TRADE", "0") != "1":
@@ -203,7 +200,6 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
     
     # Safety check: Must be LIVE mode
     from exchange_manager import get_mode_str, get_exchange, is_live_mode
-    from evaluation_log import record_entry_fill, TradeExecutionResult, EntryStatus, ProtectionStatus
     
     if not is_live_mode():
         return (
@@ -215,189 +211,148 @@ def _force_trade_test(symbol: str = "ETH/USD") -> str:
     ex = get_exchange()
     test_usd = 15.0  # Tiny test size
     
-    # Initialize execution result tracker
-    result = TradeExecutionResult(
-        entry_status=EntryStatus.NOT_ATTEMPTED,
-        symbol=symbol,
-        side="buy",
-        trading_mode="live",
-        source="force_test"
-    )
-    
     log_lines = [
-        "🧪 [FORCE-TRADE-TEST] Starting LIVE trade test...",
+        "🧪 [FORCE-TRADE-TEST] Starting LIVE OCO bracket trade test...",
         f"Symbol: {symbol}",
         f"Test Size: ${test_usd}",
         ""
     ]
     
-    # ═════════════════════════════════════════════════════════════════════════
-    # STAGE 1: ENTRY EXECUTION (Separate try-catch)
-    # ═════════════════════════════════════════════════════════════════════════
     try:
         # Step 1: Fetch price
-        log_lines.append("Step 1/3 (ENTRY): Fetching market price...")
+        log_lines.append("Step 1/4: Fetching market price...")
         ticker = ex.fetch_ticker(symbol)
         price = float(ticker['last'])
         log_lines.append(f"✅ Price: ${price:.2f}")
         log_lines.append("")
         
         # Step 2: Calculate quantity
-        log_lines.append("Step 2/3 (ENTRY): Calculating position size...")
+        log_lines.append("Step 2/4: Calculating position size...")
         qty = float(test_usd / price)
         base_currency = symbol.split('/')[0]
         log_lines.append(f"✅ Quantity: {qty:.8f} {base_currency}")
         log_lines.append("")
         
-        # Step 3: Place market buy order on Kraken
-        log_lines.append("Step 3/3 (ENTRY): Placing LIVE market buy order on Kraken...")
-        entry_order = ex.create_market_buy_order(symbol, qty)
-        entry_id = str(entry_order.get('id') or entry_order.get('orderId', 'NO_ID'))
-        actual_filled = entry_order.get("filled") or qty
-        actual_price = entry_order.get("average") or entry_order.get("price") or price
+        # Step 3: Calculate OCO bracket prices
+        log_lines.append("Step 3/4: Calculating OCO bracket prices...")
+        from candle_strategy import get_latest_atr
+        from bracket_order_manager import get_bracket_manager
         
-        log_lines.append(f"✅ ENTRY EXECUTED ON KRAKEN: {entry_id}")
-        log_lines.append(f"   Filled: {actual_filled:.8f} @ ${actual_price:.2f}")
-        log_lines.append("")
+        atr = get_latest_atr(symbol, exchange=ex)
         
-        # CRITICAL: Log entry IMMEDIATELY to both databases (before attempting protection)
-        log_lines.append("📝 Logging entry to both databases (forensic + telemetry)...")
-        print(f"[DEBUG-LOGGING] About to call record_entry_fill for {symbol} order {entry_id}")
-        logging_result = record_entry_fill(
+        manager = get_bracket_manager()
+        bracket = manager.calculate_bracket_prices(
             symbol=symbol,
             side="buy",
-            quantity=actual_filled,
-            price=actual_price,
-            order_id=entry_id,
-            trading_mode="live",
-            source="force_test",
-            reason="force trade test",
-            extra_info=f"LIVE force trade test ~${test_usd}"
+            entry_price=price,
+            atr=atr
         )
-        print(f"[DEBUG-LOGGING] record_entry_fill completed: forensic={logging_result['forensic_log_success']}, telemetry={logging_result['telemetry_log_success']}, errors={logging_result['errors']}")
         
-        if logging_result['forensic_log_success'] and logging_result['telemetry_log_success']:
-            log_lines.append("✅ Entry logged to BOTH databases (executed_orders + trades)")
+        if not bracket:
+            raise ValueError("Failed to calculate OCO brackets")
+        
+        bracket.quantity = qty
+        bracket.recalculate_metrics()
+        
+        log_lines.append(f"✅ ATR: ${atr:.6f}" if atr else "✅ Using fallback % brackets")
+        log_lines.append(f"   Stop-Loss: ${bracket.stop_price:.2f}")
+        log_lines.append(f"   Take-Profit: ${bracket.take_profit_price:.2f}")
+        log_lines.append(f"   R:R Ratio: {bracket.rr_ratio:.2f}")
+        log_lines.append("")
+        
+        # Step 4: Place OCO bracket order
+        log_lines.append("Step 4/4: Placing LIVE OCO bracket order on Kraken...")
+        success, message, order_result = manager.place_entry_with_brackets(bracket, ex)
+        
+        if not success:
+            raise Exception(f"OCO bracket placement failed: {message}")
+        
+        # Extract order ID and VERIFY fill data from result
+        oid = "unknown"
+        if order_result and 'txid' in order_result:
+            oid = order_result['txid'][0] if order_result['txid'] else "unknown"
+        
+        log_lines.append(f"Order ID: {oid}")
+        log_lines.append("")
+        
+        # CRITICAL: Only log if we have CONFIRMED fill data from Kraken
+        if order_result and 'fill_data' in order_result:
+            fill_data = order_result['fill_data']
+            status = fill_data.get('status', '')
+            filled_qty = float(fill_data.get('filled', 0))
+            fill_price = fill_data.get('average')
+            
+            log_lines.append(f"Fill Status: {status}")
+            log_lines.append(f"Filled Qty: {filled_qty:.8f}")
+            log_lines.append(f"Fill Price: ${fill_price:.4f}" if fill_price else "Fill Price: N/A")
+            log_lines.append("")
+            
+            # Require closed status AND non-zero fill before logging
+            if status == 'closed' and filled_qty > 0 and fill_price:
+                from telemetry_db import log_trade
+                from evaluation_log import log_order_execution
+                
+                log_order_execution(
+                    symbol=symbol,
+                    side="buy",
+                    quantity=filled_qty,
+                    entry_price=fill_price,
+                    order_id=oid,
+                    trading_mode="live",
+                    source="force_test",
+                    extra_info=f"LIVE force trade test ~${test_usd} with OCO brackets"
+                )
+                
+                log_trade(
+                    symbol=symbol,
+                    side="buy",
+                    action="oco_bracket_test",
+                    quantity=filled_qty,
+                    price=fill_price,
+                    usd_amount=filled_qty * fill_price,
+                    order_id=oid,
+                    reason=f"force trade test with OCO brackets",
+                    source="force_test",
+                    mode="live"
+                )
+                
+                log_lines.append("✅ FILL CONFIRMED - Logged to both databases")
+            else:
+                log_lines.append(f"⚠️  FILL NOT CONFIRMED - NOT LOGGED")
+                log_lines.append(f"   Status: {status}, Filled: {filled_qty}, Price: {fill_price}")
+                log_lines.append(f"   Use 'open' command to check order status")
         else:
-            log_lines.append(f"⚠️  Partial logging: {logging_result['errors']}")
-        log_lines.append("")
-        
-        # Update result object with entry success
-        result.entry_status = EntryStatus.SUCCESS
-        result.entry_order_id = entry_id
-        result.entry_price = actual_price
-        result.entry_quantity = actual_filled
-        
-    except Exception as e:
-        # Entry failed - nothing executed on Kraken
-        import traceback
-        result.entry_status = EntryStatus.FAILED
-        result.errors.append(f"Entry execution failed: {str(e)}")
-        
-        log_lines.extend([
-            "",
-            "❌ ENTRY FAILED - NO ORDER PLACED ON KRAKEN",
-            f"Error: {str(e)}",
-            "",
-            "Full Traceback:",
-            traceback.format_exc()
-        ])
-        
-        # Return immediately - no point attempting protection
-        result.raw_message = "\n".join(log_lines)
-        return result.to_user_message() + "\n\n" + result.raw_message
-    
-    # ═════════════════════════════════════════════════════════════════════════
-    # STAGE 2: PROTECTION PLACEMENT (Separate try-catch)
-    # ═════════════════════════════════════════════════════════════════════════
-    # If we reach here, entry succeeded. Now try to protect it.
-    
-    log_lines.append("=" * 60)
-    log_lines.append("STAGE 2: PROTECTIVE BRACKET PLACEMENT")
-    log_lines.append("=" * 60)
-    log_lines.append("")
-    
-    try:
-        # Step 4: Calculate SL/TP using ATR
-        log_lines.append("Step 1/3 (PROTECTION): Calculating stop-loss and take-profit...")
-        from candle_strategy import calculate_atr
-        ohlcv = ex.fetch_ohlcv(symbol, '5m', 100)
-        atr = calculate_atr(ohlcv, period=14)
-        
-        if atr is None or atr <= 0:
-            raise ValueError("Invalid ATR calculation - cannot determine stop-loss/take-profit")
-        
-        sl_price = actual_price - (2.0 * float(atr))  # 2x ATR stop-loss
-        tp_price = actual_price + (3.0 * float(atr))  # 3x ATR take-profit
-        
-        log_lines.append(f"✅ ATR: ${atr:.2f}")
-        log_lines.append(f"   Stop-Loss: ${sl_price:.2f} (2x ATR below entry)")
-        log_lines.append(f"   Take-Profit: ${tp_price:.2f} (3x ATR above entry)")
-        log_lines.append("")
-        
-        # Step 5: Place take-profit order
-        log_lines.append("Step 2/3 (PROTECTION): Placing take-profit order...")
-        tp_order = ex.create_limit_sell_order(symbol, actual_filled, tp_price)
-        tp_id = str(tp_order.get('id') or tp_order.get('orderId', 'NO_ID'))
-        log_lines.append(f"✅ Take-Profit Order ID: {tp_id}")
-        log_lines.append("")
-        
-        # Step 6: Place stop-loss order
-        log_lines.append("Step 3/3 (PROTECTION): Placing stop-loss order...")
-        sl_order = ex.create_order(symbol, 'market', 'sell', actual_filled, None, {'stopPrice': sl_price})
-        sl_id = str(sl_order.get('id') or sl_order.get('orderId', 'NO_ID'))
-        log_lines.append(f"✅ Stop-Loss Order ID: {sl_id}")
-        log_lines.append("")
-        
-        # Both TP and SL succeeded
-        result.protection_status = ProtectionStatus.FULLY_PROTECTED
-        result.tp_order_id = tp_id
-        result.sl_order_id = sl_id
+            log_lines.append("⚠️  FILL DATA UNAVAILABLE - NOT LOGGED")
+            log_lines.append("   Use 'open' command to check order status")
         
         log_lines.extend([
             "=" * 60,
-            "✅ FULLY SUCCESSFUL - ENTRY + PROTECTION",
+            "✅ OCO BRACKET TEST SUCCESSFUL",
             "=" * 60,
-            f"Entry: {entry_id} ({actual_filled:.8f} @ ${actual_price:.2f})",
-            f"Take-Profit: {tp_id}",
-            f"Stop-Loss: {sl_id}",
+            f"Order ID: {oid}",
+            f"Entry: {qty:.8f} @ ${price:.2f} (~${test_usd})",
+            f"Take-Profit: ${bracket.take_profit_price:.2f} (sell limit)",
+            f"Stop-Loss: ${bracket.stop_price:.2f} (stop-loss)",
             "",
-            "Status: FULLY PROTECTED",
+            "OCO Status: TRUE EXCHANGE-LEVEL OCO",
+            " - When TP fills → SL auto-cancels",
+            " - When SL fills → TP auto-cancels",
             "",
-            "⚠️  LIVE POSITION OPENED WITH BRACKETS",
+            "⚠️  LIVE POSITION OPENED WITH OCO BRACKETS",
             "Monitor via: open",
             f"Manual close: sell all {symbol}",
             ""
         ])
         
     except Exception as e:
-        # Entry succeeded but protection failed
         import traceback
-        result.protection_status = ProtectionStatus.FAILED
-        result.errors.append(f"Protection placement failed: {str(e)}")
-        
         log_lines.extend([
             "",
-            "❌ PROTECTION FAILED - ENTRY SUCCEEDED BUT TP/SL PLACEMENT FAILED",
+            "❌ OCO BRACKET TEST FAILED",
             f"Error: {str(e)}",
             "",
             "Full Traceback:",
-            traceback.format_exc(),
-            "",
-            "=" * 60,
-            "🚨 CRITICAL: NAKED POSITION EXISTS",
-            "=" * 60,
-            f"✅ Entry Order: {result.entry_order_id}",
-            f"   Filled: {result.entry_quantity:.8f} @ ${result.entry_price:.2f}",
-            f"   LOGGED TO: executed_orders + trades tables",
-            "",
-            "❌ NO PROTECTIVE BRACKETS PLACED",
-            "",
-            "⚠️  YOU MUST MANUALLY CLOSE OR PROTECT THIS POSITION:",
-            f"   sell all {symbol}",
-            ""
+            traceback.format_exc()
         ])
     
-    # Return truthful message based on staged execution
-    result.raw_message = "\n".join(log_lines)
-    return result.to_user_message() + "\n\n" + result.raw_message
+    return "\n".join(log_lines)

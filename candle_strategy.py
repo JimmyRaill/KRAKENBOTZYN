@@ -95,6 +95,48 @@ def calculate_atr(ohlcv: List[List[float]], period: int = 14) -> Optional[float]
     return sum(tr_values[-n:]) / max(1, n)
 
 
+def get_latest_atr(symbol: str, exchange=None, period: int = 14, timeframe: str = '5m') -> Optional[float]:
+    """
+    Fetch latest candles and calculate ATR for a given symbol.
+    
+    Helper function for manual commands and force trade tests that need
+    current ATR without having to fetch candles themselves.
+    
+    Args:
+        symbol: Trading pair (e.g., 'BTC/USD', 'AR/USD')
+        exchange: CCXT exchange instance (defaults to exchange_manager.get_exchange())
+        period: ATR period (default: 14)
+        timeframe: Candle timeframe (default: '5m')
+        
+    Returns:
+        ATR value, or None if unable to fetch or calculate
+    """
+    try:
+        # Import here to avoid circular dependency
+        if exchange is None:
+            from exchange_manager import get_exchange
+            exchange = get_exchange()
+        
+        # Fetch recent candles (need period+1 for ATR calculation)
+        limit = period + 5  # Extra buffer for safety
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        
+        if not ohlcv or len(ohlcv) < period + 1:
+            print(f"[ATR-HELPER] Insufficient candles for {symbol}: {len(ohlcv) if ohlcv else 0}")
+            return None
+        
+        # Calculate and return ATR
+        atr = calculate_atr(ohlcv, period=period)
+        if atr:
+            print(f"[ATR-HELPER] {symbol} ATR({period}): {atr:.6f}")
+        
+        return atr
+        
+    except Exception as e:
+        print(f"[ATR-HELPER] Error fetching ATR for {symbol}: {e}")
+        return None
+
+
 def calculate_adx(
     ohlcv: List[List[float]],
     period: int = 14
