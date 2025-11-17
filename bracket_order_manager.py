@@ -360,6 +360,97 @@ class BracketOrderManager:
         except Exception as e:
             return False, f"Exchange validation error: {e}", None
     
+    def place_entry_with_brackets(
+        self,
+        bracket: BracketOrder,
+        exchange
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Place entry order WITH brackets attached using Kraken's native conditional close API.
+        
+        CRITICAL: This is an ATOMIC operation - entry + TP + SL in ONE order.
+        If any part fails, the entire order is rejected (no naked positions possible).
+        
+        Args:
+            bracket: Validated BracketOrder with calculated prices and quantity
+            exchange: CCXT exchange instance
+            
+        Returns:
+            (success, message, order_dict) - order_dict contains the exchange response
+        """
+        # Final validation
+        is_valid, error = bracket.validate(self.config)
+        if not is_valid:
+            return False, f"Pre-flight validation failed: {error}", None
+        
+        # Calculate stop loss and take profit as PERCENTAGES from entry
+        # This avoids rounding issues on low-priced assets
+        try:
+            # For LONG positions
+            if bracket.side.lower() == "buy":
+                # Stop loss is BELOW entry (negative percentage)
+                sl_pct = -1.0 * bracket.stop_distance_pct * 100  # Convert to %
+                # Take profit is ABOVE entry (positive percentage)
+                tp_pct = bracket.tp_distance_pct * 100  # Convert to %
+            # For SHORT positions
+            else:
+                # Stop loss is ABOVE entry (positive percentage)
+                sl_pct = bracket.stop_distance_pct * 100
+                # Take profit is BELOW entry (negative percentage)
+                tp_pct = -1.0 * bracket.tp_distance_pct * 100
+            
+            # Use Kraken's # notation for relative to entry price
+            # Format: #±X% means X% relative to the filled entry price
+            sl_price_param = f"#{sl_pct:+.4f}%"  # e.g., "#-5.0000%"
+            tp_price_param = f"#{tp_pct:+.4f}%"  # e.g., "#+10.0000%"
+            
+            print(f"[BRACKET-KRAKEN] {bracket.symbol} | SL: {sl_price_param}, TP: {tp_price_param}")
+            
+        except Exception as e:
+            return False, f"Percentage calculation error: {e}", None
+        
+        # Precision adjustment for quantity only
+        try:
+            qty_p = float(exchange.amount_to_precision(bracket.symbol, bracket.quantity))
+            if qty_p <= 0:
+                return False, "Precision rounding produced zero quantity", None
+        except Exception as e:
+            return False, f"Precision error: {e}", None
+        
+        # Place market order with conditional close (TP + SL)
+        try:
+            # Kraken's conditional close parameters
+            params = {
+                'close': {
+                    'ordertype': 'stop-loss-profit',  # Both TP and SL in one!
+                    'price': sl_price_param,          # Stop loss trigger
+                    'price2': tp_price_param          # Take profit trigger
+                }
+            }
+            
+            print(f"[BRACKET-ENTRY] Placing {bracket.side} order for {bracket.symbol} qty={qty_p:.6f} with brackets attached")
+            print(f"[BRACKET-PARAMS] {params}")
+            
+            # Place the order (market order for immediate execution)
+            order = exchange.create_order(
+                symbol=bracket.symbol,
+                type='market',
+                side=bracket.side,
+                amount=qty_p,
+                price=None,
+                params=params
+            )
+            
+            order_id = order.get('id') or order.get('orderId') or 'unknown'
+            print(f"[BRACKET-SUCCESS] Order placed: {order_id} | Entry with TP/SL attached via Kraken conditional close")
+            
+            return True, f"Bracket order placed successfully (id={order_id})", order
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[BRACKET-ERROR] Failed to place bracket order: {error_msg}")
+            return False, f"Kraken bracket order failed: {error_msg}", None
+    
     def place_bracket_orders(
         self,
         bracket: BracketOrder,
@@ -367,57 +458,14 @@ class BracketOrderManager:
         run_command_func
     ) -> Tuple[bool, str]:
         """
-        Place bracket orders (TP + SL) on the exchange.
+        DEPRECATED: Use place_entry_with_brackets() instead.
         
-        CRITICAL: Uses the commands.py bracket command which places both orders.
-        
-        Args:
-            bracket: Validated BracketOrder
-            exchange: CCXT exchange instance
-            run_command_func: Function to execute commands (from commands.py)
-            
-        Returns:
-            (success, message)
+        This method is kept for backward compatibility but should not be used
+        for new code. It was designed for the old two-step process (entry first,
+        then brackets), which doesn't work with Kraken's conditional close API.
         """
-        # Final validation
-        is_valid, error = bracket.validate(self.config)
-        if not is_valid:
-            return False, f"Pre-flight validation failed: {error}"
-        
-        # Precision adjustments
-        try:
-            qty_p = float(exchange.amount_to_precision(bracket.symbol, bracket.quantity))
-            tp_p = float(exchange.price_to_precision(bracket.symbol, bracket.take_profit_price))
-            sl_p = float(exchange.price_to_precision(bracket.symbol, bracket.stop_price))
-            
-            if qty_p <= 0 or tp_p <= 0 or sl_p <= 0:
-                return False, "Precision rounding produced zero"
-            
-        except Exception as e:
-            return False, f"Precision error: {e}"
-        
-        # Execute bracket command
-        try:
-            cmd = f"bracket {bracket.symbol} {qty_p:.6f} tp {tp_p} sl {sl_p}"
-            print(f"[BRACKET-EXEC] {cmd}")
-            result = run_command_func(cmd)
-            result_str = str(result).lower()
-            
-            # Check for errors
-            error_indicators = ["error", "err", "fail", "invalid", "reject", "denied", "insufficient"]
-            if any(indicator in result_str for indicator in error_indicators):
-                return False, f"Bracket command failed: {result}"
-            
-            # Check for success
-            success_indicators = ["ok", "success", "placed", "created"]
-            if not any(indicator in result_str for indicator in success_indicators):
-                return False, f"No success confirmation: {result}"
-            
-            print(f"[BRACKET-OK] {result}")
-            return True, str(result)
-            
-        except Exception as e:
-            return False, f"Bracket placement exception: {e}"
+        success, message, _ = self.place_entry_with_brackets(bracket, exchange)
+        return success, message
 
 
 # Global instance

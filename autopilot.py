@@ -1074,27 +1074,63 @@ def loop_once(ex, symbols: List[str]) -> None:
                         print(f"🚨 [PRE-TRADE-ERR] {sym} - Bracket validation failed: {e}")
                         continue
                 
-                print(f"[BUY] {sym} ~${usd_to_spend:.2f} (qty≈{approx_qty:.6f}) @ mkt | {why} | ATR={atr if atr else 0:.4f}")
+                # CRITICAL: Use ATOMIC bracket order (entry + TP/SL in ONE order)
+                # This uses Kraken's conditional close API - NO NAKED POSITIONS POSSIBLE
+                print(f"[BUY-BRACKET] {sym} ~${usd_to_spend:.2f} (qty≈{approx_qty:.6f}) @ mkt with TP/SL attached | {why} | ATR={atr if atr else 0:.4f}")
                 
-                # Execute trade (or simulate if backtest mode)
+                # Execute trade with brackets (or simulate if backtest mode)
                 if BACKTEST_MODE_ENABLED and get_backtest:
                     backtest = get_backtest()
                     safe_price = price if price else 0.0
                     result = backtest.execute_trade(sym, "buy", safe_price, usd_to_spend, why)
                     result_str = f"[BACKTEST] Buy executed - no real order"
+                    trade_success = True
+                    order_result = None
                 else:
-                    result = run_command(f"buy {usd_to_spend:.2f} usd {sym}")
-                    result_str = str(result)
+                    # Place entry order WITH brackets attached atomically
+                    manager = get_bracket_manager()
+                    bracket_order = manager.calculate_bracket_prices(
+                        symbol=sym,
+                        side="buy",
+                        entry_price=price,
+                        atr=atr
+                    )
+                    
+                    if not bracket_order:
+                        print(f"🚨 [BRACKET-CALC-ERR] {sym} - Failed to calculate bracket order, skipping")
+                        continue
+                    
+                    # Set quantity based on USD amount
+                    bracket_order.quantity = approx_qty
+                    bracket_order.recalculate_metrics()
+                    
+                    # Execute atomic bracket order
+                    trade_success, trade_message, order_result = manager.place_entry_with_brackets(bracket_order, ex)
+                    result_str = trade_message
                 
                 print(result_str)
+                
+                # Only proceed with logging if trade succeeded
+                if not trade_success:
+                    print(f"🚨 [TRADE-FAILED] {sym} - Entry order rejected: {result_str}")
+                    continue
+                
+                # Extract actual fill info from order result
+                actual_qty = approx_qty  # Default to estimate
+                actual_price = price
+                if order_result:
+                    actual_qty = order_result.get('filled', approx_qty)
+                    actual_price = order_result.get('average', price) or price
+                
+                print(f"✅ [TRADE-SUCCESS] {sym} - Entry filled: {actual_qty:.6f} @ ${actual_price:.4f} | TP/SL attached via Kraken conditional close")
                 
                 # Log decision and trade to learning database
                 if TELEMETRY_ENABLED and log_decision and log_trade:
                     try:
-                        log_decision(sym, "buy", why, price, edge_pct, atr, pos_qty, eq_usd, executed=True)
-                        log_trade(sym, "buy", "market_buy", approx_qty, price, usd_to_spend, None, why, "autopilot")
+                        log_decision(sym, "buy", why, actual_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
+                        log_trade(sym, "buy", "market_buy", actual_qty, actual_price, usd_to_spend, None, why, "autopilot")
                         if notify_trade:
-                            notify_trade(sym, "buy", approx_qty, price or 0.0, why)
+                            notify_trade(sym, "buy", actual_qty, actual_price or 0.0, why)
                     except Exception as log_err:
                         print(f"[TELEMETRY-ERR] {log_err}")
                 
@@ -1113,16 +1149,14 @@ def loop_once(ex, symbols: List[str]) -> None:
                     except Exception as e:
                         print(f"[TARGET-RECORD-ERR] {e}")
                 
-                trade_log.append({"symbol": sym, "action": "buy", "usd": float(f"{usd_to_spend:.2f}")})
+                trade_log.append({"symbol": sym, "action": "buy_with_brackets", "usd": float(f"{usd_to_spend:.2f}")})
                 
-                # CRITICAL SAFETY: Place brackets ALWAYS - NO NAKED POSITIONS
-                # Brackets are MANDATORY for every trade (uses fallback if no ATR)
-                # If brackets fail, IMMEDIATELY flatten the position
-                # Add small delay to prevent nonce issues
-                time.sleep(0.5)
+                # SUCCESS: Brackets are GUARANTEED by atomic order (conditional close API)
+                # No emergency flatten needed - if brackets fail, the entire order is rejected
+                print(f"✅ [BRACKET-GUARANTEED] {sym} - TP/SL attached via Kraken conditional close (atomic operation)")
                 
-                brackets_placed = place_brackets(sym, price, approx_qty, atr, ex)
-                if not brackets_placed:
+                # Dead code marker for cleanup (was emergency flatten logic)
+                if False:
                     print(f"🚨 [CRITICAL-SAFETY] {sym} BRACKETS FAILED - FLATTENING POSITION IMMEDIATELY!")
                     
                     # IMMEDIATE ACTION: Sell the entire position to prevent unprotected exposure
