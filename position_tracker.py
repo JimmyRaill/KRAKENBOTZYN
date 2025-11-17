@@ -18,9 +18,12 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List
 from pathlib import Path
 from loguru import logger
+import portalocker
 
 
 POSITIONS_FILE = Path("open_positions.json")
+LOCK_FILE = Path("open_positions.lock")  # Dedicated lock file for interprocess synchronization
+LOCK_TIMEOUT = 10.0  # Maximum seconds to wait for file lock
 
 
 class Position:
@@ -80,8 +83,12 @@ class Position:
         )
 
 
-def _load_positions() -> Dict[str, Position]:
-    """Load all open positions from JSON file"""
+def _load_positions_locked(lock_handle) -> Dict[str, Position]:
+    """
+    Internal: Load positions while caller holds the lock.
+    
+    This function assumes the caller has already acquired the lock.
+    """
     if not POSITIONS_FILE.exists():
         return {}
     
@@ -89,27 +96,87 @@ def _load_positions() -> Dict[str, Position]:
         with open(POSITIONS_FILE, 'r') as f:
             data = json.load(f)
         
+        # Validate JSON structure
+        if not isinstance(data, dict):
+            logger.error(f"[POSITION-TRACKER] CORRUPTION DETECTED: positions file contains {type(data)}, expected dict")
+            raise ValueError(f"Corrupted positions file: expected dict, got {type(data)}")
+        
         positions = {}
         for symbol, pos_data in data.items():
-            positions[symbol] = Position.from_dict(pos_data)
+            try:
+                positions[symbol] = Position.from_dict(pos_data)
+            except Exception as parse_err:
+                logger.error(f"[POSITION-TRACKER] Failed to parse position {symbol}: {parse_err}")
+                # Skip corrupted positions but continue loading others
+                continue
         
         return positions
+    
+    except json.JSONDecodeError as e:
+        logger.error(f"[POSITION-TRACKER] JSON CORRUPTION: {e}")
+        raise ValueError(f"Corrupted positions file - cannot parse JSON: {e}")
     except Exception as e:
         logger.error(f"[POSITION-TRACKER] Failed to load positions: {e}")
-        return {}
+        raise
 
 
-def _save_positions(positions: Dict[str, Position]):
-    """Save all positions to JSON file"""
+def _load_positions() -> Dict[str, Position]:
+    """
+    Load all open positions with shared lock (multiple readers OK).
+    """
+    # Acquire shared lock on dedicated lock file
+    with open(LOCK_FILE, 'a+') as lock_handle:
+        portalocker.lock(lock_handle, portalocker.LOCK_SH)
+        try:
+            return _load_positions_locked(lock_handle)
+        finally:
+            portalocker.unlock(lock_handle)
+
+
+def _save_positions_locked(positions: Dict[str, Position], lock_handle):
+    """
+    Internal: Save positions while caller holds the exclusive lock.
+    
+    This function assumes the caller has already acquired the exclusive lock.
+    """
     try:
         data = {symbol: pos.to_dict() for symbol, pos in positions.items()}
         
-        with open(POSITIONS_FILE, 'w') as f:
+        # Write to temp file first, then atomic rename
+        temp_file = POSITIONS_FILE.with_suffix('.tmp')
+        
+        with open(temp_file, 'w') as f:
             json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())  # Force write to disk
+        
+        # Atomic rename (overwrites existing file safely)
+        temp_file.replace(POSITIONS_FILE)
         
         logger.debug(f"[POSITION-TRACKER] Saved {len(positions)} position(s) to {POSITIONS_FILE}")
+    
     except Exception as e:
         logger.error(f"[POSITION-TRACKER] Failed to save positions: {e}")
+        # Clean up temp file if it exists
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except:
+                pass
+        raise
+
+
+def _save_positions(positions: Dict[str, Position]):
+    """
+    Save all positions with exclusive lock (blocks all readers and writers).
+    """
+    # Acquire exclusive lock on dedicated lock file
+    with open(LOCK_FILE, 'a+') as lock_handle:
+        portalocker.lock(lock_handle, portalocker.LOCK_EX)
+        try:
+            _save_positions_locked(positions, lock_handle)
+        finally:
+            portalocker.unlock(lock_handle)
 
 
 def add_position(
@@ -135,6 +202,10 @@ def add_position(
     
     Returns:
         Position object with calculated SL/TP
+    
+    Raises:
+        ValueError: If position file is corrupted
+        Exception: If file operations fail
     """
     # Calculate SL/TP prices
     stop_loss_price = entry_price - (atr * atr_sl_multiplier)
@@ -154,14 +225,27 @@ def add_position(
         source=source
     )
     
-    # Load existing positions
-    positions = _load_positions()
-    
-    # Add new position (overwrites if symbol already exists)
-    positions[symbol] = position
-    
-    # Save to disk
-    _save_positions(positions)
+    # CRITICAL: Hold exclusive lock across entire read-modify-write cycle
+    # This prevents race conditions between autopilot and command handlers
+    with open(LOCK_FILE, 'a+') as lock_handle:
+        portalocker.lock(lock_handle, portalocker.LOCK_EX)
+        
+        try:
+            # Load existing positions while holding lock
+            positions = _load_positions_locked(lock_handle)
+            
+            # Add new position (overwrites if symbol already exists)
+            positions[symbol] = position
+            
+            # Save to disk while still holding lock
+            _save_positions_locked(positions, lock_handle)
+        
+        except ValueError as corruption_err:
+            logger.error(f"[POSITION-TRACKER] Cannot add position - file corrupted: {corruption_err}")
+            logger.error(f"[POSITION-TRACKER] ⚠️  CRITICAL: Position {symbol} NOT TRACKED - manual intervention required!")
+            raise
+        finally:
+            portalocker.unlock(lock_handle)
     
     logger.info(
         f"[POSITION-TRACKER] ✅ Added position: {symbol} | "
@@ -182,28 +266,63 @@ def remove_position(symbol: str) -> bool:
     
     Returns:
         True if position was removed, False if not found
-    """
-    positions = _load_positions()
     
-    if symbol in positions:
-        del positions[symbol]
-        _save_positions(positions)
-        logger.info(f"[POSITION-TRACKER] ❌ Removed position: {symbol}")
-        return True
-    else:
-        logger.warning(f"[POSITION-TRACKER] Position not found for removal: {symbol}")
-        return False
+    Raises:
+        ValueError: If position file is corrupted
+        Exception: If file operations fail
+    """
+    # CRITICAL: Hold exclusive lock across entire read-modify-write cycle
+    with open(LOCK_FILE, 'a+') as lock_handle:
+        portalocker.lock(lock_handle, portalocker.LOCK_EX)
+        
+        try:
+            # Load positions while holding lock
+            positions = _load_positions_locked(lock_handle)
+            
+            if symbol in positions:
+                del positions[symbol]
+                # Save while still holding lock
+                _save_positions_locked(positions, lock_handle)
+                logger.info(f"[POSITION-TRACKER] ❌ Removed position: {symbol}")
+                return True
+            else:
+                logger.warning(f"[POSITION-TRACKER] Position not found for removal: {symbol}")
+                return False
+        
+        except ValueError as corruption_err:
+            logger.error(f"[POSITION-TRACKER] Cannot remove position - file corrupted: {corruption_err}")
+            logger.error(f"[POSITION-TRACKER] ⚠️  WARNING: Position {symbol} may still be open - manual check required!")
+            raise
+        finally:
+            portalocker.unlock(lock_handle)
 
 
 def get_position(symbol: str) -> Optional[Position]:
-    """Get position for a specific symbol"""
-    positions = _load_positions()
-    return positions.get(symbol)
+    """
+    Get position for a specific symbol.
+    
+    Returns None if position not found OR if file is corrupted (logged as error).
+    """
+    try:
+        positions = _load_positions()
+        return positions.get(symbol)
+    except Exception as e:
+        logger.error(f"[POSITION-TRACKER] Failed to get position {symbol}: {e}")
+        return None
 
 
 def get_all_positions() -> Dict[str, Position]:
-    """Get all open positions"""
-    return _load_positions()
+    """
+    Get all open positions.
+    
+    Returns empty dict if file is corrupted (logged as error).
+    """
+    try:
+        return _load_positions()
+    except Exception as e:
+        logger.error(f"[POSITION-TRACKER] Failed to load positions: {e}")
+        logger.error(f"[POSITION-TRACKER] ⚠️  CRITICAL: Cannot monitor positions - autopilot may miss exits!")
+        return {}
 
 
 def check_exit_trigger(symbol: str, current_price: float) -> Optional[str]:
