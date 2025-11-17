@@ -19,6 +19,7 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 - System running exclusively in MARKET_ONLY mode with mental SL/TP
 - Fee-aware trading actively blocking unprofitable trades (edge < round-trip fees + buffer)
 - No .env overrides for EXECUTION_MODE or USE_BRACKETS (using safe defaults)
+- **Fee Buffer Tuning**: Lowered safety margin from 0.15% to 0.10% for increased trade frequency (min edge requirement: 0.67% → 0.62%). Expected to increase trades by 20-30% while maintaining fee profitability.
 
 **Mental SL/TP System (Nov 17, 2025)**:
 - Implemented professional "mental stop-loss/take-profit" system for market-only execution

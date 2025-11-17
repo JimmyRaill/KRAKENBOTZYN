@@ -1184,7 +1184,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                     # FEE CHECK: Block trades that can't cover transaction costs
                     # ═══════════════════════════════════════════════════════════════
                     try:
-                        min_edge_required = get_minimum_edge_pct(safety_margin=0.15)  # 0.15% safety buffer
+                        min_edge_required = get_minimum_edge_pct(safety_margin=0.10)  # 0.10% safety buffer
                         taker_fee_pct = get_taker_fee(sym) * 100  # Convert to percentage
                         
                         # edge_pct is calculated earlier as: ((price - sma20) / sma20) * 100
