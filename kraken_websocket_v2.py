@@ -393,7 +393,7 @@ class KrakenWebSocketV2:
             return False, f"Cancel exception: {e}"
     
     def _place_limit_order_rest(self, symbol: str, side: str, quantity: float, price: float) -> Tuple[bool, Optional[str]]:
-        """Place limit order via REST API"""
+        """Place limit order via REST API with reduce_only flag for SPOT accounts"""
         try:
             kraken_symbol = self._normalize_kraken_symbol(symbol)
             
@@ -405,7 +405,8 @@ class KrakenWebSocketV2:
                 "type": side,
                 "volume": str(quantity),
                 "pair": kraken_symbol,
-                "price": str(price)
+                "price": str(price),
+                "reduce_only": "true"
             }
             
             headers = {
@@ -430,7 +431,7 @@ class KrakenWebSocketV2:
             return False, None
     
     def _place_stop_loss_order_rest(self, symbol: str, side: str, quantity: float, stop_price: float) -> Tuple[bool, Optional[str]]:
-        """Place stop-loss order via REST API"""
+        """Place stop-loss order via REST API with reduce_only flag for SPOT accounts"""
         try:
             kraken_symbol = self._normalize_kraken_symbol(symbol)
             
@@ -442,7 +443,8 @@ class KrakenWebSocketV2:
                 "type": side,
                 "volume": str(quantity),
                 "pair": kraken_symbol,
-                "price": str(stop_price)
+                "price": str(stop_price),
+                "reduce_only": "true"
             }
             
             headers = {
