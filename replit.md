@@ -10,7 +10,15 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 - Fixed MAX_DAILY_LOSS_USD parsing to handle "$50" format with safe fallbacks
 - Wired telemetry_db.log_trade() for complete trade lifecycle logging (entry + exit)
 - Added defensive fee model wrappers that never crash on import errors
+- Fixed dust balance bug: Changed position threshold from >0 to >0.001 to prevent dust amounts from blocking new trades
 - System validated and ready for autonomous trading
+
+**System Cleanup (Nov 17, 2025)**:
+- Removed all legacy bracket orders from previous testing
+- Confirmed bracket order system is fully disabled (USE_BRACKETS=False by default)
+- System running exclusively in MARKET_ONLY mode with mental SL/TP
+- Fee-aware trading actively blocking unprofitable trades (edge < round-trip fees + buffer)
+- No .env overrides for EXECUTION_MODE or USE_BRACKETS (using safe defaults)
 
 **Mental SL/TP System (Nov 17, 2025)**:
 - Implemented professional "mental stop-loss/take-profit" system for market-only execution
