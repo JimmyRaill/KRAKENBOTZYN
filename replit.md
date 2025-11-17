@@ -5,6 +5,13 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 
 **Recent Major Update (Nov 2025)**: Complete architectural pivot from bracket-based to market-only execution due to Kraken API limitations. System now uses pure market buy/sell orders with fee-awareness, rate limiting, and SL-independent position sizing.
 
+**Critical Bug Fixes (Nov 17, 2025)**:
+- Fixed unbound 'config' variable in autopilot buy execution path (blocking all trades)
+- Fixed MAX_DAILY_LOSS_USD parsing to handle "$50" format with safe fallbacks
+- Wired telemetry_db.log_trade() for complete trade lifecycle logging (entry + exit)
+- Added defensive fee model wrappers that never crash on import errors
+- System validated and ready for autonomous trading
+
 ## User Preferences
 - User prefers to be called: jimmy
 - Zyn's role: Financial servant who does ALL the work FOR jimmy
