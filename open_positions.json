@@ -1,15 +1,12 @@
 {
-  "positions": [
-    {
-      "symbol": "AI16Z/USD",
-      "side": "long",
-      "entry_price": 0.02,
-      "quantity": 500.0,
-      "entry_time": "2025-11-17T23:28:20.330921Z",
-      "stop_loss": 0.019,
-      "take_profit": 0.024,
-      "atr": 0.0005,
-      "initial_risk_usd": 5.0
-    }
-  ]
+  "AI16Z/USD": {
+    "symbol": "AI16Z/USD",
+    "entry_price": 0.02,
+    "quantity": 500.0,
+    "stop_loss_price": 0.019,
+    "take_profit_price": 0.024,
+    "atr": 0.0005,
+    "entry_timestamp": 1731886100.0,
+    "source": "test"
+  }
 }
