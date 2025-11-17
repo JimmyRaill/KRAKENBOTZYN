@@ -1,0 +1,160 @@
+You are in PLAN MODE.
+
+Goal: Prove whether AUTOPILOT is actually placing trades on its own AND identify exactly why there are 0 trades with source="autopilot" in the last 24 hours.
+
+We have already:
+- Confirmed force trade tests work (source="force_test").
+- Confirmed executed_orders is now logging entry fills for force tests.
+- Confirmed symbol universe expansion is wired.
+- Confirmed there are LONG signals (dozens per day).
+But autopilot still appears to place **0 trades** with source="autopilot".
+
+I want a deep, code-level forensic analysis focused ONLY on AUTOPILOT EXECUTION, not chat commands.
+
+────────────────────
+STEP 1 – HARD DATA: AUTOPILOT VS OTHERS (LAST 7 DAYS)
+────────────────────
+
+Using the REAL database (no guesses):
+
+1. Query the trades table for the last 7 days:
+   - cutoff_7d = now - 7 days
+   - SELECT * FROM trades WHERE timestamp > cutoff_7d ORDER BY timestamp DESC;
+
+2. For each row, group by `source`:
+   - Count trades with source="autopilot"
+   - Count trades with source="command"
+   - Count trades with source in ("force_test", "force_trade_test")
+   - Count trades with source="unknown"
+
+3. Do the same for executed_orders:
+   - SELECT * FROM executed_orders WHERE timestamp > cutoff_7d ORDER BY timestamp DESC;
+   - Group by source the same way.
+
+Tell me clearly:
+- How many trades in the last 7 days have source="autopilot" in trades?
+- How many trades in the last 7 days have source="autopilot" in executed_orders?
+
+If this number is 0 in both places, that’s **proof** that autopilot hasn’t successfully executed anything.
+
+────────────────────
+STEP 2 – TRACE AUTOPILOT PIPELINE END-TO-END
+────────────────────
+
+We already know:
+- strategy_orchestrator returns TradeSignal(action="long")
+- autopilot generates LONG decisions
+- force trade tests successfully call open_position_with_brackets and actually trade
+
+Now we need to prove what happens for **autopilot**.
+
+1. In autopilot.py, trace the code path for the normal 5-minute loop:
+   - From loop_once / run_forever
+   - to orchestrator.generate_signal
+   - to where action is normalized (long → buy, short → sell_all)
+   - to the code that decides whether to call open_position_with_brackets
+   - to the call into bracket/order logic.
+
+2. Add or locate logging that explicitly shows, per symbol:
+   - When a LONG signal is generated
+   - Whether the code *decides* to execute a trade or not
+   - If NOT, exactly what condition blocked it (e.g., "min volume", "risk_per_trade too high", "max daily trades", etc.)
+   - If YES, log: "[AUTOPILOT] Executing trade via open_position_with_brackets for {symbol} {qty}"
+
+3. Identify ALL blocking conditions in autopilot that can stop a LONG from becoming an order:
+   - NO_TRADE regimes
+   - volume filters
+   - BB / RSI filters
+   - HTF alignment filters
+   - DAILY trade limits
+   - risk_per_trade check
+   - max_active_risk check
+   - Kraken min order size / min cost handling
+
+For EACH blocking condition, I want you to tell me:
+- Which file + function it lives in
+- How often that condition fired in the last 24 hours for LONG signals (rough count is fine)
+
+────────────────────
+STEP 3 – MATCH LONG SIGNALS TO ORDER ATTEMPTS (LAST 24 HOURS)
+────────────────────
+
+Use evaluation_log + logs:
+
+1. In evaluation_log (or equivalent), find all rows in the last 24 hours where:
+   - decision="LONG" AND
+   - trading_mode="live"
+
+2. For each such LONG row:
+   - Determine whether open_position_with_brackets was ever called for that symbol at that time.
+   - If YES:
+     - Did open_position_with_brackets:
+       - Place a real order?
+       - Return a "blocked" string? (e.g., "not enough volume", "price outside band", "risk too high")
+   - If NO:
+     - Which condition in autopilot prevented it from being called?
+
+I want a short summary like:
+- “In the last 24h: LONG signals = X”
+- “Of these: Y reached open_position_with_brackets, Z were blocked before that”
+- “Of those Y, 0/1/2 actually resulted in a Kraken order, and here’s why for the others…”
+
+────────────────────
+STEP 4 – DESIGN A CONTROLLED AUTOPILOT TEST MODE
+────────────────────
+
+We already tested force_trade manually. Now we need to PROVE autopilot itself can send a real order WITHOUT any chat command.
+
+Design a SMALL, SAFE test mode, controlled by an env var, e.g.:
+
+- AUTOPILOT_TEST_MODE=1
+
+When AUTOPILOT_TEST_MODE=1, behavior should be:
+
+- On the NEXT valid 5-minute loop for LIVE mode:
+  - For the FIRST symbol in the universe (or a known one like ETH/USD):
+    - Skip ALL strategy filters and risk filters ONLY ONCE.
+    - Place a tiny bracket trade (e.g., $10 notional) via the SAME pipeline autopilot normally uses:
+      - open_position_with_brackets → ccxt.kraken
+    - Log it with:
+      - source="autopilot_test"
+      - into both trades table and executed_orders.
+
+- After that one test trade is placed successfully, AUTOPILOT_TEST_MODE should automatically disable itself in memory (so it won’t spam trades):
+  - E.g., a flag in code that marks “test trade executed for this session”.
+
+This gives us a clean proof-of-life:
+- No chat command
+- No force_test
+- Trade initiated purely by autopilot loop
+- Clearly labeled source="autopilot_test"
+
+In PLAN mode, just design this and explain EXACTLY where in autopilot.py you would insert the test hook.
+
+────────────────────
+STEP 5 – FIX PLAN SUMMARY
+────────────────────
+
+At the end, give me a clear fix plan that BUILD MODE can execute:
+
+1. Confirm (with numbers) that:
+   - autopilot trades in last 7 days = 0 in both trades and executed_orders
+
+2. Identify the most common blocking condition that prevents LONG signals from becoming trades.
+
+3. Describe EXACT code changes to:
+   - Add the AUTOPILOT_TEST_MODE hook into autopilot loop (which function, which lines).
+   - Ensure the test trade is logged to:
+     - trades table with source="autopilot_test"
+     - executed_orders with source="autopilot_test"
+
+4. Describe how, AFTER BUILD applies these changes, we can test:
+   - Set AUTOPILOT_TEST_MODE=1
+   - Wait for one loop
+   - Verify:
+     - Kraken shows a new tiny trade
+     - trades table shows a row with source="autopilot_test"
+     - executed_orders has the matching entry
+     - 24h_trades counts it correctly
+
+Do NOT modify strategy filters or real risk settings yet. Only design the test mode + diagnostics so we can PROVE whether autopilot execution is wired properly.
