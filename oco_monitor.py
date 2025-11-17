@@ -43,11 +43,11 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
     try:
         db = _get_connection()
         
-        # Get all active bracket orders with both TP and SL
+        # Get all active bracket orders with TP (SL might be null initially)
         query = """
             SELECT DISTINCT
                 symbol,
-                entry_order_id,
+                order_id AS entry_order_id,
                 tp_order_id,
                 sl_order_id,
                 order_type,
@@ -56,7 +56,6 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
             WHERE status = 'filled'
               AND order_type = 'entry_pending_tp'
               AND tp_order_id IS NOT NULL
-              AND sl_order_id IS NOT NULL
             ORDER BY created_at DESC
         """
         
@@ -79,6 +78,15 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
             sl_id = bracket[3]
             
             try:
+                # Enrich missing SL order IDs on-the-fly
+                if not sl_id:
+                    from sl_order_enrichment import enrich_and_store_sl_order_id
+                    sl_id = enrich_and_store_sl_order_id(entry_id, symbol, max_attempts=2)
+                    
+                    if not sl_id:
+                        logger.debug(f"[OCO-MONITOR-{trading_mode}] SL ID not yet available for {symbol} (entry: {entry_id})")
+                        continue  # Skip this bracket for now, will retry next cycle
+                
                 # Fetch open orders to see which are still active
                 open_orders = exchange.fetch_open_orders(symbol)
                 open_order_ids = {order['id'] for order in open_orders}

@@ -491,12 +491,22 @@ class BracketOrderManager:
                     print(f"[BRACKET-COMPLETE] Entry ID: {entry_order_id}")
                     print(f"[BRACKET-COMPLETE] TP ID: {tp_order_id}")
                     
+                    # Step 4: Find and store SL order ID for OCO monitoring
+                    from sl_order_enrichment import enrich_and_store_sl_order_id
+                    sl_order_id = enrich_and_store_sl_order_id(entry_order_id, bracket.symbol, max_attempts=3)
+                    
+                    if sl_order_id:
+                        print(f"[BRACKET-COMPLETE] SL ID: {sl_order_id} (for OCO monitoring)")
+                    else:
+                        print(f"[BRACKET-WARNING] ⚠️ Could not find SL order ID yet (will retry in reconciliation)")
+                    
                     # Mark entry as filled and store TP/SL IDs (for OCO monitoring)
                     from evaluation_log import mark_pending_order_filled
-                    mark_pending_order_filled(entry_order_id, tp_order_id=tp_order_id)
+                    mark_pending_order_filled(entry_order_id, tp_order_id=tp_order_id, sl_order_id=sl_order_id)
                     
                     # Include TP order ID in result
                     result['tp_order_id'] = tp_order_id
+                    result['sl_order_id'] = sl_order_id
                     return True, f"Brackets complete: Entry filled, SL active, TP placed", result
                 else:
                     print(f"[BRACKET-WARNING] ⚠️ TP placement failed: {tp_message}")

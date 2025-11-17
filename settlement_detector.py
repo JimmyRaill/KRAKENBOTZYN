@@ -19,16 +19,40 @@ from typing import Optional, Tuple, Dict, Any
 from loguru import logger
 
 
+def _normalize_kraken_asset(asset: str) -> str:
+    """
+    Normalize asset code to Kraken's balance key format.
+    
+    Kraken uses X/Z-prefixed codes for major assets in balances:
+    - BTC → XXBT
+    - ETH → XETH  
+    - USD → ZUSD (Z-prefix for fiat)
+    - EUR → ZEUR
+    - Other assets usually match (ASTER, ALGO, etc.)
+    
+    Args:
+        asset: Plain asset code (e.g., "BTC", "USD", "ASTER")
+        
+    Returns:
+        Kraken balance key (e.g., "XXBT", "ZUSD", "ASTER")
+    """
+    kraken_map = {
+        'BTC': 'XXBT',
+        'ETH': 'XETH',
+        'USD': 'ZUSD',
+        'EUR': 'ZEUR',
+        'GBP': 'ZGBP',
+        'JPY': 'ZJPY',
+        'CAD': 'ZCAD',
+        'AUD': 'ZAUD'
+    }
+    
+    return kraken_map.get(asset, asset)
+
+
 def extract_base_asset(symbol: str) -> str:
     """
     Extract base asset from CCXT symbol format and normalize for Kraken balance keys.
-    
-    Kraken uses X-prefixed codes for major assets in balances:
-    - BTC → XXBT
-    - ETH → XETH  
-    - USD → ZUSD
-    - EUR → ZEUR
-    - Other assets usually match (ASTER, ALGO, etc.)
     
     Examples:
         "BTC/USD" -> "XXBT"
@@ -43,20 +67,29 @@ def extract_base_asset(symbol: str) -> str:
         Kraken balance key (e.g., "XXBT", "XETH", "ASTER")
     """
     base = symbol.split('/')[0]
+    return _normalize_kraken_asset(base)
+
+
+def extract_quote_asset(symbol: str) -> str:
+    """
+    Extract quote asset from CCXT symbol format and normalize for Kraken balance keys.
     
-    # Kraken balance normalization (X-prefixed major assets)
-    kraken_map = {
-        'BTC': 'XXBT',
-        'ETH': 'XETH',
-        'USD': 'ZUSD',
-        'EUR': 'ZEUR',
-        'GBP': 'ZGBP',
-        'JPY': 'ZJPY',
-        'CAD': 'ZCAD',
-        'AUD': 'ZAUD'
-    }
+    CRITICAL for sell settlement detection: Sell orders release quote currency
+    back to the account, so we need to check the NORMALIZED quote balance.
     
-    return kraken_map.get(base, base)
+    Examples:
+        "BTC/USD" -> "ZUSD"
+        "ETH/EUR" -> "ZEUR"
+        "ASTER/USD" -> "ZUSD"
+    
+    Args:
+        symbol: Trading pair in CCXT format (e.g., "BTC/USD")
+        
+    Returns:
+        Kraken quote balance key (e.g., "ZUSD", "ZEUR")
+    """
+    quote = symbol.split('/')[1]
+    return _normalize_kraken_asset(quote)
 
 
 def wait_for_settlement(
@@ -93,15 +126,16 @@ def wait_for_settlement(
     from exchange_manager import get_exchange
     
     base_asset = extract_base_asset(symbol)
+    quote_asset = extract_quote_asset(symbol)
     start_time = time.time()
     attempt = 0
     
-    logger.info(f"[SETTLEMENT] Waiting for {base_asset} to settle ({filled_qty:.4f} units @ ${fill_price:.4f})")
-    logger.info(f"[SETTLEMENT] Polling balance every {poll_interval}s (max {timeout}s)")
-    
     # For buy orders, we expect the base asset to appear in free balance
-    # For sell orders, we expect the quote asset (USD) to appear
-    asset_to_check = base_asset if side.lower() == 'buy' else 'USD'
+    # For sell orders, we expect the quote asset (ZUSD, ZEUR, etc.) to increase
+    asset_to_check = base_asset if side.lower() == 'buy' else quote_asset
+    
+    logger.info(f"[SETTLEMENT] Waiting for {asset_to_check} to settle ({side} {filled_qty:.4f} units @ ${fill_price:.4f})")
+    logger.info(f"[SETTLEMENT] Polling balance every {poll_interval}s (max {timeout}s)")
     
     # Allow 1% tolerance for fees/rounding
     min_expected_qty = filled_qty * 0.99 if side.lower() == 'buy' else (filled_qty * fill_price * 0.99)

@@ -206,9 +206,15 @@ def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
                     
                     if tp_success:
                         tp_placed_count += 1
+                        
+                        # Find and store SL order ID for OCO monitoring
+                        from sl_order_enrichment import enrich_and_store_sl_order_id
+                        sl_order_id = enrich_and_store_sl_order_id(entry_order_id, symbol, max_attempts=3)
+                        
                         tps_placed.append({
                             "entry_order_id": entry_order_id,
                             "tp_order_id": tp_order_id,
+                            "sl_order_id": sl_order_id,
                             "symbol": symbol,
                             "tp_price": tp_price,
                             "quantity": filled_qty
@@ -216,11 +222,11 @@ def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
                         
                         logger.info(
                             f"[RECONCILE-ENTRIES-{trading_mode.upper()}] 🎯 TP placed: "
-                            f"{symbol} {tp_side} {filled_qty} @ ${tp_price:.5f} (tp_id={tp_order_id})"
+                            f"{symbol} {tp_side} {filled_qty} @ ${tp_price:.5f} (tp_id={tp_order_id}, sl_id={sl_order_id})"
                         )
                         
                         # Mark entry as filled (no longer needs monitoring)
-                        mark_pending_order_filled(entry_order_id, tp_order_id=tp_order_id)
+                        mark_pending_order_filled(entry_order_id, tp_order_id=tp_order_id, sl_order_id=sl_order_id)
                     else:
                         error_msg = f"TP placement failed for entry {entry_order_id}: {tp_message}"
                         logger.error(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] {error_msg}")
