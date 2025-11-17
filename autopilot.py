@@ -770,6 +770,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                 # Log regime and strategy details
                 print(f"[REGIME] {sym} - {regime.value} (confidence={trade_signal.confidence:.2f})")
                 print(f"[SIGNAL] {sym} - {action.upper()}: {why}")
+                print(f"[ACTION-DEBUG] {sym} - action={action}, exec_action={exec_action}")
                 
                 if trade_signal.htf_aligned:
                     print(f"[HTF] {sym} - Aligned {trade_signal.dominant_trend} trend on 15m/1h")
@@ -829,10 +830,12 @@ def loop_once(ex, symbols: List[str]) -> None:
                 print(f"[REGIME-EXIT] {sym} - Forcing exit due to bearish regime")
             
             # Adjust action based on position
+            # NOTE: Check the ORIGINAL action (before normalization) because we normalize long→buy on line 763
             if action == 'long' and pos_qty > 0:
                 action = "hold"
                 exec_action = "hold"  # Update exec_action too
                 why = f"LONG signal but already in position ({pos_qty:.6f})"
+                print(f"[POSITION-BLOCK] {sym} - Already holding {pos_qty:.6f}, skipping LONG signal")
             
             # Calculate edge for logging
             edge_pct = ((price - current_sma20) / current_sma20 * 100.0) if current_sma20 else None
@@ -841,7 +844,9 @@ def loop_once(ex, symbols: List[str]) -> None:
             update_candle_tracking(state, sym, latest_ts, current_sma20, current_close)
 
             # EXECUTION ROUTING: Use exec_action (not raw action from strategy)
+            # DIAGNOSTIC: Log when we reach buy execution path
             if exec_action == "buy" and price:
+                print(f"🎯 [EXEC-PATH] {sym} - ENTERING BUY EXECUTION (action={action}, exec_action={exec_action}, pos_qty={pos_qty})")
                 eq_full: Dict[str, Any] = ex.fetch_balance()
                 eq_usd = account_equity_usd(eq_full)
                 qty = qty_from_atr(eq_usd, atr, price)
