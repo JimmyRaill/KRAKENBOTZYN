@@ -68,12 +68,13 @@ class StrategyOrchestrator:
     
     def __init__(self):
         """Initialize strategy orchestrator"""
-        import os
+        from trading_config import get_config
         self.regime_detector = get_regime_detector()
         self.mtf_context = get_mtf_context()
-        self.config = TradingConfig()
-        self.aggressive_mode = os.getenv("AGGRESSIVE_RANGE_TRADING", "0") == "1"
-        logger.info(f"StrategyOrchestrator initialized (aggressive_mode={self.aggressive_mode})")
+        self.config = get_config()
+        logger.info(f"StrategyOrchestrator initialized (aggressive_mode={self.config.regime.aggressive_mode}, "
+                   f"BB_threshold={self.config.regime.aggressive_bb_pct if self.config.regime.aggressive_mode else self.config.regime.conservative_bb_pct}%, "
+                   f"RSI_max={self.config.regime.aggressive_rsi_max if self.config.regime.aggressive_mode else self.config.regime.conservative_rsi_max})")
     
     def generate_signal(
         self,
@@ -320,9 +321,9 @@ class StrategyOrchestrator:
         band_range = (bb_upper - bb_lower) if (bb_upper and bb_lower) else 0
         price_position_pct = ((price - bb_lower) / band_range) * 100 if (band_range > 0 and bb_lower) else 50
         
-        # Adjust thresholds based on mode (read from orchestrator config)
-        max_bb_position = 50 if self.aggressive_mode else 40  # 50% vs 40% of band
-        max_rsi = 55 if self.aggressive_mode else 45          # RSI <55 vs <45
+        # Adjust thresholds based on mode (read from trading config)
+        max_bb_position = self.config.regime.aggressive_bb_pct if self.config.regime.aggressive_mode else self.config.regime.conservative_bb_pct
+        max_rsi = self.config.regime.aggressive_rsi_max if self.config.regime.aggressive_mode else self.config.regime.conservative_rsi_max
         
         # Long signal: price in lower X% of band
         if price_position_pct <= max_bb_position:
@@ -356,7 +357,7 @@ class StrategyOrchestrator:
         
         # Approaching middle band from below (momentum play)
         # Use same aggressive mode threshold for momentum plays
-        momentum_threshold = 60 if self.aggressive_mode else 50
+        momentum_threshold = 60 if self.config.regime.aggressive_mode else 50
         if max_bb_position < price_position_pct <= momentum_threshold and rsi and rsi < (max_rsi + 5):
             # Only if HTF is bullish (safer mid-band entries)
             if htf.dominant_trend == 'up':

@@ -58,6 +58,7 @@ class RiskConfig:
     risk_per_trade_pct: float = 0.0025  # 0.25% of equity per trade
     max_active_risk_pct: float = 0.02   # Max 2% total risk across all positions
     max_position_size_pct: float = 0.10  # Max 10% of equity in one position
+    max_position_usd: float = 15.0  # Max position size in USD (default $15)
     
     # Trade limits
     max_trades_per_day: int = 10  # Per symbol
@@ -98,6 +99,13 @@ class RegimeConfig:
     # Bollinger Bands
     bb_period: int = 20
     bb_std_dev: float = 2.0
+    
+    # Aggressive range trading thresholds
+    aggressive_mode: bool = False  # Enable aggressive range trading
+    aggressive_bb_pct: float = 55.0  # Max BB position for LONG (55% = mid-range)
+    aggressive_rsi_max: float = 60.0  # Max RSI for LONG entries
+    conservative_bb_pct: float = 40.0  # Conservative BB threshold
+    conservative_rsi_max: float = 45.0  # Conservative RSI threshold
 
 
 @dataclass
@@ -168,6 +176,21 @@ class TradingConfig:
         max_trades = os.getenv("MAX_TRADES_PER_DAY")
         if max_trades:
             config.risk.max_trades_per_day = int(max_trades)
+        
+        max_position = os.getenv("MAX_POSITION_USD")
+        if max_position:
+            config.risk.max_position_usd = float(max_position)
+        
+        # Aggressive mode configuration
+        config.regime.aggressive_mode = os.getenv("AGGRESSIVE_RANGE_TRADING", "0") == "1"
+        
+        aggressive_bb = os.getenv("AGGRESSIVE_BB_PCT")
+        if aggressive_bb:
+            config.regime.aggressive_bb_pct = float(aggressive_bb)
+        
+        aggressive_rsi = os.getenv("AGGRESSIVE_RSI_MAX")
+        if aggressive_rsi:
+            config.regime.aggressive_rsi_max = float(aggressive_rsi)
         
         # Feature flags
         config.enable_profit_target = os.getenv("ENABLE_PROFIT_TARGET", "0") == "1"
