@@ -213,6 +213,345 @@ class KrakenWebSocketV2:
         
         return kraken_symbol
     
+    async def add_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float,
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        order_userref: int = 0,
+        validate: bool = False
+    ) -> Tuple[bool, str, Optional[Dict]]:
+        """
+        Place a single order via WebSocket v2 add_order method.
+        
+        Supports SPOT account (no reduce_only flags).
+        
+        Args:
+            symbol: Trading pair in CCXT format
+            side: 'buy' or 'sell'
+            order_type: 'market', 'limit', or 'stop-loss'
+            quantity: Order quantity
+            limit_price: Limit price (for limit orders)
+            stop_price: Stop trigger price (for stop-loss orders)
+            order_userref: User reference ID for linking orders
+            validate: If True, validates without executing
+            
+        Returns:
+            (success, message, result_dict)
+        """
+        kraken_symbol = self._normalize_kraken_symbol(symbol)
+        
+        # Ensure fresh token
+        try:
+            self.get_websocket_token()
+        except Exception as e:
+            return False, f"Failed to get WebSocket token: {e}", None
+        
+        if not self.ws:
+            await self.connect()
+        
+        # Build order request
+        order_params = {
+            "order_type": order_type,
+            "side": side,
+            "order_qty": quantity,
+            "order_userref": order_userref
+        }
+        
+        # Add type-specific parameters
+        if order_type == "limit" and limit_price:
+            order_params["limit_price"] = limit_price
+            order_params["limit_price_type"] = "static"
+        
+        if order_type == "stop-loss" and stop_price:
+            order_params["triggers"] = {
+                "reference": "last",
+                "price": stop_price,
+                "price_type": "static"
+            }
+        
+        add_request = {
+            "method": "add_order",
+            "params": {
+                "symbol": kraken_symbol,
+                "token": self.token,
+                "validate": validate,
+                **order_params
+            },
+            "req_id": int(time.time() * 1000)
+        }
+        
+        print(f"[KRAKEN-WS] Sending {order_type} order: {side} {quantity} {kraken_symbol}")
+        
+        # Send and wait for response
+        for attempt in range(2):
+            try:
+                await self.ws.send(json.dumps(add_request))
+                
+                # Wait for add_order response, skipping other messages
+                result = None
+                for _ in range(15):  # Increased to handle execution updates from previous orders
+                    response = await asyncio.wait_for(self.ws.recv(), timeout=10.0)
+                    msg = json.loads(response)
+                    
+                    # Skip subscription/snapshot/update messages
+                    if msg.get('method') == 'subscribe' or msg.get('type') in ['snapshot', 'update']:
+                        continue
+                    
+                    # Found our add_order response
+                    if msg.get('method') == 'add_order':
+                        result = msg
+                        break
+                
+                if result is None:
+                    return False, "No add_order response received", None
+                
+                # Check for errors
+                if result.get('error'):
+                    error_msg = result.get('error')
+                    
+                    # Retry on token expiry
+                    if attempt == 0 and any(err in str(error_msg) for err in ['TokenExpired', 'TokenInvalid', 'EAuth']):
+                        print(f"[KRAKEN-WS] Token expired, refreshing and retrying...")
+                        self.get_websocket_token(force_refresh=True)
+                        await self.connect()
+                        continue
+                    
+                    print(f"[KRAKEN-WS-ERROR] Order failed: {error_msg}")
+                    return False, f"Kraken WS error: {error_msg}", result
+                
+                # Success
+                if result.get('success') and result.get('result'):
+                    order_id = result['result'].get('order_id', 'unknown')
+                    print(f"[KRAKEN-WS-SUCCESS] ✅ Order placed: {order_id}")
+                    return True, f"Order placed: {order_id}", result
+                else:
+                    return False, "Order did not succeed", result
+                    
+            except asyncio.TimeoutError:
+                if attempt == 0:
+                    print(f"[KRAKEN-WS] Timeout on attempt {attempt+1}, retrying...")
+                    continue
+                return False, "WebSocket timeout", None
+            except Exception as e:
+                if attempt == 0:
+                    print(f"[KRAKEN-WS] Exception on attempt {attempt+1}: {e}")
+                    continue
+                return False, f"WebSocket exception: {e}", None
+        
+        return False, "All retry attempts exhausted", None
+    
+    async def cancel_order(self, order_id: str) -> Tuple[bool, str]:
+        """
+        Cancel an order via WebSocket v2.
+        
+        Args:
+            order_id: Order ID to cancel
+            
+        Returns:
+            (success, message)
+        """
+        try:
+            self.get_websocket_token()
+        except Exception as e:
+            return False, f"Failed to get WebSocket token: {e}"
+        
+        if not self.ws:
+            await self.connect()
+        
+        cancel_request = {
+            "method": "cancel_order",
+            "params": {
+                "order_id": [order_id],
+                "token": self.token
+            },
+            "req_id": int(time.time() * 1000)
+        }
+        
+        try:
+            await self.ws.send(json.dumps(cancel_request))
+            response = await asyncio.wait_for(self.ws.recv(), timeout=5.0)
+            result = json.loads(response)
+            
+            if result.get('success'):
+                print(f"[KRAKEN-WS] ✅ Order {order_id} canceled")
+                return True, f"Order {order_id} canceled"
+            else:
+                error = result.get('error', 'Unknown error')
+                print(f"[KRAKEN-WS] ❌ Cancel failed: {error}")
+                return False, f"Cancel failed: {error}"
+                
+        except Exception as e:
+            print(f"[KRAKEN-WS] Cancel exception: {e}")
+            return False, f"Cancel exception: {e}"
+    
+    def _check_order_filled(self, order_id: str) -> Tuple[bool, Optional[float]]:
+        """
+        Check if order is filled using REST API.
+        
+        Returns: (is_filled, fill_price)
+        """
+        try:
+            urlpath = "/0/private/QueryOrders"
+            nonce = str(int(time.time() * 1000))
+            data = {
+                "nonce": nonce,
+                "txid": order_id
+            }
+            
+            headers = {
+                "API-Key": self.api_key,
+                "API-Sign": self._get_kraken_signature(urlpath, data)
+            }
+            
+            response = requests.post(self.rest_url + urlpath, headers=headers, data=data)
+            result = response.json()
+            
+            if result.get('error') and len(result['error']) > 0:
+                print(f"[KRAKEN-WS] Error checking order status: {result['error']}")
+                return False, None
+            
+            orders = result.get('result', {})
+            if order_id in orders:
+                order = orders[order_id]
+                status = order.get('status')
+                if status in ['closed', 'filled']:
+                    avg_price = float(order.get('price', 0)) if order.get('price') else None
+                    return True, avg_price
+            
+            return False, None
+            
+        except Exception as e:
+            print(f"[KRAKEN-WS] Exception checking order fill: {e}")
+            return False, None
+    
+    async def place_sequential_bracket_order(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        take_profit_price: float,
+        stop_loss_price: float,
+        validate: bool = False
+    ) -> Tuple[bool, str, Optional[Dict]]:
+        """
+        Place sequential bracket order for SPOT accounts.
+        
+        Process:
+        1. Place entry market order
+        2. Wait for fill confirmation (max 5 seconds)
+        3. Place take-profit limit order
+        4. Place stop-loss order
+        5. If TP or SL fails, cancel both and return error
+        
+        Args:
+            symbol: Trading pair in CCXT format
+            side: 'buy' or 'sell'
+            quantity: Order quantity
+            take_profit_price: Take profit price
+            stop_loss_price: Stop loss trigger price
+            validate: If True, validates without executing
+            
+        Returns:
+            (success, message, result_dict)
+        """
+        print(f"[BRACKET-SEQ] Starting sequential bracket for {symbol}")
+        print(f"[BRACKET-SEQ] Entry: {side} {quantity} @ market")
+        print(f"[BRACKET-SEQ] TP: ${take_profit_price}, SL: ${stop_loss_price}")
+        
+        exit_side = 'sell' if side == 'buy' else 'buy'
+        result_dict = {
+            'entry_order_id': None,
+            'tp_order_id': None,
+            'sl_order_id': None
+        }
+        
+        # STEP 1: Place entry market order
+        success, message, entry_result = await self.add_order(
+            symbol=symbol,
+            side=side,
+            order_type='market',
+            quantity=quantity,
+            order_userref=1000 + int(time.time() % 100000),  # Unique ref
+            validate=validate
+        )
+        
+        if not success:
+            return False, f"Entry order failed: {message}", result_dict
+        
+        entry_order_id = entry_result.get('result', {}).get('order_id') if entry_result else None
+        if not entry_order_id:
+            return False, "Entry order succeeded but no order ID returned", result_dict
+        
+        result_dict['entry_order_id'] = entry_order_id
+        print(f"[BRACKET-SEQ] ✅ Entry order placed: {entry_order_id}")
+        
+        # STEP 2: Wait for entry fill (max 5 seconds, check every 0.5s)
+        if not validate:
+            filled = False
+            fill_price = None
+            for attempt in range(10):
+                await asyncio.sleep(0.5)
+                filled, fill_price = self._check_order_filled(entry_order_id)
+                if filled:
+                    print(f"[BRACKET-SEQ] ✅ Entry filled @ ${fill_price}")
+                    break
+            
+            if not filled:
+                return False, f"Entry order {entry_order_id} not filled within 5 seconds", result_dict
+        
+        # STEP 3: Place take-profit limit order
+        tp_userref = 1000 + int(time.time() % 100000) + 1
+        success, message, tp_result = await self.add_order(
+            symbol=symbol,
+            side=exit_side,
+            order_type='limit',
+            quantity=quantity,
+            limit_price=take_profit_price,
+            order_userref=tp_userref,
+            validate=validate
+        )
+        
+        if not success:
+            print(f"[BRACKET-SEQ] ❌ Take-profit failed, NO ROLLBACK NEEDED (entry already filled)")
+            return False, f"Take-profit order failed: {message}. Entry filled but no TP protection!", result_dict
+        
+        result_dict['tp_order_id'] = tp_result.get('result', {}).get('order_id') if tp_result else None
+        print(f"[BRACKET-SEQ] ✅ Take-profit placed: {result_dict['tp_order_id']}")
+        
+        # STEP 4: Place stop-loss order
+        sl_userref = tp_userref + 1
+        success, message, sl_result = await self.add_order(
+            symbol=symbol,
+            side=exit_side,
+            order_type='stop-loss',
+            quantity=quantity,
+            stop_price=stop_loss_price,
+            order_userref=sl_userref,
+            validate=validate
+        )
+        
+        if not success:
+            # Rollback: Cancel TP order (entry already filled, can't cancel)
+            print(f"[BRACKET-SEQ] ❌ Stop-loss failed, CANCELING TP ORDER for safety...")
+            if result_dict['tp_order_id'] and not validate:
+                cancel_success, cancel_msg = await self.cancel_order(result_dict['tp_order_id'])
+                if cancel_success:
+                    print(f"[BRACKET-SEQ] ✅ TP order canceled successfully")
+                else:
+                    print(f"[BRACKET-SEQ] ⚠️  TP cancel failed: {cancel_msg}")
+            return False, f"Stop-loss order failed: {message}. Entry filled, TP canceled for safety.", result_dict
+        
+        result_dict['sl_order_id'] = sl_result.get('result', {}).get('order_id') if sl_result else None
+        print(f"[BRACKET-SEQ] ✅ Stop-loss placed: {result_dict['sl_order_id']}")
+        
+        print(f"[BRACKET-SEQ] 🎉 COMPLETE! Entry: {result_dict['entry_order_id']}, TP: {result_dict['tp_order_id']}, SL: {result_dict['sl_order_id']}")
+        
+        return True, f"Sequential bracket complete: Entry {result_dict['entry_order_id']}, TP {result_dict['tp_order_id']}, SL {result_dict['sl_order_id']}", result_dict
+    
     async def place_atomic_bracket_order(
         self,
         symbol: str,

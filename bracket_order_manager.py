@@ -391,21 +391,25 @@ class BracketOrderManager:
         except Exception as e:
             return False, f"Precision error: {e}", None
         
-        # ATOMIC BRACKET SOLUTION: Use Kraken WebSocket v2 batch_add with reduce_only flags!
-        # Places entry + TP + SL in ONE atomic request - exactly like the mobile app does it
+        # SEQUENTIAL BRACKET SOLUTION: Entry → Wait for fill → TP + SL
+        # Works with SPOT accounts (no margin/leverage required)
+        # Provides full TP+SL protection with ~2-3 second execution window
         try:
             import asyncio
             from kraken_websocket_v2 import get_kraken_websocket_v2
             
             ws_client = get_kraken_websocket_v2()
             
-            print(f"[BRACKET-WS] Using Kraken WebSocket v2 batch_add for ATOMIC bracket order")
+            print(f"[BRACKET-WS] Using Kraken WebSocket v2 SEQUENTIAL bracket orders (SPOT-compatible)")
             print(f"[BRACKET-WS] Entry: market {bracket.side} {qty_p:.6f} {bracket.symbol}")
-            print(f"[BRACKET-WS] Take-Profit: ${bracket.take_profit_price:.4f} (reduce_only)")
-            print(f"[BRACKET-WS] Stop-Loss: ${bracket.stop_price:.4f} (reduce_only)")
+            print(f"[BRACKET-WS] Take-Profit: ${bracket.take_profit_price:.4f}")
+            print(f"[BRACKET-WS] Stop-Loss: ${bracket.stop_price:.4f}")
             
-            # Place ATOMIC bracket order via WebSocket v2 batch_add
-            # This places entry + TP + SL in ONE request with reduce_only flags
+            # Place SEQUENTIAL bracket order via WebSocket v2
+            # Step 1: Entry market order
+            # Step 2: Wait for fill (max 5 sec)
+            # Step 3: TP limit order
+            # Step 4: SL stop-loss order
             
             # Run async WebSocket call
             loop = asyncio.new_event_loop()
@@ -413,7 +417,7 @@ class BracketOrderManager:
             
             try:
                 success, message, result = loop.run_until_complete(
-                    ws_client.place_atomic_bracket_order(
+                    ws_client.place_sequential_bracket_order(
                         symbol=bracket.symbol,
                         side=bracket.side,
                         quantity=qty_p,
@@ -424,12 +428,12 @@ class BracketOrderManager:
                 )
                 
                 if success:
-                    print(f"[BRACKET-COMPLETE] 🎯 ATOMIC BRACKET PLACED SUCCESSFULLY!")
-                    print(f"[BRACKET-COMPLETE] Entry + TP + SL all placed in ONE WebSocket request")
-                    print(f"[BRACKET-COMPLETE] Kraken will handle OCO (One-Cancels-Other) automatically")
+                    print(f"[BRACKET-COMPLETE] 🎯 SEQUENTIAL BRACKET PLACED SUCCESSFULLY!")
+                    print(f"[BRACKET-COMPLETE] Entry filled, TP and SL protection active")
+                    print(f"[BRACKET-COMPLETE] Result: {result}")
                     return True, message, result
                 else:
-                    print(f"[BRACKET-FAILED] ❌ Atomic bracket order failed: {message}")
+                    print(f"[BRACKET-FAILED] ❌ Sequential bracket order failed: {message}")
                     return False, message, result
                     
             finally:
