@@ -408,38 +408,37 @@ class BracketOrderManager:
             print(f"[BRACKET-NATIVE] Stop-Loss: ${bracket.stop_price:.4f} (attached to entry)")
             print(f"[BRACKET-NATIVE] Take-Profit: ${bracket.take_profit_price:.4f} (separate limit order)")
             
-            # STEP 1: Place entry order with STOP-LOSS attached (guarantees downside protection)
+            # STEP 1: Place entry order WITHOUT conditional close (avoids balance reservation)
+            # This allows us to place BOTH TP and SL as separate orders afterward
             success_entry, msg_entry, result_entry = kraken_api.add_order_with_conditional_close(
                 pair=kraken_pair,
                 order_type='market',
                 side=bracket.side,
                 volume=qty_p,
                 price=None,
-                close_ordertype='stop-loss',  # Only SL is attached to entry
-                close_price=str(bracket.stop_price),
+                close_ordertype=None,  # NO conditional close - avoids balance lock
+                close_price=None,
                 close_price2=None,
                 validate=False
             )
             
             if not success_entry:
                 print(f"[BRACKET-FAILED] ❌ Entry order failed: {msg_entry}")
-                return False, f"Entry with SL failed: {msg_entry}", result_entry
+                return False, f"Entry order failed: {msg_entry}", result_entry
             
-            print(f"[BRACKET-SUCCESS] ✅ Entry order placed with stop-loss protection")
+            print(f"[BRACKET-SUCCESS] ✅ Entry order placed (no conditional close)")
             print(f"[BRACKET-SUCCESS] {msg_entry}")
             
-            # STEP 2: Query filled volume and place TAKE-PROFIT with retry logic
-            # Critical: Kraken reserves balance for SL conditional close, so we must:
-            # 1. Wait for entry fill confirmation
-            # 2. Query actual filled volume
-            # 3. Place TP for 99% of filled volume (buffer for fees/rounding)
-            # 4. Retry with exponential backoff if balance not available yet
+            # STEP 2: Query filled volume and place BOTH TP and SL as separate orders
+            # NEW STRATEGY: No conditional close on entry means no balance reservation!
+            # Place entry → wait for fill → place TP limit order + SL stop-loss order
+            # Kraken will handle OCO (One-Cancels-Other) automatically
             
             import time
-            tp_side = 'sell' if bracket.side == 'buy' else 'buy'
+            exit_side = 'sell' if bracket.side == 'buy' else 'buy'
             entry_txid = result_entry.get('txid', ['unknown'])[0]
             
-            print(f"[BRACKET-TP] Querying entry order {entry_txid} for filled volume...")
+            print(f"[BRACKET-FILL] Querying entry order {entry_txid} for filled volume...")
             
             # Wait for entry to fill and query actual filled volume
             filled_volume = None
@@ -455,7 +454,7 @@ class BracketOrderManager:
                     order_info = kraken_api._make_request('/0/private/QueryOrders', data_query)
                     
                     if order_info.get('error') and len(order_info['error']) > 0:
-                        print(f"[BRACKET-TP] Attempt {attempt+1}: Error querying order - {order_info['error']}")
+                        print(f"[BRACKET-FILL] Attempt {attempt+1}: Error querying order - {order_info['error']}")
                         continue
                     
                     order_data = order_info.get('result', {}).get(entry_txid, {})
@@ -464,59 +463,88 @@ class BracketOrderManager:
                     
                     if status == 'closed' and vol_exec > 0:
                         filled_volume = vol_exec
-                        print(f"[BRACKET-TP] Entry filled: {filled_volume:.6f} units")
+                        print(f"[BRACKET-FILL] ✅ Entry filled: {filled_volume:.6f} units")
                         break
                     else:
-                        print(f"[BRACKET-TP] Attempt {attempt+1}: Order status={status}, vol_exec={vol_exec}")
+                        print(f"[BRACKET-FILL] Attempt {attempt+1}: Order status={status}, vol_exec={vol_exec}")
                         
                 except Exception as e:
-                    print(f"[BRACKET-TP] Attempt {attempt+1}: Exception querying order - {e}")
+                    print(f"[BRACKET-FILL] Attempt {attempt+1}: Exception querying order - {e}")
                     continue
             
             if not filled_volume or filled_volume <= 0:
                 print(f"[BRACKET-CRITICAL] ❌ Could not confirm entry fill after 3 attempts!")
-                print(f"[BRACKET-CRITICAL] Entry order {entry_txid} may be pending or failed")
                 return False, f"Entry order placed but fill confirmation failed - manual verification required", result_entry
             
-            # Calculate TP volume as 99% of filled (buffer for fees/rounding)
-            tp_volume = filled_volume * 0.99
-            print(f"[BRACKET-TP] TP volume: {tp_volume:.6f} (99% of filled to avoid rounding issues)")
+            # STEP 3: Place TAKE-PROFIT limit order
+            print(f"[BRACKET-TP] Placing take-profit limit order: {exit_side} {filled_volume:.6f} @ ${bracket.take_profit_price:.4f}")
             
-            # Retry TP placement with exponential backoff
-            for retry in range(3):  # Try 3 times to place TP
-                if retry > 0:
-                    delay = 3 * (2 ** (retry - 1))  # 3s, 6s delays
-                    print(f"[BRACKET-TP] Retry {retry+1}: Waiting {delay}s for balance propagation...")
-                    time.sleep(delay)
+            success_tp, msg_tp, result_tp = kraken_api.add_order_with_conditional_close(
+                pair=kraken_pair,
+                order_type='limit',
+                side=exit_side,
+                volume=filled_volume,
+                price=bracket.take_profit_price,
+                close_ordertype=None,
+                close_price=None,
+                close_price2=None,
+                validate=False
+            )
+            
+            if not success_tp:
+                print(f"[BRACKET-WARNING] ⚠️ Take-profit order failed: {msg_tp}")
+                print(f"[BRACKET-WARNING] Entry filled but NO exit protection - CRITICAL!")
+                return False, f"Entry filled but TP placement failed: {msg_tp}", result_entry
+            
+            tp_txid = result_tp.get('txid', ['unknown'])[0] if result_tp else 'unknown'
+            print(f"[BRACKET-SUCCESS] ✅ Take-profit order placed: {tp_txid}")
+            
+            # STEP 4: Place STOP-LOSS order (standalone, not conditional close)
+            print(f"[BRACKET-SL] Placing standalone stop-loss order: {exit_side} {filled_volume:.6f} trigger @ ${bracket.stop_price:.4f}")
+            
+            # Build stop-loss order directly (different from conditional close)
+            data_sl = {
+                'nonce': str(int(time.time() * 1000)),
+                'pair': kraken_pair,
+                'type': exit_side,
+                'ordertype': 'stop-loss',
+                'price': str(bracket.stop_price),  # Trigger price
+                'volume': str(filled_volume),
+                'validate': 'false'
+            }
+            
+            try:
+                response_sl = kraken_api._make_request('/0/private/AddOrder', data_sl)
                 
-                print(f"[BRACKET-TP] Attempt {retry+1}: Placing TP limit order: {tp_side} {tp_volume:.6f} @ ${bracket.take_profit_price:.4f}")
-                
-                success_tp, msg_tp, result_tp = kraken_api.add_order_with_conditional_close(
-                    pair=kraken_pair,
-                    order_type='limit',
-                    side=tp_side,
-                    volume=tp_volume,
-                    price=bracket.take_profit_price,
-                    close_ordertype=None,
-                    close_price=None,
-                    close_price2=None,
-                    validate=False
-                )
-                
-                if success_tp:
-                    tp_txid = result_tp.get('txid', ['unknown'])[0] if result_tp else 'unknown'
-                    print(f"[BRACKET-SUCCESS] ✅ Take-profit order placed: {tp_txid}")
-                    print(f"[BRACKET-COMPLETE] 🎯 Full bracket active: Entry (SL attached) + TP limit order")
-                    return True, f"Bracket complete: Entry with SL + TP limit order", result_entry
+                if response_sl.get('error') and len(response_sl['error']) > 0:
+                    error_msg_sl = ', '.join(response_sl['error'])
+                    success_sl = False
+                    msg_sl = f"Kraken API error: {error_msg_sl}"
+                    result_sl = response_sl
                 else:
-                    print(f"[BRACKET-WARNING] Attempt {retry+1} failed: {msg_tp}")
+                    result_sl = response_sl.get('result', {})
+                    success_sl = True
+                    msg_sl = "Stop-loss order placed successfully"
+            except Exception as e_sl:
+                success_sl = False
+                msg_sl = str(e_sl)
+                result_sl = None
             
-            # All TP attempts failed - CRITICAL FAILURE
-            print(f"[BRACKET-CRITICAL] ❌ Failed to place take-profit after 3 attempts!")
-            print(f"[BRACKET-CRITICAL] Entry {entry_txid} is PROTECTED by stop-loss but has NO profit target")
-            print(f"[BRACKET-CRITICAL] MANUAL INTERVENTION REQUIRED - place TP manually on Kraken")
+            if not success_sl:
+                print(f"[BRACKET-CRITICAL] ❌ Stop-loss order failed: {msg_sl}")
+                print(f"[BRACKET-CRITICAL] Entry filled, TP active, but NO STOP-LOSS protection!")
+                print(f"[BRACKET-CRITICAL] Position is exposed - MANUAL SL REQUIRED")
+                return False, f"TP placed but SL failed: {msg_sl} - MANUAL SL REQUIRED", result_entry
             
-            return False, f"Entry placed with SL (id={entry_txid}), but TP placement failed after 3 retries - MANUAL TP REQUIRED", result_entry
+            sl_txid = result_sl.get('txid', ['unknown'])[0] if result_sl else 'unknown'
+            print(f"[BRACKET-SUCCESS] ✅ Stop-loss order placed: {sl_txid}")
+            print(f"[BRACKET-COMPLETE] 🎯 FULL BRACKET ACTIVE:")
+            print(f"[BRACKET-COMPLETE]    Entry: {entry_txid} ({filled_volume:.6f} filled)")
+            print(f"[BRACKET-COMPLETE]    TP: {tp_txid} @ ${bracket.take_profit_price:.4f}")
+            print(f"[BRACKET-COMPLETE]    SL: {sl_txid} @ ${bracket.stop_price:.4f}")
+            print(f"[BRACKET-COMPLETE]    Kraken will handle OCO (One-Cancels-Other) automatically")
+            
+            return True, f"Full bracket active: TP order {tp_txid} + SL order {sl_txid}", result_entry
             
         except Exception as e:
             error_msg = str(e)
