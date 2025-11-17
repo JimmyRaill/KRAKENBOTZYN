@@ -341,14 +341,25 @@ class StrategyOrchestrator:
                 if htf.htf_aligned and htf.dominant_trend == 'up':
                     confidence = min(0.85, base_confidence + 0.15)
                 
+                # Calculate TP to ensure minimum 1.5 R:R
+                # For aggressive range trading, target upper BB or minimum distance based on SL
+                stop_loss_price = (bb_lower * 0.995) if bb_lower else (price * 0.98)
+                stop_distance = abs(price - stop_loss_price)
+                min_tp_distance = stop_distance * 1.5  # Minimum 1.5 R:R
+                
+                # Choose TP: upper BB or price + min distance, whichever is closer
+                tp_upper_bb = bb_upper if bb_upper else (price * 1.03)
+                tp_min_rr = price + min_tp_distance
+                take_profit_price = min(tp_upper_bb, tp_min_rr) if tp_min_rr < tp_upper_bb else tp_upper_bb
+                
                 return TradeSignal(
                     action='long',
                     regime=regime_result.regime,
                     confidence=confidence,
                     reason=f"RANGE entry: price at {price_position_pct:.0f}% of band (price={price:.2f}, BB=[{bb_lower:.2f}, {bb_upper:.2f}]), RSI={rsi:.1f}",
                     entry_price=price,
-                    stop_loss=(bb_lower * 0.995) if bb_lower else (price * 0.98),
-                    take_profit=bb_middle if bb_middle else (price * 1.02),
+                    stop_loss=stop_loss_price,
+                    take_profit=take_profit_price,
                     position_size_multiplier=confidence,
                     htf_aligned=htf.htf_aligned,
                     dominant_trend=htf.dominant_trend,
