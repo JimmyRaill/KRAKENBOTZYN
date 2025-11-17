@@ -1057,6 +1057,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                         )
                         if test_bracket:
                             test_bracket.quantity = approx_qty
+                            test_bracket.recalculate_metrics()  # CRITICAL: Recalc R:R after setting qty
                             can_place, reason, _ = manager.validate_bracket_can_be_placed(
                                 test_bracket, ex, allow_adjust=False
                             )

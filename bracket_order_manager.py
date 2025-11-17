@@ -106,6 +106,12 @@ class BracketOrder:
         # All validations passed
         return True, "OK"
     
+    def recalculate_metrics(self):
+        """Recalculate risk/reward metrics after quantity changes."""
+        self.risk_usd = abs(self.entry_price - self.stop_price) * self.quantity if self.quantity > 0 else 0
+        self.reward_usd = abs(self.take_profit_price - self.entry_price) * self.quantity if self.quantity > 0 else 0
+        self.rr_ratio = self.reward_usd / self.risk_usd if self.risk_usd > 0 else 0
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for logging/API."""
         return {
