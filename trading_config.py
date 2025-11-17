@@ -175,7 +175,13 @@ class TradingConfig:
         
         max_daily_loss = os.getenv("MAX_DAILY_LOSS_USD")
         if max_daily_loss:
-            config.risk.max_daily_loss_usd = float(max_daily_loss)
+            try:
+                # Strip whitespace and currency symbols like "$"
+                cleaned = max_daily_loss.strip().lstrip('$')
+                config.risk.max_daily_loss_usd = float(cleaned)
+            except (ValueError, AttributeError) as e:
+                print(f"[CONFIG-WARN] MAX_DAILY_LOSS_USD invalid: '{max_daily_loss}', falling back to default 50.0")
+                config.risk.max_daily_loss_usd = 50.0
         
         max_trades = os.getenv("MAX_TRADES_PER_DAY")
         if max_trades:
@@ -183,7 +189,13 @@ class TradingConfig:
         
         max_position = os.getenv("MAX_POSITION_USD")
         if max_position:
-            config.risk.max_position_usd = float(max_position)
+            try:
+                # Strip whitespace and currency symbols like "$"
+                cleaned = max_position.strip().lstrip('$')
+                config.risk.max_position_usd = float(cleaned)
+            except (ValueError, AttributeError) as e:
+                print(f"[CONFIG-WARN] MAX_POSITION_USD invalid: '{max_position}', falling back to default 10.0")
+                config.risk.max_position_usd = 10.0
         
         # Aggressive mode configuration
         config.regime.aggressive_mode = os.getenv("AGGRESSIVE_RANGE_TRADING", "0") == "1"

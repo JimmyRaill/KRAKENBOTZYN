@@ -856,6 +856,21 @@ def loop_once(ex, symbols: List[str]) -> None:
             # DIAGNOSTIC: Log when we reach buy execution path
             if exec_action == "buy" and price:
                 print(f"🎯 [EXEC-PATH] {sym} - ENTERING BUY EXECUTION (action={action}, exec_action={exec_action}, pos_qty={pos_qty})")
+                
+                # CRITICAL FIX: Load config BEFORE using it
+                try:
+                    config = get_config()
+                except Exception as cfg_err:
+                    print(f"[CONFIG-ERR] {sym} - Failed to load config: {cfg_err} - BLOCKING trade")
+                    log_evaluation(
+                        symbol=sym,
+                        decision="ERROR",
+                        reason=f"Config load failed: {str(cfg_err)[:100]}",
+                        trading_mode=trading_mode,
+                        error_message=str(cfg_err)
+                    )
+                    continue
+                
                 eq_full: Dict[str, Any] = ex.fetch_balance()
                 eq_usd = account_equity_usd(eq_full)
                 

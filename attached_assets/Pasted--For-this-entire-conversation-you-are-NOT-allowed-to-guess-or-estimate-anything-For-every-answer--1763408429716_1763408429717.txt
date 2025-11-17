@@ -1,0 +1,173 @@
+- For this entire conversation, you are NOT allowed to guess or estimate anything. For every answer, you must use ONLY: real Kraken API data, your SQLite databases (evaluation_log, telemetry_db, executed_orders, etc.), and live config/env values. If a piece of data does not exist, explicitly say “I do not have this data,” do NOT infer it.
+
+- What is your current full status snapshot? Include in one answer:
+  - Current UTC time
+  - Trading mode (paper vs live)
+  - Execution mode (confirm explicitly that you are using MARKET BUY and MARKET SELL only, with no stop-loss or take-profit orders attached)
+  - Total equity in USD (live)
+  - Free USD balance (live)
+  - The exact list of symbols you are currently evaluating on each loop
+  - The exact cadence of your evaluation loop (e.g., “every new 5m candle close, last run at <timestamp>”)
+
+- For trades in the last 24 hours, you must apply a REAL timestamp filter using your most trustworthy source (preferably Kraken trade history with a concrete `since` or equivalent filter). Answer this:
+  - How many trades exist in the last 24 hours? Give a single integer.
+  - Then list each trade with:
+    - symbol
+    - side
+    - amount
+    - price
+    - timestamp (UTC, full ISO string)
+    - trade id
+    - source exactly as stored (autopilot / command / force_test / unknown)
+  - If there are no trades, say “0 trades in last 24 hours” and do not fabricate anything.
+
+- Now give me trades in the last 7 days, again using a real timestamp filter:
+  - Total count in last 7 days (integer)
+  - Then list the last 10 trades (or fewer if less exist) with:
+    - symbol
+    - side
+    - amount
+    - price
+    - timestamp
+    - trade id
+    - source (autopilot / command / force_test / unknown)
+
+- Show the last 10 entries from your `executed_orders` log table with:
+  - timestamp
+  - symbol
+  - side
+  - quantity
+  - price
+  - order_id
+  - trading_mode (paper/live)
+  - source (autopilot / command / force_test / unknown)
+  - If there are 0 entries, say exactly: “executed_orders log: 0 entries”.
+
+- Cross-check consistency between Kraken and your internal logs for the last 10 trades:
+  - For each of the last 10 trades from real Kraken trade history:
+    - Indicate whether it appears in the `trades` table
+    - Indicate whether it appears in `executed_orders`
+    - For any trade that appears in Kraken but not in BOTH internal tables, explicitly mark: “MISMATCH: internal logs missing this trade” and explain which table is missing it.
+
+- Confirm your execution model with hard evidence:
+  - For the last 5 trades, show the exact order type used for each (e.g. `type=market`, `ordertype=market` or similar, from the raw Kraken/ccxt order object)
+  - For each trade, show:
+    - symbol
+    - side
+    - order type
+    - was any stop-loss or take-profit order attached or placed as part of that entry? (yes/no). If yes, show their order IDs and types.
+  - If any non-market order type appears (limit, stop, stop-loss, take-profit, etc.), highlight that as a violation of the MARKET-ONLY execution requirement.
+
+- Show your current fee model:
+  - For 3 example symbols that you actually trade (e.g. BTC/USD, ETH/USD, one alt), report:
+    - taker fee you are assuming or fetching
+    - maker fee (if tracked)
+    - the exact method you use to obtain these fees (e.g. “ccxt.fetch_trading_fees”, or Kraken TradeVolume endpoint, or hardcoded constants)
+  - Explicitly say whether the values you show are coming from a live Kraken endpoint or from static config.
+
+- Show fee-aware net PnL for the last 5 CLOSED trades:
+  - For each of the last 5 fully closed trades (entry and exit completed):
+    - symbol
+    - entry side, price, size
+    - exit side, price, size
+    - gross PnL (before fees)
+    - total fees paid (entry + exit) in USD equivalent
+    - net PnL after fees
+    - source (autopilot / command / force_test / unknown)
+  - If you are unable to compute net PnL after fees, clearly say which data is missing and why.
+
+- Show your current daily risk and trade limits state:
+  - Max trades per day (global)
+  - Max trades per day per symbol
+  - Trades executed so far today (global and per symbol)
+  - Configured daily loss kill-switch (in USD)
+  - Current realized PnL today (net after fees if possible)
+  - Whether the kill-switch has been triggered today (yes/no)
+
+- Show your current rate limiting / throttling state:
+  - Number of orders submitted in the last:
+    - 60 seconds
+    - 5 minutes
+  - Current configured maximum orders per minute / per 60 seconds
+  - Minimum sleep/delay between order submissions that you enforce
+  - Any recent rate-limit or “too many requests” errors seen from Kraken in the last 24 hours (summarize with timestamps and messages).
+
+- Show a detailed breakdown of your evaluation loop over the last hour:
+  - How many evaluation cycles ran in the last 60 minutes?
+  - For each of the last 12 evaluation cycles (5-minute candles), list:
+    - timestamp
+    - number of symbols evaluated
+    - number of LONG signals produced
+    - number of SELL/exit signals produced
+    - number of actual trades triggered
+  - For each cycle where `LONG` signals were produced but no trades were executed, list the exact reason per symbol (e.g. “blocked by daily trade limit”, “blocked by fee-adjusted edge too low”, “API error”, etc.).
+
+- Show your current configuration and environment values relevant to execution:
+  - EXECUTION_MODE (or equivalent) value
+  - Any flags controlling bracket vs market-only behavior
+  - MAX_TRADES_PER_DAY and MAX_TRADES_PER_SYMBOL_PER_DAY
+  - MAX_POSITION_USD (if configured)
+  - risk_per_trade_pct (used for sizing)
+  - Any fee-aware edge thresholds (e.g. minimum expected move vs fee cost)
+
+- Show your current position state (live account):
+  - For each symbol where you currently hold a position (if any):
+    - symbol
+    - current quantity
+    - average entry price
+    - current mark price
+    - unrealized PnL before fees
+    - any planned exit logic (e.g. next evaluation will consider SELL if condition X)
+  - If you have no open positions, explicitly say: “No open positions in live mode.”
+
+- Show your diagnostic for the MOST RECENT trade regardless of when it occurred:
+  - symbol
+  - side
+  - order type
+  - timestamp
+  - source (autopilot / command / force_test / unknown)
+  - how the trade was triggered (e.g. “autopilot long signal from strategy XYZ”, or “force_test command”)
+  - whether it was executed as a market order with no attached SL/TP
+
+- Show a specific, detailed diagnostic for the MOST RECENT AUTOPILOT-PLACED trade (not manual, not force_test). If there are none, clearly say “No autopilot-placed trades exist yet with the current market-only configuration.” If at least one exists:
+  - symbol
+  - side
+  - order type
+  - entry time and price
+  - exit time and price (if closed)
+  - net PnL after fees
+  - which strategy logic produced the signal (e.g. RANGE mean reversion, TREND pullback)
+  - what conditions were satisfied at entry (RSI, ATR, BB position, etc.)
+
+- Show a “sanity diff” between the evaluation_log and actual trade executions for today:
+  - How many evaluations today have decision LONG?
+  - How many of those resulted in actual live trades?
+  - For 5 random LONG evaluations that did NOT result in trades, list:
+    - symbol
+    - evaluation timestamp
+    - reason there was no trade (e.g. risk check, limits, edge too small, bug, etc.)
+
+- Show your internal health-check status (full diagnostics), if you have a health-check function. If you do not, simulate one by answering:
+  - DB status for each DB you use (evaluation_log, telemetry_db, executed_orders): reachable and consistent? Any recent errors?
+  - Kraken connectivity status (last successful API call type and timestamp).
+  - Last autopilot evaluation timestamp.
+  - Any critical errors in the last hour (summarize with type and count).
+
+- Now perform a tiny READ-ONLY pre-check for a test trade on ETH/USD:
+  - Using current live market data and your fee model, tell me:
+    - What size in USD and quantity in ETH you would use for a typical small test trade given your sizing rules.
+    - What the approximate fee cost in USD would be for a round-trip (entry + exit) at your current taker fee rate.
+    - What minimum price move (in %) would be required just to break even after fees.
+
+- After the pre-check above, do NOT place any trade yet. Instead, explain in one answer:
+  - Whether, under your current config and logic, you are capable of:
+    - Market buying ETH/USD.
+    - Holding the position until strategy exit.
+    - Market selling ETH/USD to close.
+  - Which exact functions and code paths you would call to do that.
+  - Where you will log those events (which DB tables and fields).
+
+- Finally, summarize in one answer:
+  - Whether, based on all the data you just accessed, you have actually executed ANY fully automatic trades (autopilot-only, not command/force_test) since the last code update.
+  - If yes, list those trades (symbol, side, timestamp, source=autopilot, and confirm their presence in both Kraken history and your internal logs).
+  - If no, give the precise technical reason why (e.g. “no LONG signals passed all checks”, or “execution path still not wired”, or any errors).

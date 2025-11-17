@@ -325,7 +325,36 @@ def get_minimum_edge_pct(safety_margin: float = 0.1) -> float:
     Returns:
         Minimum required edge as percentage
     """
-    return get_fee_model().minimum_profitable_move_pct(
-        round_trip=True,
-        safety_margin_pct=safety_margin
-    )
+    try:
+        return get_fee_model().minimum_profitable_move_pct(
+            round_trip=True,
+            safety_margin_pct=safety_margin
+        )
+    except Exception as e:
+        logger.warning(f"[FEE-MODEL] Failed to calculate min edge: {e} - using default 0.6%")
+        return 0.6  # Conservative default (covers 0.26% * 2 + buffer)
+
+
+# Safe wrappers that never crash (for autopilot imports)
+def get_taker_fee_pct(symbol: Optional[str] = None) -> float:
+    """
+    Get taker fee percentage (SAFE - never crashes).
+    
+    Returns fee as decimal (e.g., 0.0026 for 0.26%)
+    """
+    try:
+        return get_taker_fee(symbol)
+    except Exception:
+        return 0.0026  # Default Kraken taker fee (0.26%)
+
+
+def get_maker_fee_pct(symbol: Optional[str] = None) -> float:
+    """
+    Get maker fee percentage (SAFE - never crashes).
+    
+    Returns fee as decimal (e.g., 0.0016 for 0.16%)
+    """
+    try:
+        return get_maker_fee(symbol)
+    except Exception:
+        return 0.0016  # Default Kraken maker fee (0.16%)

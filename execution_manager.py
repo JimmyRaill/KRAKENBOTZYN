@@ -174,19 +174,24 @@ def execute_market_entry(
                 logger.error(f"[MARKET-ENTRY] Failed to log to executed_orders: {log_err}")
         
         # Log to telemetry
-        if TELEMETRY_ENABLED and reason:
+        if TELEMETRY_ENABLED:
             try:
                 log_trade(
                     symbol=symbol,
-                    side='long',
-                    entry_price=fill_price,
+                    side='buy',  # FIXED: Use 'buy', not 'long'
+                    action='open',  # ADDED: Required parameter
                     quantity=filled_qty,
-                    reason=reason,
-                    atr=atr,
-                    pnl=None,  # Entry doesn't have PnL yet
-                    mode=mode_str
+                    price=fill_price,  # FIXED: Use 'price', not 'entry_price'
+                    usd_amount=filled_qty * fill_price if filled_qty and fill_price else None,
+                    order_id=order.get('id') if order else None,
+                    reason=reason or 'market_entry',
+                    source=source,  # CRITICAL: Pass through source from caller (autopilot/command/force_test)
+                    mode=mode_str,
+                    trade_id=order.get('id') if order else None,
+                    entry_price=fill_price,  # Lifecycle field
+                    position_size=filled_qty
                 )
-                logger.debug(f"[MARKET-ENTRY] Logged to telemetry_db")
+                logger.debug(f"[MARKET-ENTRY] Logged to telemetry_db with source={source}")
             except Exception as telem_err:
                 logger.error(f"[MARKET-ENTRY] Failed to log to telemetry: {telem_err}")
         
@@ -314,18 +319,24 @@ def execute_market_exit(
                 logger.error(f"[MARKET-EXIT] Failed to log to executed_orders: {log_err}")
         
         # Log to telemetry (exit - PnL will be calculated by telemetry system)
-        if TELEMETRY_ENABLED and reason:
+        if TELEMETRY_ENABLED:
             try:
                 log_trade(
                     symbol=symbol,
-                    side='exit',
-                    entry_price=None,  # Exit doesn't have entry price here
+                    side='sell',  # FIXED: Use 'sell', not 'exit'
+                    action='close',  # ADDED: Required parameter
                     quantity=filled_qty,
-                    reason=reason,
-                    exit_price=fill_price,
-                    mode=mode_str
+                    price=fill_price,  # FIXED: Use 'price' for exit price
+                    usd_amount=filled_qty * fill_price if filled_qty and fill_price else None,
+                    order_id=order.get('id') if order else None,
+                    reason=reason or 'market_exit',
+                    source=source,  # CRITICAL: Pass through source from caller
+                    mode=mode_str,
+                    trade_id=order.get('id') if order else None,
+                    exit_price=fill_price,  # Lifecycle field
+                    position_size=filled_qty
                 )
-                logger.debug(f"[MARKET-EXIT] Logged to telemetry_db")
+                logger.debug(f"[MARKET-EXIT] Logged to telemetry_db with source={source}")
             except Exception as telem_err:
                 logger.error(f"[MARKET-EXIT] Failed to log to telemetry: {telem_err}")
         

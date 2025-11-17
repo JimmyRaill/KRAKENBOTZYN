@@ -1,0 +1,240 @@
+ZYN TRADING BOT — FIX EXECUTION + LOGGING BUGS (BUILD MODE ONLY)
+
+Goal:
+Fix ALL blocking execution bugs and logging gaps so that:
+- Autopilot in LIVE mode can actually place MARKET BUY / MARKET SELL trades when signals fire.
+- Every live trade is correctly logged (Kraken + internal DBs).
+- Risk/limits and basic fee modeling actually load without exploding.
+- NO stop-loss / take-profit orders are used for now (MARKET-ONLY execution).
+
+You must:
+- Use ONLY the existing codebase; do not switch exchanges or libraries.
+- Keep the current high-level strategy logic (signals, regimes, indicators) as-is.
+- Focus on EXECUTION and LOGGING correctness + config robustness.
+- After changes, restart both workflows and run a self-check so Zyn can truthfully report what he is doing.
+
+----------------------------------------------------------------------
+1) CRITICAL EXECUTION BUG — “config” UNBOUND IN AUTOPILOT EXEC PATH
+----------------------------------------------------------------------
+
+Symptom from your own logs:
+- When a LONG signal fires (example AR/USD at 19:30:37):
+  - You log:
+    - [SIGNAL] AR/USD - LONG ...
+    - [ACTION-DEBUG] AR/USD - action=long, exec_action=buy
+    - 🎯 [EXEC-PATH] AR/USD - ENTERING BUY EXECUTION ...
+  - Then you crash with:
+    - UnboundLocalError: cannot access local variable 'config' where it is not associated with a value
+
+What to do:
+
+- Find the EXACT code path where this happens in the autopilot → execution pipeline:
+  - Files likely: autopilot.py and/or execution_manager.py (or equivalent “exec_action” handler).
+  - Specifically the block that converts a LONG signal into a live MARKET BUY.
+
+- Fix the `config` usage:
+  - Ensure `config` is defined in that scope (or pulled from a shared TradingConfig object) BEFORE it’s used.
+  - If you are shadowing `config` inside a nested function, remove the shadowing and use a clearly scoped config object instead (e.g. self.config or global CONFIG).
+  - Add a defensive check:
+    - If config cannot be loaded, log a clear error and SKIP the trade with a known reason (do NOT crash the entire loop).
+
+- After the fix:
+  - Add a log line in the execution path (just before actually calling the order function) like:
+    - [EXEC-CONFIRM] {sym} | mode={live/paper} | order_type=market | qty={qty} | using_config={config_name_or_version}
+  - Make sure this log appears ONLY when you’re about to actually place a Kraken order.
+
+----------------------------------------------------------------------
+2) CONFIG LOAD BUG — MAX_DAILY_LOSS_USD PARSING
+----------------------------------------------------------------------
+
+Symptom:
+- You tried to load MAX_DAILY_LOSS_USD and crashed because the env value is “$50” instead of “50”.
+- This is corrupting risk/limit logic and possibly blocking other config.
+
+What to do:
+
+- In whatever config loader reads MAX_DAILY_LOSS_USD (likely trading_config.py or account_state/config utils):
+  - Implement robust parsing:
+    - Strip leading/trailing whitespace.
+    - Strip leading currency symbols like “$”.
+    - If the remaining content is not a valid float, log a clear error and fall back to a safe default (e.g. 50.0 USD).
+  - Do NOT let a bad env string crash the autopilot. It should:
+    - Log: [CONFIG-WARN] MAX_DAILY_LOSS_USD invalid: "<raw_value>", falling back to <default_value>
+    - Continue running.
+
+- Confirm through a quick test log:
+  - Log the resolved numeric value at startup:
+    - [CONFIG] MAX_DAILY_LOSS_USD = <numeric_value>
+
+----------------------------------------------------------------------
+3) TRADE LOGGING PIPELINE — KRAKEN vs INTERNAL DB MISMATCH
+----------------------------------------------------------------------
+
+Current state from your own forensic report:
+- Kraken shows ~50 trades in the last 24h.
+- telemetry_db trades table: 0 entries (last 24h and last 7 days).
+- executed_orders in evaluation_log.db: only 3 entries (all force_test from Nov 16).
+- Conclusion: live trades from Kraken are NOT being recorded into your internal telemetry/trades table, and only some special force_test entries hit executed_orders.
+
+Target behavior:
+- EVERY live trade (entry and exit) must be:
+  - In the Kraken history (obviously).
+  - Logged in telemetry_db.trades.
+  - Logged in executed_orders for the ENTRY at minimum (and ideally for exits too, but entry is priority).
+
+What to do:
+
+1) FIND the canonical place where live MARKET BUY / MARKET SELL orders are actually sent:
+   - Likely in execution_manager.py or a similar module.
+   - For market-only mode, it should end up calling a wrapper around ccxt/kraken’s create_order().
+
+2) After every CONFIRMED fill from Kraken:
+   - Call telemetry_db.log_trade(…) with:
+     - symbol
+     - side
+     - amount
+     - price
+     - timestamp (UTC)
+     - trade_id (from Kraken)
+     - source:
+       - "autopilot" for autopilot-triggered trades
+       - "command" for manual chat commands
+       - "force_test" for force trade test path
+       - NEVER default to "autopilot" silently; require explicit source at call site.
+
+   - Also call executed_orders.log_order_execution(…) with:
+     - timestamp
+     - symbol
+     - side
+     - quantity
+     - price
+     - order_id
+     - trading_mode (live/paper)
+     - source (autopilot/command/force_test)
+
+3) Make sure this logging is done in ONE place in the code where you’re SURE the order is actually filled:
+   - If you get a Kraken order ID and then refetch the order to confirm fill, log AFTER you know it’s filled (or at least accepted).
+   - If you must choose, log at fill-time, not just at submit-time.
+
+4) Do NOT backfill old trades; just ensure that from this point forward, every new live trade is logged correctly.
+
+----------------------------------------------------------------------
+4) HEALTH CHECK + DIAGNOSTIC ACCURACY
+----------------------------------------------------------------------
+
+You already have a diagnostic that prints:
+- “Time sanity”
+- “Trades in last 24h”
+- “executed_orders log”
+- “Last force trade test status”
+- etc.
+
+Right now, that diagnostic mixes:
+- Kraken trades,
+- evaluation_log evaluations,
+- partially wired telemetry_db,
+- and then sometimes guesses.
+
+You must:
+
+1) Make the diagnostic source-of-truth explicit:
+   - For “Trades in last 24 hours”:
+     - Use Kraken get_trade_history(since=now-86400) OR telemetry_db.trades filtered by timestamp.
+     - Do NOT claim any time window without actually filtering timestamps.
+   - For “executed_orders log”: always query the real executed_orders table and just report what is there.
+   - For “autopilot vs command vs force_test counts”: derive from the `source` column in telemetry_db.trades and/or executed_orders.
+
+2) If a piece of data is missing:
+   - Say exactly: “I do not have this data (reason: <why>)”.
+   - Never invent numbers or label something as “autopilot” if the DB says "unknown" or has no row.
+
+3) Add a very clear autopilot execution summary to the diagnostic:
+   - Today’s date (UTC)
+   - Count of trades with source="autopilot" today.
+   - If 0, say: “No autopilot trades executed today.”
+   - If >0, list them (symbol, side, timestamp, trade_id) and confirm they exist in BOTH Kraken history and telemetry_db.trades.
+
+----------------------------------------------------------------------
+5) FEE MODEL — MINIMUM VIABLE IMPLEMENTATION
+----------------------------------------------------------------------
+
+You do NOT need a perfect fee engine now, but you must:
+- Have a stable fee assumption.
+- Be able to compute a rough net PnL per closed trade.
+
+What to do:
+
+1) Implement a simple fee config:
+   - In a config module, define:
+     - DEFAULT_TAKER_FEE_PCT = 0.0026  # 0.26%
+     - DEFAULT_MAKER_FEE_PCT = 0.0016  # 0.16%
+   - If live fee fetching via Kraken TradeVolume or ccxt trading fees fails, log a warning and use these defaults.
+
+2) In telemetry_db.log_trade or in a dedicated PnL module:
+   - Store fees for each trade if available from Kraken.
+   - If not, estimate fee = price * amount * taker_fee_pct.
+
+3) For now, at minimum, make sure:
+   - For each CLOSED trade pair (entry+exit), you can compute and log:
+     - gross_pnl
+     - estimated_fees_usd
+     - net_pnl_usd
+
+----------------------------------------------------------------------
+6) RISK / LIMITS — MAKE SURE THEY LOAD BUT DO NOT BLOCK EVERYTHING
+----------------------------------------------------------------------
+
+Right now you could be blocking yourself with:
+- Misloaded risk_per_trade_pct.
+- Broken MAX_DAILY_LOSS_USD.
+- Hidden exceptions in daily limits state.
+
+What to do:
+
+1) Make the risk config load robust:
+   - risk_per_trade_pct should always resolve to a sane float (e.g. 0.0025).
+   - If env is missing or malformed, log a warning and use a default.
+
+2) Make daily limits resilient:
+   - Ensure daily_limits_state.json is loaded or created cleanly.
+   - If corrupted, recreate it with zeros and log a warning.
+
+3) For now, keep your current trade count and loss caps but:
+   - Confirm via a log line at startup:
+     - [LIMITS] max_trades_per_day=<N>, max_trades_per_symbol=<M>, max_daily_loss_usd=<X>
+
+----------------------------------------------------------------------
+7) POST-FIX SELF-TEST (YOU MUST DO THIS)
+----------------------------------------------------------------------
+
+After you have implemented all fixes above:
+
+1) Restart BOTH workflows (autopilot + chat/API).
+
+2) In LIVE mode, but without placing a new trade yet:
+   - Run your full diagnostic command and verify it no longer:
+     - Crashes on config.
+     - Lies about 24h/7d trades.
+     - Calls manual trades “autopilot” without evidence.
+
+3) Then, in PAPER MODE:
+   - Temporarily switch to paper (validate-only).
+   - Trigger a small autopilot trade via normal strategy (force a LONG setup if needed).
+   - Confirm:
+     - Kraken (paper wrapper) reports a trade.
+     - telemetry_db.trades has a new row with source="autopilot".
+     - executed_orders has a new row for that trade.
+     - Your diagnostic correctly reports 1 autopilot trade today.
+
+4) Only AFTER paper mode is confirmed:
+   - Switch back to LIVE.
+   - Allow autopilot to run until it generates at least ONE real market trade.
+   - Confirm the same three things again, now on live data.
+
+If anything in this process still shows:
+- “0 trades” when Kraken clearly has trades, or
+- autopilot trades not appearing in the DB,
+
+then DO ANOTHER focused forensic pass on the logging pipeline until Kraken, telemetry_db, and executed_orders are all consistent.
+
+Do not change strategy logic, indicators, or symbol universe in this step. ONLY fix execution, config, risk loading, fee model basics, and logging accuracy.
