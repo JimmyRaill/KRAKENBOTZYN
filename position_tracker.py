@@ -139,12 +139,12 @@ def _save_positions_locked(positions: Dict[str, Position], lock_handle):
     
     This function assumes the caller has already acquired the exclusive lock.
     """
+    temp_file = POSITIONS_FILE.with_suffix('.tmp')  # Initialize before try block
+    
     try:
         data = {symbol: pos.to_dict() for symbol, pos in positions.items()}
         
         # Write to temp file first, then atomic rename
-        temp_file = POSITIONS_FILE.with_suffix('.tmp')
-        
         with open(temp_file, 'w') as f:
             json.dump(data, f, indent=2)
             f.flush()

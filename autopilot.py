@@ -302,13 +302,51 @@ def position_qty(ex, symbol: str):
     return qty, usd
 
 def account_equity_usd(bal: Dict[str, Any]) -> float:
+    """
+    Calculate TOTAL account equity in USD (USD balance + value of all coin positions).
+    
+    CRITICAL: Must include coin positions to prevent kill-switch false triggers when USD→coins.
+    """
     try:
         # CRITICAL FIX: Handle None or empty balance responses
         if bal is None:
             return 0.0
         if not isinstance(bal, dict):
             return 0.0
-        return float((bal.get("USD") or {}).get("total", 0.0) or 0.0)
+        
+        # Start with USD balance
+        usd_balance = float((bal.get("USD") or {}).get("total", 0.0) or 0.0)
+        
+        # Add value of all coin positions
+        # bal structure: {'USD': {'total': 400.0, ...}, 'ASTER': {'total': 42.22, ...}, ...}
+        total_equity = usd_balance
+        
+        from exchange_manager import get_exchange
+        ex = get_exchange()
+        
+        for currency, balance_info in bal.items():
+            if currency == "USD" or not isinstance(balance_info, dict):
+                continue
+            
+            coin_qty = float((balance_info.get("total") or 0.0) or 0.0)
+            if coin_qty <= 0.001:  # Skip dust
+                continue
+            
+            try:
+                # Fetch current USD price for this coin
+                symbol = f"{currency}/USD"
+                ticker = ex.fetch_ticker(symbol)
+                price_usd = ticker.get('last') or ticker.get('close') or 0.0
+                
+                if price_usd > 0:
+                    coin_value_usd = coin_qty * price_usd
+                    total_equity += coin_value_usd
+            except Exception:
+                # Skip coins without USD pairs or fetch failures
+                pass
+        
+        return total_equity
+        
     except Exception:
         return 0.0
 

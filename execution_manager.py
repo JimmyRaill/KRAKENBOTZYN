@@ -137,15 +137,20 @@ def execute_market_entry(
         # Record order execution for rate limiting
         record_order_executed(symbol=symbol)
         
-        # Extract fill details
+        # Extract fill details with defensive None checks
         order_id = order.get('id', 'UNKNOWN')
-        filled_qty = float(order.get('filled', 0))
-        fill_price = float(order.get('average') or order.get('price') or current_price)
-        total_cost = float(order.get('cost', 0))
+        filled_qty = float(order.get('filled') or 0)
+        
+        # Defensive: ensure fill_price never gets None
+        avg_price = order.get('average')
+        order_price = order.get('price')
+        fill_price = float(avg_price if avg_price is not None else (order_price if order_price is not None else current_price))
+        
+        total_cost = float(order.get('cost') or 0)
         
         # Extract fee (ccxt structure varies)
         fee_dict = order.get('fee') or {}
-        fee = float(fee_dict.get('cost', 0))
+        fee = float(fee_dict.get('cost') or 0)
         fee_currency = fee_dict.get('currency', 'USD')
         
         logger.info(
@@ -282,15 +287,20 @@ def execute_market_exit(
         # Record order execution for rate limiting
         record_order_executed(symbol=symbol)
         
-        # Extract fill details
+        # Extract fill details with defensive None checks
         order_id = order.get('id', 'UNKNOWN')
-        filled_qty = float(order.get('filled', 0))
-        fill_price = float(order.get('average') or order.get('price') or current_price)
-        total_proceeds = float(order.get('cost', 0))
+        filled_qty = float(order.get('filled') or 0)
+        
+        # Defensive: ensure fill_price never gets None
+        avg_price = order.get('average')
+        order_price = order.get('price')
+        fill_price = float(avg_price if avg_price is not None else (order_price if order_price is not None else current_price))
+        
+        total_proceeds = float(order.get('cost') or 0)
         
         # Extract fee
         fee_dict = order.get('fee') or {}
-        fee = float(fee_dict.get('cost', 0))
+        fee = float(fee_dict.get('cost') or 0)
         fee_currency = fee_dict.get('currency', 'USD')
         
         logger.info(
@@ -370,7 +380,7 @@ def execute_market_exit(
 
 def get_position_quantity(symbol: str) -> float:
     """
-    Get current position quantity for a symbol.
+    Get current position quantity for a symbol from position tracker.
     
     Args:
         symbol: Trading pair (e.g., "BTC/USD")
@@ -379,12 +389,11 @@ def get_position_quantity(symbol: str) -> float:
         Position quantity (0 if no position)
     """
     try:
-        account_state = get_account_state()
-        positions = account_state.get_positions()
-        position = positions.get(symbol)
+        from position_tracker import get_position
+        position = get_position(symbol)
         
         if position:
-            return float(position.get('quantity', 0))
+            return float(position.quantity)
         return 0.0
         
     except Exception as e:
