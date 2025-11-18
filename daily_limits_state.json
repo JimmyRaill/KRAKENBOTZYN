@@ -1,6 +1,6 @@
 {
   "current_date": "2025-11-18",
-  "total_trades_today": 19,
+  "total_trades_today": 21,
   "trades_by_symbol": {
     "ADA/USD": 3,
     "ALGO/USD": 4,
@@ -9,7 +9,9 @@
     "AAVE/USD": 2,
     "AERO/USD": 1,
     "AIXBT/USD": 1,
-    "AR/USD": 1
+    "AR/USD": 1,
+    "ALCX/USD": 1,
+    "AKT/USD": 1
   },
   "max_trades_per_symbol": 10000,
   "max_total_trades": 10000

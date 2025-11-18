@@ -1,1 +1,22 @@
-{}
+{
+  "ALCX/USD": {
+    "symbol": "ALCX/USD",
+    "entry_price": 11.55,
+    "quantity": 0.0,
+    "stop_loss_price": 11.450000000000001,
+    "take_profit_price": 11.700000000000001,
+    "atr": 0.050000000000000204,
+    "entry_timestamp": 1763443990.6096914,
+    "source": "autopilot"
+  },
+  "AKT/USD": {
+    "symbol": "AKT/USD",
+    "entry_price": 0.5276,
+    "quantity": 0.0,
+    "stop_loss_price": 0.5231,
+    "take_profit_price": 0.5343499999999999,
+    "atr": 0.0022499999999999903,
+    "entry_timestamp": 1763444514.2553966,
+    "source": "autopilot"
+  }
+}
