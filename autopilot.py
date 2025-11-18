@@ -1305,6 +1305,9 @@ def loop_once(ex, symbols: List[str]) -> None:
                         
                         trade_log.append({"symbol": sym, "action": "market_buy", "usd": float(f"{usd_to_spend:.2f}")})
                         print(f"🎯 [MARKET-BUY-COMPLETE] {sym} - Position opened, monitoring for exit signals")
+                        
+                        # CRITICAL: Exit loop iteration to prevent fallthrough to bracket code
+                        continue
                     else:
                         print(f"❌ [MARKET-ENTRY-FAILED] {sym} - {result.error}")
                         continue
