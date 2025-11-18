@@ -1184,16 +1184,22 @@ def loop_once(ex, symbols: List[str]) -> None:
                     # FEE CHECK: Block trades that can't cover transaction costs
                     # ═══════════════════════════════════════════════════════════════
                     try:
-                        min_edge_required = get_minimum_edge_pct(safety_margin=0.10)  # 0.10% safety buffer
-                        taker_fee_pct = get_taker_fee(sym) * 100  # Convert to percentage
+                        # BYPASS CHECK: If BYPASS_FEE_BLOCK=1, skip all fee validation
+                        bypass_fee_check = env_str("BYPASS_FEE_BLOCK", "0") == "1"
                         
-                        # edge_pct is calculated earlier as: ((price - sma20) / sma20) * 100
-                        # For a profitable trade: edge_pct must exceed round-trip fees + buffer
-                        if edge_pct is not None:
-                            if edge_pct < min_edge_required:
-                                print(f"🚫 [FEE-BLOCK] {sym} - Edge {edge_pct:.2f}% < required {min_edge_required:.2f}%")
-                                print(f"   Taker fee: {taker_fee_pct:.4f}%, Round-trip: {taker_fee_pct*2:.4f}%, Required with buffer: {min_edge_required:.2f}%")
-                                print(f"   SKIPPING: Trade cannot profitably cover fees")
+                        if bypass_fee_check:
+                            print(f"🔓 [FEE-BYPASS] {sym} - BYPASS_FEE_BLOCK=1, skipping fee validation")
+                        else:
+                            min_edge_required = get_minimum_edge_pct(safety_margin=0.10)  # 0.10% safety buffer
+                            taker_fee_pct = get_taker_fee(sym) * 100  # Convert to percentage
+                            
+                            # edge_pct is calculated earlier as: ((price - sma20) / sma20) * 100
+                            # For a profitable trade: edge_pct must exceed round-trip fees + buffer
+                            if edge_pct is not None:
+                                if edge_pct < min_edge_required:
+                                    print(f"🚫 [FEE-BLOCK] {sym} - Edge {edge_pct:.2f}% < required {min_edge_required:.2f}%")
+                                    print(f"   Taker fee: {taker_fee_pct:.4f}%, Round-trip: {taker_fee_pct*2:.4f}%, Required with buffer: {min_edge_required:.2f}%")
+                                    print(f"   SKIPPING: Trade cannot profitably cover fees")
                                 
                                 # Log fee block event
                                 if TELEMETRY_ENABLED and log_decision:
@@ -1206,11 +1212,11 @@ def loop_once(ex, symbols: List[str]) -> None:
                                     except Exception:
                                         pass
                                 
-                                continue  # Skip this trade
+                                    continue  # Skip this trade
+                                else:
+                                    print(f"✅ [FEE-CHECK-PASS] {sym} - Edge {edge_pct:.2f}% > required {min_edge_required:.2f}% (fee-profitable)")
                             else:
-                                print(f"✅ [FEE-CHECK-PASS] {sym} - Edge {edge_pct:.2f}% > required {min_edge_required:.2f}% (fee-profitable)")
-                        else:
-                            print(f"⚠️  [FEE-CHECK-SKIP] {sym} - No edge_pct available, proceeding with caution")
+                                print(f"⚠️  [FEE-CHECK-SKIP] {sym} - No edge_pct available, proceeding with caution")
                     
                     except Exception as fee_err:
                         print(f"[FEE-CHECK-ERR] {sym}: {fee_err} - proceeding without fee validation")

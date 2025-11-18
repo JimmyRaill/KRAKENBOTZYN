@@ -323,8 +323,15 @@ def get_minimum_edge_pct(safety_margin: float = 0.1) -> float:
         safety_margin: Additional safety buffer in percent (default 0.1%)
     
     Returns:
-        Minimum required edge as percentage
+        Minimum required edge as percentage (0.0 if BYPASS_FEE_BLOCK=1)
     """
+    import os
+    
+    # CRITICAL: Check bypass flag first
+    if os.getenv('BYPASS_FEE_BLOCK', '0') == '1':
+        logger.info("[FEE-MODEL] 🔓 BYPASS_FEE_BLOCK=1 detected - returning 0.0% min edge (all trades allowed)")
+        return 0.0
+    
     try:
         return get_fee_model().minimum_profitable_move_pct(
             round_trip=True,
