@@ -1,1 +1,32 @@
-{}
+{
+  "AAVE/USD": {
+    "symbol": "AAVE/USD",
+    "entry_price": 168.89,
+    "quantity": 0.0,
+    "stop_loss_price": 167.13571428571424,
+    "take_profit_price": 171.52142857142857,
+    "atr": 0.8771428571428653,
+    "entry_timestamp": 1763434628.5285368,
+    "source": "autopilot"
+  },
+  "ALGO/USD": {
+    "symbol": "ALGO/USD",
+    "entry_price": 0.15249,
+    "quantity": 0.0,
+    "stop_loss_price": 0.15114,
+    "take_profit_price": 0.15451499999999999,
+    "atr": 0.000674999999999997,
+    "entry_timestamp": 1763434650.9753754,
+    "source": "autopilot"
+  },
+  "ARKM/USD": {
+    "symbol": "ARKM/USD",
+    "entry_price": 0.277,
+    "quantity": 0.0,
+    "stop_loss_price": 0.2741857142857143,
+    "take_profit_price": 0.2812214285714286,
+    "atr": 0.0014071428571428568,
+    "entry_timestamp": 1763434740.758941,
+    "source": "autopilot"
+  }
+}
