@@ -38,5 +38,45 @@
     "atr": 0.0013428571428571417,
     "entry_timestamp": 1763435687.3610666,
     "source": "autopilot"
+  },
+  "AERO/USD": {
+    "symbol": "AERO/USD",
+    "entry_price": 0.7724,
+    "quantity": 0.0,
+    "stop_loss_price": 0.7627285714285714,
+    "take_profit_price": 0.7869071428571429,
+    "atr": 0.0048357142857143,
+    "entry_timestamp": 1763438861.1355488,
+    "source": "autopilot"
+  },
+  "AIXBT/USD": {
+    "symbol": "AIXBT/USD",
+    "entry_price": 0.0517,
+    "quantity": 0.0,
+    "stop_loss_price": 0.051500000000000004,
+    "take_profit_price": 0.052000000000000005,
+    "atr": 9.99999999999994e-05,
+    "entry_timestamp": 1763438949.5489638,
+    "source": "autopilot"
+  },
+  "ADA/USD": {
+    "symbol": "ADA/USD",
+    "entry_price": 0.463909,
+    "quantity": 0.0,
+    "stop_loss_price": 0.45942914285714287,
+    "take_profit_price": 0.47062878571428574,
+    "atr": 0.002239928571428577,
+    "entry_timestamp": 1763439942.8073165,
+    "source": "autopilot"
+  },
+  "AR/USD": {
+    "symbol": "AR/USD",
+    "entry_price": 4.33,
+    "quantity": 0.0,
+    "stop_loss_price": 4.295714285714286,
+    "take_profit_price": 4.381428571428572,
+    "atr": 0.017142857142857095,
+    "entry_timestamp": 1763443621.5999124,
+    "source": "autopilot"
   }
 }
