@@ -5,12 +5,13 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 
 **Recent Major Update (Nov 2025)**: Complete architectural pivot from bracket-based to market-only execution due to Kraken API limitations. System now uses pure market buy/sell orders with fee-awareness, rate limiting, and SL-independent position sizing.
 
-**Critical Bug Fixes (Nov 17, 2025)**:
+**Critical Bug Fixes (Nov 17-18, 2025)**:
 - Fixed unbound 'config' variable in autopilot buy execution path (blocking all trades)
 - Fixed MAX_DAILY_LOSS_USD parsing to handle "$50" format with safe fallbacks
 - Wired telemetry_db.log_trade() for complete trade lifecycle logging (entry + exit)
 - Added defensive fee model wrappers that never crash on import errors
 - Fixed dust balance bug: Changed position threshold from >0 to >0.001 to prevent dust amounts from blocking new trades
+- **CRITICAL (Nov 18)**: Fixed double-execution bug where market-only mode fell through to bracket code, causing duplicate orders (market buy + bracket limit) on same trade. Added `continue` statement after successful market execution to prevent fallthrough. This bug caused $10 loss before fix.
 - System validated and ready for autonomous trading
 
 **System Cleanup (Nov 17, 2025)**:
