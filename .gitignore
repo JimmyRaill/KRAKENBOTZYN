@@ -158,3 +158,14 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Trading Bot Specific - DO NOT COMMIT THESE
+*.db
+*.db-journal
+*.db-wal
+daily_limits_state.json
+open_positions.json
+paper_ledger.json
+diagnostic.json
+/tmp/
+*.lock
