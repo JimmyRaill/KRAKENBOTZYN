@@ -1,0 +1,162 @@
+You are in PLAN mode. Do NOT place any trades or modify any files yet.  
+Use ONLY: real Kraken API data, current .env, and the existing SQLite databases.  
+Your job is to answer these questions with hard facts (no guessing, no assumptions).
+
+Answer everything in clear bullet-point format.
+
+1) MODE, API, AND AUTOPILOT STATUS
+- What is the current trading mode?
+  - PAPER_TRADING (0/1)?
+  - KRAKEN_VALIDATE_ONLY (0/1)?
+  - AUTONOMOUS (0/1)?
+- Are live Kraken API credentials actually loaded and valid?
+  - Are KRAKEN_API_KEY and KRAKEN_API_SECRET present in env?
+  - Can you successfully call Kraken (e.g., fetch_balance) with these credentials?
+- Is the autopilot loop currently running?
+  - Last evaluation timestamp (UTC)?
+  - Any recent fatal errors in the autopilot logs?
+
+2) ORDER TYPE REALITY CHECK (MARKET ONLY)
+- For ALL orders the bot places in LIVE mode:
+  - Are they 100% `type='market'` (market buy / market sell) with NO SL/TP attached?
+  - Which exact function(s) are used for live entries and exits now? (e.g., `execute_market_entry`, `execute_market_exit`, etc.)
+- Confirm that:
+  - The system is NOT trying to create any Kraken conditional orders (no bracket / OCO / SL/TP orders).
+  - There is no leftover path still using limit or bracket orders in LIVE autopilot.
+
+3) SYMBOL UNIVERSE AND SCANNING
+- Exactly which symbols is the bot evaluating right now?  
+  - List all active symbols (e.g., ADA/USD, ALCX/USD, etc.).
+- Is the symbol list coming from:
+  - The dynamic CryptoUniverseScanner?
+  - Or a static SYMBOLS env var?
+- Confirm that:
+  - The scanner (or config) allows ALL Kraken spot crypto pairs that are tradable in USD (or explicitly list what filters are being applied: min volume, max assets, etc.).
+
+4) TRADES IN LAST 24 HOURS (REALITY CHECK VS KRAKEN)
+Use a REAL 24-hour window from current UTC time (now - 24h):
+
+- From Kraken API:
+  - How many trades exist in the last 24 hours? (single integer)
+  - List each trade with:
+    - symbol
+    - side (buy/sell)
+    - amount
+    - price
+    - timestamp (UTC)
+    - trade id
+- From internal DBs:
+  - In `executed_orders` table:
+    - How many entries in the last 24 hours?
+    - List them with:
+      - timestamp
+      - symbol
+      - side
+      - quantity
+      - price
+      - order_id
+      - trading_mode
+      - source (autopilot / command / force_test / unknown)
+  - In `trades` table (telemetry DB):
+    - How many entries in the last 24 hours?
+    - List them with:
+      - symbol
+      - side
+      - amount
+      - price
+      - timestamp
+      - source
+
+- Then state explicitly:
+  - Do Kraken trades (last 24h) match internal logs (executed_orders + trades table) 1:1?
+    - If NOT, describe every discrepancy clearly.
+
+5) AUTOPILOT VS MANUAL / FORCE TRADES (LAST 24 HOURS)
+- Of all trades from the last 24 hours:
+  - How many were placed by:
+    - autopilot
+    - manual command
+    - force_test
+  - Show the breakdown and list each trade with:
+    - symbol
+    - timestamp
+    - side
+    - size
+    - price
+    - source
+
+- Answer explicitly:
+  - Has the AUTOPILOT (not force_test, not manual) placed ANY real trades on Kraken in the last 24 hours?
+  - If yes, list them all with full detail.
+  - If no, say “No confirmed autopilot trades on Kraken in the last 24 hours.”
+
+6) FEE MODEL AND FEE AWARENESS
+- How does the bot currently obtain Kraken trading fees?
+  - Is it calling any Kraken fee endpoint (or ccxt fee API)?
+  - If not, what hardcoded fee values is it using (maker %, taker %)?
+- Are ALL live trades treated as taker (market) trades for fee math?
+- For the last 10 closed trades (if any exist as matched entry/exit pairs):
+  - For each, compute:
+    - gross PnL (before fees)
+    - total fees paid (entry fee + exit fee)
+    - net PnL (after fees)
+- If the system cannot compute fee-adjusted PnL:
+  - Say exactly what is missing (e.g., no fee data, no matched exits, etc.).
+
+7) RISK, DAILY LOSS LIMIT, AND TRADE LIMITS
+- What is the current risk per trade as a % of equity?
+  - Exact value used in code/config (e.g., 0.25% / 0.5%, etc.).
+- What is the current DAILY loss limit?
+  - Confirm it is $50 EXACTLY (no “$50” string bugs).
+  - Confirm how the kill-switch is implemented and what it will do when -$50 net for the day is hit (stop trading?).
+- How many trades per day is the bot allowed to make?
+  - Are there any limits like:
+    - max_trades_per_day
+    - max_trades_per_symbol
+    - cool-downs between trades?
+  - If there are ANY caps or cooldowns, list the exact numbers.
+  - If there are NO caps, confirm that “there is currently no explicit max trades/day limit in config.”
+
+8) STRATEGY + EXECUTION CONSISTENCY (MARKET-ONLY MODE)
+- Confirm that the strategy logic (entry/exit signals) is compatible with market-only execution:
+  - On a LONG entry signal:
+    - Which function runs?
+    - Does it always place a market BUY?
+  - On an exit/SELL signal:
+    - Which function runs?
+    - Does it always place a market SELL?
+- Confirm there is NO remaining dependence on stop-loss or take-profit orders:
+  - Position exit is driven by strategy signals / regime changes only.
+  - No code path that assumes a SL/TP order exists on the exchange.
+
+- For the last 10 LONG signals generated by the strategy (today):
+  - For each:
+    - symbol
+    - timestamp
+    - did an actual market BUY get placed? (yes/no)
+    - if NO, what was the exact reason? (e.g., risk limit, daily loss limit, error)
+
+9) “MAXIMUM DAILY PROFIT” BEHAVIOR (REALISTIC CHECK)
+- In the current code, what *practical* constraints limit trade frequency?
+  - Any per-candle / per-symbol restrictions?
+  - Any global throttles (beyond Kraken rate limits)?
+- In the last 24 hours:
+  - How many valid LONG/entry signals passed all filters?
+  - Of those, how many resulted in real trades?
+- Is there *any* extra logic artificially blocking trades that should otherwise be allowed by risk + loss + fee rules?
+
+10) FINAL YES/NO SUMMARY (NO HAND-WAVING)
+Answer these explicitly at the end:
+
+- “Is the bot currently:
+  - (a) Scanning live Kraken markets in real time?
+  - (b) Generating entry/exit signals from real-time data?
+  - (c) Placing MARKET BUY and MARKET SELL orders on Kraken when signals pass all risk/limit checks?
+  - (d) Logging every executed order into executed_orders and trades table with correct source?”
+
+- If ANY of (a)–(d) is NO or UNKNOWN, list:
+  - Which ones fail.
+  - The exact technical reason.
+  - The specific file/function that needs to be fixed.
+
+Again: NO guessing. If you cannot confirm something from real data, say exactly what you can’t confirm and why.
