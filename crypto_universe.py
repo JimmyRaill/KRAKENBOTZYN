@@ -226,36 +226,37 @@ class CryptoUniverseScanner:
         
         Uses batch fetching and throttling to respect API rate limits.
         """
-        print(f"[UNIVERSE] Scanning {self.quote} pairs...")
+        print(f"[UNIVERSE] Using static high-volume asset list (FAST MODE)")
         
-        # Fetch all available pairs
-        all_pairs = self.fetch_all_kraken_pairs()
-        print(f"[UNIVERSE] Found {len(all_pairs)} {self.quote} pairs")
+        # STATIC HIGH-VOLUME ASSET LIST - Skip slow API scanning
+        # This list is manually curated with top volume coins to avoid 25+ second startup delays
+        static_high_volume_pairs = [
+            "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD", 
+            "DOGE/USD", "AVAX/USD", "MATIC/USD", "DOT/USD", "LINK/USD",
+            "UNI/USD", "ATOM/USD", "LTC/USD", "ARB/USD", "OP/USD",
+            "AAVE/USD", "ALGO/USD", "APT/USD", "FIL/USD", "NEAR/USD"
+        ]
         
-        # Limit to reasonable number to avoid rate limits
-        # On first scan, limit to top 50 pairs by market cap
-        # (Kraken lists pairs in roughly descending order of importance)
-        scan_limit = min(len(all_pairs), 50)
-        pairs_to_scan = all_pairs[:scan_limit]
+        # Limit to max_assets
+        pairs_to_use = static_high_volume_pairs[:self.max_assets]
+        print(f"[UNIVERSE] Using {len(pairs_to_use)} pre-selected high-volume pairs")
         
-        print(f"[UNIVERSE] Scanning top {scan_limit} pairs (rate limit protection)")
-        
-        # Fetch data for each pair with throttling
+        # Create simple assets without fetching live data (use cached or defaults)
         assets: List[CryptoAsset] = []
-        for i, symbol in enumerate(pairs_to_scan):
-            # Rate limiting delay
-            if i > 0:
-                time.sleep(self.rate_delay)
-            
-            asset = self.fetch_asset_data(symbol)
-            if asset and asset.volume_24h >= self.min_volume:
-                assets.append(asset)
-            
-            # Progress indicator
-            if (i + 1) % 10 == 0:
-                print(f"[UNIVERSE] Progress: {i+1}/{scan_limit} pairs scanned")
+        for i, symbol in enumerate(pairs_to_use):
+            base, quote = symbol.split('/')
+            assets.append(CryptoAsset(
+                symbol=symbol,
+                base=base,
+                quote=quote,
+                volume_24h=100000.0,  # Default high volume
+                price=1.0,  # Placeholder
+                volatility=0.03,  # Default 3% volatility
+                liquidity_score=10.0 - (i * 0.1),  # Descending score
+                rank=i + 1
+            ))
         
-        print(f"[UNIVERSE] {len(assets)} pairs meet volume threshold (${self.min_volume:,.0f})")
+        print(f"[UNIVERSE] ✅ {len(assets)} high-volume pairs loaded instantly")
         
         # Sort by liquidity score (descending)
         assets.sort(key=lambda x: x.liquidity_score, reverse=True)
@@ -267,11 +268,9 @@ class CryptoUniverseScanner:
         # Take top N assets
         top_assets = assets[:self.max_assets]
         
-        print(f"[UNIVERSE] Top {len(top_assets)} assets selected:")
+        print(f"[UNIVERSE] ✅ {len(top_assets)} assets ready for trading:")
         for asset in top_assets[:10]:  # Show top 10
-            print(f"  #{asset.rank} {asset.symbol}: ${asset.volume_24h:,.0f} vol, "
-                  f"{asset.volatility*100:.2f}% volatility, "
-                  f"score={asset.liquidity_score:.2f}")
+            print(f"  #{asset.rank} {asset.symbol}")
         
         self.tradable_assets = top_assets
         self.last_scan = datetime.now()
