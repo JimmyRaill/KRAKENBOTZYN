@@ -365,3 +365,70 @@ def get_maker_fee_pct(symbol: Optional[str] = None) -> float:
         return get_maker_fee(symbol)
     except Exception:
         return 0.0016  # Default Kraken maker fee (0.16%)
+
+
+def estimate_rollover_fee_per_day(position_usd: float, leverage: float = 1.0) -> float:
+    """
+    Estimate daily rollover fee for a margin position.
+    
+    Kraken margin rollover fees (approximate):
+    - USD pairs: ~0.01% per day on borrowed amount
+    - Other pairs: ~0.02% per day on borrowed amount
+    
+    Args:
+        position_usd: Position size in USD
+        leverage: Leverage multiplier (1.0-2.0)
+        
+    Returns:
+        Estimated daily rollover fee in USD
+    """
+    if leverage <= 1.0:
+        return 0.0  # No borrowed funds, no rollover fee
+    
+    borrowed_amount = position_usd * (leverage - 1.0) / leverage
+    
+    rollover_rate_daily = 0.02 / 100  # 0.02% per day (conservative estimate)
+    
+    return borrowed_amount * rollover_rate_daily
+
+
+def estimate_short_total_fees(
+    position_usd: float,
+    leverage: float = 1.0,
+    holding_days: int = 1,
+    entry_fee_pct: Optional[float] = None,
+    exit_fee_pct: Optional[float] = None
+) -> float:
+    """
+    Estimate total cost for a short trade including trading fees and rollover.
+    
+    Args:
+        position_usd: Position size in USD
+        leverage: Leverage multiplier (1.0-2.0)
+        holding_days: Expected holding period in days (default 1)
+        entry_fee_pct: Entry fee override (uses taker fee if None)
+        exit_fee_pct: Exit fee override (uses taker fee if None)
+        
+    Returns:
+        Total estimated fees in USD
+    """
+    # Trading fees (entry + exit)
+    entry_fee = entry_fee_pct or get_taker_fee_pct()
+    exit_fee = exit_fee_pct or get_taker_fee_pct()
+    
+    trading_fees = position_usd * (entry_fee + exit_fee)
+    
+    # Rollover fees for holding period
+    daily_rollover = estimate_rollover_fee_per_day(position_usd, leverage)
+    total_rollover = daily_rollover * holding_days
+    
+    total_fees = trading_fees + total_rollover
+    
+    logger.debug(
+        f"[FEE-MODEL] Short fee estimate: "
+        f"position=${position_usd:.2f}, leverage={leverage}x, days={holding_days}, "
+        f"trading_fees=${trading_fees:.4f}, rollover=${total_rollover:.4f}, "
+        f"total=${total_fees:.4f}"
+    )
+    
+    return total_fees

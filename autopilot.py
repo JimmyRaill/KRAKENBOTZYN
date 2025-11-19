@@ -1311,47 +1311,116 @@ def loop_once(ex, symbols: List[str]) -> None:
                     else:
                         print(f"❌ [MARKET-ENTRY-FAILED] {sym} - {result.error}")
                         continue
+            
+            # ═══════════════════════════════════════════════════════════════
+            # SHORT EXECUTION PATH (margin trading)
+            # ═══════════════════════════════════════════════════════════════
+            elif exec_action == "sell" and price:
+                print(f"🎯 [EXEC-PATH] {sym} - ENTERING SHORT EXECUTION (action={action}, exec_action={exec_action}, pos_qty={pos_qty})")
                 
-                elif BRACKET_MANAGER_ENABLED and get_bracket_manager is not None:
-                    # ────────────────────────────────────────────────────────────
-                    # BRACKET MODE: Traditional bracket orders with TP/SL
-                    # ────────────────────────────────────────────────────────────
+                # Load config
+                try:
+                    config = get_config()
+                except Exception as cfg_err:
+                    print(f"[CONFIG-ERR] {sym} - Failed to load config: {cfg_err} - BLOCKING short trade")
+                    continue
+                
+                # Check if shorts are enabled
+                from margin_config import is_shorts_enabled
+                if not is_shorts_enabled():
+                    print(f"[SHORT-DISABLED] {sym} - Shorts disabled in config (ENABLE_SHORTS=0)")
+                    continue
+                
+                eq_full: Dict[str, Any] = ex.fetch_balance()
+                eq_usd = account_equity_usd(eq_full)
+                
+                # Position sizing for shorts (same logic as longs)
+                usd_cash = safe_get_balance(eq_full, quote_currency, 0)
+                
+                try:
+                    from risk_manager import calculate_market_position_size
                     
-                    # CRITICAL PRE-TRADE VALIDATION: Verify brackets can be placed BEFORE executing entry
-                    # This implements "NO NAKED POSITIONS" rule from spec
-                    try:
-                        manager = get_bracket_manager()
-                        test_bracket = manager.calculate_bracket_prices(
-                            symbol=sym,
-                            side="buy",
-                            entry_price=price,
-                            atr=atr
-                        )
-                        if test_bracket:
-                            test_bracket.quantity = approx_qty
-                            test_bracket.recalculate_metrics()  # CRITICAL: Recalc R:R after setting qty
-                            can_place, reason, _ = manager.validate_bracket_can_be_placed(
-                                test_bracket, ex, allow_adjust=False
+                    usd_to_spend = calculate_market_position_size(
+                        symbol=sym,
+                        equity_usd=eq_usd,
+                        entry_price=price,
+                        atr=atr,
+                        method=config.risk.sizing_method
+                    )
+                    
+                    print(f"[POSITION-SIZE] {sym} - SHORT size: ${usd_to_spend:.2f} ({config.risk.sizing_method})")
+                    
+                except Exception as sizing_err:
+                    print(f"[SIZING-ERR] {sym}: {sizing_err} - using fallback")
+                    usd_to_spend = min(eq_usd * 0.005, usd_cash * 0.2)
+                
+                # Check market-only mode
+                if not config.use_brackets:
+                    print(f"[MARKET-MODE] {sym} - Executing margin SHORT (no brackets)")
+                    
+                    from execution_manager import execute_market_short_entry
+                    
+                    result = execute_market_short_entry(
+                        symbol=sym,
+                        size_usd=usd_to_spend,
+                        source="autopilot",
+                        atr=atr,
+                        reason=why
+                    )
+                    
+                    if result.success:
+                        print(f"✅ [SHORT-ENTRY-SUCCESS] {sym} - {result}")
+                        
+                        # Record trade for daily limits
+                        try:
+                            record_trade_opened(sym, mode_str)
+                            print(f"[DAILY-LIMIT] {sym} - Short trade recorded (mode: {mode_str})")
+                        except Exception as record_err:
+                            print(f"[DAILY-LIMIT-RECORD-ERR] {sym}: {record_err}")
+                        
+                        # Log to telemetry
+                        if TELEMETRY_ENABLED and log_decision:
+                            try:
+                                log_decision(sym, "sell_short", why, result.fill_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
+                                if notify_trade:
+                                    notify_trade(sym, "sell_short", result.filled_qty, result.fill_price, why)
+                            except Exception as log_err:
+                                print(f"[TELEMETRY-ERR] {log_err}")
+                        
+                        # MENTAL SL/TP: Store SHORT position with INVERTED exit levels
+                        # For shorts: SL is ABOVE entry (stop loss on upside), TP is BELOW entry (take profit on downside)
+                        try:
+                            position = add_position(
+                                symbol=sym,
+                                entry_price=result.fill_price,
+                                quantity=result.filled_qty,
+                                atr=atr if atr and atr > 0 else result.fill_price * 0.02,
+                                atr_sl_multiplier=2.0,
+                                atr_tp_multiplier=3.0,
+                                source="autopilot",
+                                is_short=True  # CRITICAL: Mark as short position for inverted SL/TP
                             )
-                            if not can_place:
-                                print(f"🚨 [PRE-TRADE-BLOCK] {sym} - Cannot guarantee bracket placement: {reason}")
-                                print(f"⚠️  SAFETY: Skipping trade to prevent naked position")
-                                continue
-                            else:
-                                print(f"✅ [PRE-TRADE-OK] {sym} - Bracket validation passed")
-                        else:
-                            print(f"🚨 [PRE-TRADE-BLOCK] {sym} - Failed to calculate brackets")
-                            continue
-                    except Exception as e:
-                        print(f"🚨 [PRE-TRADE-ERR] {sym} - Bracket validation failed: {e}")
+                            print(f"📍 [SHORT-POSITION-STORED] {sym} - SL=${position.stop_loss_price:.4f} (above entry), TP=${position.take_profit_price:.4f} (below entry)")
+                        except Exception as pos_err:
+                            print(f"[POSITION-TRACKER-ERR] {sym}: {pos_err} - short position not tracked!")
+                        
+                        trade_log.append({"symbol": sym, "action": "market_short", "usd": float(f"{usd_to_spend:.2f}")})
+                        print(f"🎯 [MARKET-SHORT-COMPLETE] {sym} - Short position opened, monitoring for exit signals")
+                        
                         continue
-                
-                # CRITICAL: Use ATOMIC bracket order (entry + TP/SL in ONE order)
-                # This uses Kraken's conditional close API - NO NAKED POSITIONS POSSIBLE
-                print(f"[BUY-BRACKET] {sym} ~${usd_to_spend:.2f} (qty≈{approx_qty:.6f}) @ mkt with TP/SL attached | {why} | ATR={atr if atr else 0:.4f}")
-                
-                # Execute trade with brackets (or simulate if backtest mode)
-                if BACKTEST_MODE_ENABLED and get_backtest:
+                    else:
+                        print(f"❌ [SHORT-ENTRY-FAILED] {sym} - {result.error}")
+                        continue
+                else:
+                    print(f"[BRACKET-SKIP] {sym} - Brackets not supported for margin shorts, skipping")
+                    continue
+            
+            # END OF SHORT EXECUTION PATH
+            
+            # ═══════════════════════════════════════════════════════════════
+            # SELL_ALL EXECUTION PATH (position exit)
+            # ═══════════════════════════════════════════════════════════════
+            elif exec_action == "sell_all":
                     backtest = get_backtest()
                     safe_price = price if price else 0.0
                     result = backtest.execute_trade(sym, "buy", safe_price, usd_to_spend, why)
