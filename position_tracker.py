@@ -37,7 +37,8 @@ class Position:
         take_profit_price: float,
         atr: float,
         entry_timestamp: float,
-        source: str = "autopilot"
+        source: str = "autopilot",
+        is_short: bool = False
     ):
         self.symbol = symbol
         self.entry_price = entry_price
@@ -47,6 +48,7 @@ class Position:
         self.atr = atr
         self.entry_timestamp = entry_timestamp
         self.source = source
+        self.is_short = is_short
     
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization"""
@@ -58,7 +60,8 @@ class Position:
             "take_profit_price": self.take_profit_price,
             "atr": self.atr,
             "entry_timestamp": self.entry_timestamp,
-            "source": self.source
+            "source": self.source,
+            "is_short": self.is_short
         }
     
     @classmethod
@@ -72,7 +75,8 @@ class Position:
             take_profit_price=data["take_profit_price"],
             atr=data["atr"],
             entry_timestamp=data["entry_timestamp"],
-            source=data.get("source", "autopilot")
+            source=data.get("source", "autopilot"),
+            is_short=data.get("is_short", False)
         )
     
     def __str__(self) -> str:
@@ -186,7 +190,8 @@ def add_position(
     atr: float,
     atr_sl_multiplier: float = 2.0,
     atr_tp_multiplier: float = 3.0,
-    source: str = "autopilot"
+    source: str = "autopilot",
+    is_short: bool = False
 ) -> Position:
     """
     Add a new open position with calculated SL/TP levels.
@@ -199,6 +204,7 @@ def add_position(
         atr_sl_multiplier: ATR multiplier for stop-loss (default 2.0)
         atr_tp_multiplier: ATR multiplier for take-profit (default 3.0)
         source: Trade source ("autopilot", "command", etc.)
+        is_short: True for short positions (inverted SL/TP), False for long positions
     
     Returns:
         Position object with calculated SL/TP
@@ -207,12 +213,21 @@ def add_position(
         ValueError: If position file is corrupted
         Exception: If file operations fail
     """
-    # Calculate SL/TP prices
-    stop_loss_price = entry_price - (atr * atr_sl_multiplier)
-    take_profit_price = entry_price + (atr * atr_tp_multiplier)
-    
-    # Ensure SL/TP are positive
-    stop_loss_price = max(stop_loss_price, entry_price * 0.5)  # Max 50% loss
+    # Calculate SL/TP prices with INVERTED logic for shorts
+    if is_short:
+        # SHORT: SL above entry (exit when price rises), TP below entry (exit when price falls)
+        stop_loss_price = entry_price + (atr * atr_sl_multiplier)
+        take_profit_price = entry_price - (atr * atr_tp_multiplier)
+        
+        # Ensure TP is positive
+        take_profit_price = max(take_profit_price, entry_price * 0.5)  # Min 50% move down
+    else:
+        # LONG: SL below entry (exit when price falls), TP above entry (exit when price rises)
+        stop_loss_price = entry_price - (atr * atr_sl_multiplier)
+        take_profit_price = entry_price + (atr * atr_tp_multiplier)
+        
+        # Ensure SL is positive
+        stop_loss_price = max(stop_loss_price, entry_price * 0.5)  # Max 50% loss
     
     position = Position(
         symbol=symbol,
@@ -222,7 +237,8 @@ def add_position(
         take_profit_price=take_profit_price,
         atr=atr,
         entry_timestamp=time.time(),
-        source=source
+        source=source,
+        is_short=is_short
     )
     
     # CRITICAL: Hold exclusive lock across entire read-modify-write cycle
@@ -329,6 +345,10 @@ def check_exit_trigger(symbol: str, current_price: float) -> Optional[str]:
     """
     Check if current price triggers SL or TP for a position.
     
+    Handles both LONG and SHORT positions with inverted trigger logic:
+    - LONG: SL below entry (exit on price drop), TP above entry (exit on price rise)
+    - SHORT: SL above entry (exit on price rise), TP below entry (exit on price drop)
+    
     Args:
         symbol: Trading pair
         current_price: Current market price
@@ -341,25 +361,52 @@ def check_exit_trigger(symbol: str, current_price: float) -> Optional[str]:
     if not position:
         return None
     
-    # Check stop-loss trigger
-    if current_price <= position.stop_loss_price:
+    # Calculate P&L percentage (positive for profit, negative for loss)
+    if position.is_short:
+        # SHORT: Profit when price falls, loss when price rises
+        pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
+    else:
+        # LONG: Profit when price rises, loss when price falls
         pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
-        logger.warning(
-            f"[EXIT-TRIGGER] 🛑 STOP-LOSS hit on {symbol}: "
-            f"Price ${current_price:.4f} <= SL ${position.stop_loss_price:.4f} "
-            f"(P&L: {pnl_pct:.2f}%)"
-        )
-        return "stop_loss"
     
-    # Check take-profit trigger
-    if current_price >= position.take_profit_price:
-        pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
-        logger.info(
-            f"[EXIT-TRIGGER] 🎯 TAKE-PROFIT hit on {symbol}: "
-            f"Price ${current_price:.4f} >= TP ${position.take_profit_price:.4f} "
-            f"(P&L: {pnl_pct:.2f}%)"
-        )
-        return "take_profit"
+    if position.is_short:
+        # SHORT POSITION: Inverted trigger logic
+        # SL is ABOVE entry (exit when price rises)
+        if current_price >= position.stop_loss_price:
+            logger.warning(
+                f"[EXIT-TRIGGER] 🛑 STOP-LOSS hit on SHORT {symbol}: "
+                f"Price ${current_price:.4f} >= SL ${position.stop_loss_price:.4f} "
+                f"(P&L: {pnl_pct:.2f}%)"
+            )
+            return "stop_loss"
+        
+        # TP is BELOW entry (exit when price falls)
+        if current_price <= position.take_profit_price:
+            logger.info(
+                f"[EXIT-TRIGGER] 🎯 TAKE-PROFIT hit on SHORT {symbol}: "
+                f"Price ${current_price:.4f} <= TP ${position.take_profit_price:.4f} "
+                f"(P&L: {pnl_pct:.2f}%)"
+            )
+            return "take_profit"
+    else:
+        # LONG POSITION: Standard trigger logic
+        # SL is BELOW entry (exit when price falls)
+        if current_price <= position.stop_loss_price:
+            logger.warning(
+                f"[EXIT-TRIGGER] 🛑 STOP-LOSS hit on LONG {symbol}: "
+                f"Price ${current_price:.4f} <= SL ${position.stop_loss_price:.4f} "
+                f"(P&L: {pnl_pct:.2f}%)"
+            )
+            return "stop_loss"
+        
+        # TP is ABOVE entry (exit when price rises)
+        if current_price >= position.take_profit_price:
+            logger.info(
+                f"[EXIT-TRIGGER] 🎯 TAKE-PROFIT hit on LONG {symbol}: "
+                f"Price ${current_price:.4f} >= TP ${position.take_profit_price:.4f} "
+                f"(P&L: {pnl_pct:.2f}%)"
+            )
+            return "take_profit"
     
     return None
 
