@@ -1,1 +1,12 @@
-{}
+{
+  "ASTER/USD": {
+    "symbol": "ASTER/USD",
+    "entry_price": 1.27683,
+    "quantity": 0.0,
+    "stop_loss_price": 1.2679871428571428,
+    "take_profit_price": 1.2900942857142856,
+    "atr": 0.004421428571428576,
+    "entry_timestamp": 1763582446.843629,
+    "source": "autopilot"
+  }
+}

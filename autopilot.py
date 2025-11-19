@@ -1311,6 +1311,98 @@ def loop_once(ex, symbols: List[str]) -> None:
                     else:
                         print(f"❌ [MARKET-ENTRY-FAILED] {sym} - {result.error}")
                         continue
+                
+                elif BRACKET_MANAGER_ENABLED and get_bracket_manager is not None:
+                    # ────────────────────────────────────────────────────────────
+                    # BRACKET MODE: Place entry with TP/SL brackets
+                    # ────────────────────────────────────────────────────────────
+                    
+                    print(f"[BRACKET-MODE] {sym} - Executing BUY with TP/SL brackets")
+                    
+                    # Execute trade (or simulate if backtest mode)
+                    if BACKTEST_MODE_ENABLED and get_backtest:
+                        backtest = get_backtest()
+                        safe_price = price if price else 0.0
+                        result = backtest.execute_trade(sym, "buy", safe_price, usd_to_spend, why)
+                        result_str = f"[BACKTEST] Buy executed - no real order"
+                        trade_success = True
+                        order_result = None
+                    else:
+                        # Place entry order WITH brackets attached atomically
+                        manager = get_bracket_manager()
+                        bracket_order = manager.calculate_bracket_prices(
+                            symbol=sym,
+                            side="buy",
+                            entry_price=price,
+                            atr=atr
+                        )
+                        
+                        if not bracket_order:
+                            print(f"🚨 [BRACKET-CALC-ERR] {sym} - Failed to calculate bracket order, skipping")
+                            continue
+                        
+                        # Set quantity based on USD amount
+                        bracket_order.quantity = approx_qty
+                        bracket_order.recalculate_metrics()
+                        
+                        # Execute atomic bracket order
+                        trade_success, trade_message, order_result = manager.place_entry_with_brackets(bracket_order, ex)
+                        result_str = trade_message
+                    
+                    print(result_str)
+                    
+                    # Only proceed with logging if trade succeeded
+                    if not trade_success:
+                        print(f"🚨 [TRADE-FAILED] {sym} - Entry order rejected: {result_str}")
+                        continue
+                    
+                    # Extract actual fill info from order result
+                    actual_qty = approx_qty  # Default to estimate
+                    actual_price = price
+                    if order_result:
+                        actual_qty = order_result.get('filled', approx_qty)
+                        actual_price = order_result.get('average', price) or price
+                    
+                    print(f"✅ [TRADE-SUCCESS] {sym} - Entry filled: {actual_qty:.6f} @ ${actual_price:.4f} | TP/SL attached via Kraken conditional close")
+                    
+                    # Log decision and trade to learning database
+                    if TELEMETRY_ENABLED and log_decision and log_trade:
+                        try:
+                            log_decision(sym, "buy", why, actual_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
+                            log_trade(sym, "buy", "market_buy", actual_qty, actual_price, usd_to_spend, None, why, "autopilot")
+                            if notify_trade:
+                                notify_trade(sym, "buy", actual_qty, actual_price or 0.0, why)
+                        except Exception as log_err:
+                            print(f"[TELEMETRY-ERR] {log_err}")
+                    
+                    # Record trade opened for daily limit tracking (applies to both paper/live)
+                    try:
+                        record_trade_opened(sym, mode_str)
+                        print(f"[DAILY-LIMIT] {sym} - Trade recorded (mode: {mode_str})")
+                    except Exception as record_err:
+                        print(f"[DAILY-LIMIT-RECORD-ERR] {sym}: {record_err}")
+                    
+                    # Record to profit target system
+                    if PROFIT_TARGET_ENABLED and get_target_system:
+                        try:
+                            target_sys = get_target_system()
+                            target_sys.record_trade(0.0)  # Buy has no immediate profit
+                        except Exception as e:
+                            print(f"[TARGET-RECORD-ERR] {e}")
+                    
+                    trade_log.append({"symbol": sym, "action": "buy_with_brackets", "usd": float(f"{usd_to_spend:.2f}")})
+                    
+                    # SUCCESS: Brackets are GUARANTEED by atomic order (conditional close API)
+                    # No emergency flatten needed - if brackets fail, the entire order is rejected
+                    print(f"✅ [BRACKET-GUARANTEED] {sym} - TP/SL attached via Kraken conditional close (atomic operation)")
+                    
+                    # CRITICAL: Exit loop iteration
+                    continue
+                
+                else:
+                    # Neither market-only nor bracket mode enabled - should not happen
+                    print(f"[CONFIG-ERR] {sym} - Invalid execution mode configuration, skipping trade")
+                    continue
             
             # ═══════════════════════════════════════════════════════════════
             # SHORT EXECUTION PATH (margin trading)
@@ -1415,195 +1507,9 @@ def loop_once(ex, symbols: List[str]) -> None:
                     print(f"[BRACKET-SKIP] {sym} - Brackets not supported for margin shorts, skipping")
                     continue
             
-            # END OF SHORT EXECUTION PATH
-            
             # ═══════════════════════════════════════════════════════════════
             # SELL_ALL EXECUTION PATH (position exit)
             # ═══════════════════════════════════════════════════════════════
-            elif exec_action == "sell_all":
-                    backtest = get_backtest()
-                    safe_price = price if price else 0.0
-                    result = backtest.execute_trade(sym, "buy", safe_price, usd_to_spend, why)
-                    result_str = f"[BACKTEST] Buy executed - no real order"
-                    trade_success = True
-                    order_result = None
-                else:
-                    # Place entry order WITH brackets attached atomically
-                    manager = get_bracket_manager()
-                    bracket_order = manager.calculate_bracket_prices(
-                        symbol=sym,
-                        side="buy",
-                        entry_price=price,
-                        atr=atr
-                    )
-                    
-                    if not bracket_order:
-                        print(f"🚨 [BRACKET-CALC-ERR] {sym} - Failed to calculate bracket order, skipping")
-                        continue
-                    
-                    # Set quantity based on USD amount
-                    bracket_order.quantity = approx_qty
-                    bracket_order.recalculate_metrics()
-                    
-                    # Execute atomic bracket order
-                    trade_success, trade_message, order_result = manager.place_entry_with_brackets(bracket_order, ex)
-                    result_str = trade_message
-                
-                print(result_str)
-                
-                # Only proceed with logging if trade succeeded
-                if not trade_success:
-                    print(f"🚨 [TRADE-FAILED] {sym} - Entry order rejected: {result_str}")
-                    continue
-                
-                # Extract actual fill info from order result
-                actual_qty = approx_qty  # Default to estimate
-                actual_price = price
-                if order_result:
-                    actual_qty = order_result.get('filled', approx_qty)
-                    actual_price = order_result.get('average', price) or price
-                
-                print(f"✅ [TRADE-SUCCESS] {sym} - Entry filled: {actual_qty:.6f} @ ${actual_price:.4f} | TP/SL attached via Kraken conditional close")
-                
-                # Log decision and trade to learning database
-                if TELEMETRY_ENABLED and log_decision and log_trade:
-                    try:
-                        log_decision(sym, "buy", why, actual_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
-                        log_trade(sym, "buy", "market_buy", actual_qty, actual_price, usd_to_spend, None, why, "autopilot")
-                        if notify_trade:
-                            notify_trade(sym, "buy", actual_qty, actual_price or 0.0, why)
-                    except Exception as log_err:
-                        print(f"[TELEMETRY-ERR] {log_err}")
-                
-                # Record trade opened for daily limit tracking (applies to both paper/live)
-                try:
-                    record_trade_opened(sym, mode_str)
-                    print(f"[DAILY-LIMIT] {sym} - Trade recorded (mode: {mode_str})")
-                except Exception as record_err:
-                    print(f"[DAILY-LIMIT-RECORD-ERR] {sym}: {record_err}")
-                
-                # Record to profit target system
-                if PROFIT_TARGET_ENABLED and get_target_system:
-                    try:
-                        target_sys = get_target_system()
-                        target_sys.record_trade(0.0)  # Buy has no immediate profit
-                    except Exception as e:
-                        print(f"[TARGET-RECORD-ERR] {e}")
-                
-                trade_log.append({"symbol": sym, "action": "buy_with_brackets", "usd": float(f"{usd_to_spend:.2f}")})
-                
-                # SUCCESS: Brackets are GUARANTEED by atomic order (conditional close API)
-                # No emergency flatten needed - if brackets fail, the entire order is rejected
-                print(f"✅ [BRACKET-GUARANTEED] {sym} - TP/SL attached via Kraken conditional close (atomic operation)")
-                
-                # Dead code marker for cleanup (was emergency flatten logic)
-                if False:
-                    print(f"🚨 [CRITICAL-SAFETY] {sym} BRACKETS FAILED - FLATTENING POSITION IMMEDIATELY!")
-                    
-                    # IMMEDIATE ACTION: Sell the entire position to prevent unprotected exposure
-                    flatten_success = False
-                    emergency_sell_result = None
-                    
-                    try:
-                        time.sleep(0.3)  # Brief delay before emergency exit
-                        emergency_sell = run_command(f"sell all {sym}")
-                        emergency_sell_result = str(emergency_sell)
-                        print(f"[EMERGENCY-FLATTEN] {sym} command executed: {emergency_sell}")
-                        
-                        # CRITICAL: ALWAYS verify by checking actual position (PRIMARY check)
-                        # Poll with retries to handle async settlement
-                        max_retries = 3
-                        retry_delay = 0.7
-                        
-                        for attempt in range(max_retries):
-                            time.sleep(retry_delay)  # Allow settlement
-                            
-                            try:
-                                verify_qty, _ = position_qty(ex, sym)
-                                if verify_qty <= 0.001:  # Position closed
-                                    flatten_success = True
-                                    print(f"✅ [FLATTEN-VERIFIED] {sym} - Position confirmed closed (qty: {verify_qty}, attempt {attempt+1}/{max_retries})")
-                                    break
-                                else:
-                                    print(f"⏳ [FLATTEN-VERIFY-RETRY] {sym} - Position still exists: {verify_qty} (attempt {attempt+1}/{max_retries})")
-                                    if attempt == max_retries - 1:
-                                        # Final attempt failed
-                                        flatten_success = False
-                                        print(f"🚨 [FLATTEN-VERIFY-FAILED] {sym} - Position still exists after {max_retries} attempts: {verify_qty}")
-                            except Exception as verify_err:
-                                print(f"🚨 [FLATTEN-VERIFY-ERR] {sym} attempt {attempt+1}/{max_retries}: {verify_err}")
-                                if attempt == max_retries - 1:
-                                    print(f"🚨 [FLATTEN-VERIFY-FAILED] {sym} - Cannot confirm position closed after {max_retries} attempts")
-                                    flatten_success = False
-                        
-                        # Log critical safety event with verification result
-                        if TELEMETRY_ENABLED and log_error:
-                            try:
-                                log_error(
-                                    error_type="bracket_failure_auto_flatten",
-                                    description=f"Brackets failed for {sym}, position {'closed' if flatten_success else 'NOT CLOSED'}",
-                                    symbol=sym,
-                                    context={
-                                        "qty": approx_qty, "price": price,
-                                        "flatten_verified_success": flatten_success,
-                                        "emergency_sell_result": str(emergency_sell_result)[:200]
-                                    }
-                                )
-                            except Exception:
-                                pass
-                        
-                        # Only mark as safe exit if flatten actually succeeded AND verified
-                        if flatten_success and trade_log and trade_log[-1].get("symbol") == sym:
-                            trade_log[-1]["action"] = "buy_then_emergency_exit"
-                            trade_log[-1]["note"] = "bracket_failure_auto_flattened_and_verified"
-                    except Exception as flatten_err:
-                        flatten_success = False
-                        print(f"🚨🚨🚨 [FLATTEN-EXCEPTION] {sym}: {flatten_err}")
-                        
-                        # RESTORE: Alert and log exception path
-                        alert(f"🚨 FLATTEN EXCEPTION: {sym} - {flatten_err}")
-                        if TELEMETRY_ENABLED and log_error:
-                            try:
-                                log_error(
-                                    error_type="flatten_exception",
-                                    description=f"Exception during emergency flatten of {sym}",
-                                    symbol=sym,
-                                    context={"exception": str(flatten_err)}
-                                )
-                            except Exception:
-                                pass
-                    
-                    # CRITICAL: If flatten failed (either via error check or exception), PAUSE TRADING
-                    if not flatten_success:
-                        print(f"🚨🚨🚨 [CRITICAL-SAFETY-FAILURE] {sym} POSITION IS UNPROTECTED!")
-                        print(f"⚠️  BRACKETS FAILED + EMERGENCY FLATTEN FAILED")
-                        print(f"⚠️  PAUSING ALL TRADING FOR SAFETY")
-                        
-                        # EMERGENCY: Trigger global pause to prevent further exposure
-                        global _PAUSED_UNTIL
-                        _PAUSED_UNTIL = time.time() + (6 * 60 * 60)  # Pause for 6 hours
-                        
-                        # Alert operator
-                        alert(f"🚨 CRITICAL SAFETY FAILURE: {sym} position unprotected! Trading paused for 6h. MANUAL INTERVENTION REQUIRED!")
-                        
-                        # Log critical double failure
-                        if TELEMETRY_ENABLED and log_error:
-                            try:
-                                log_error(
-                                    error_type="critical_double_failure",
-                                    description=f"Both brackets AND emergency flatten failed for {sym} - TRADING PAUSED",
-                                    symbol=sym,
-                                    context={
-                                        "qty": approx_qty, "price": price,
-                                        "paused_until": _PAUSED_UNTIL
-                                    }
-                                )
-                            except Exception:
-                                pass
-                        
-                        # Exit loop immediately to prevent more trades
-                        break
-
             elif exec_action == "sell_all" and pos_qty > 0:
                 print(f"[SELL] {sym} all @ mkt | {why}")
                 
@@ -1670,6 +1576,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                 alert(f"ℹ️ Exited {sym} (reason: {why})")
                 set_cooldown(sym)
                 trade_log.append({"symbol": sym, "action": "sell_all", "qty": float(f"{pos_qty:.8f}")})
+                continue
 
             else:
                 print(f"[HOLD] {sym} | {why}")
