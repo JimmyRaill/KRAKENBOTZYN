@@ -28,6 +28,7 @@ HELP = (
     "  debug status                        show diagnostics\n"
     "  force trade test <symbol>           test LIVE order placement (requires ENABLE_FORCE_TRADE=1)\n"
     "  force sltp test <symbol>            test mental SL/TP system (requires ENABLE_FORCE_TRADE=1)\n"
+    "  force short test <symbol>           test SHORT selling system (requires ENABLE_FORCE_TRADE=1)\n"
     "  help\n"
 )
 
@@ -1630,6 +1631,201 @@ def handle(text: str) -> str:
                     "quantity": sell_result.filled_qty,
                     "proceeds": sell_result.total_cost,
                     "fee": sell_result.fee
+                },
+                "pnl": {
+                    "gross_usd": gross_pnl,
+                    "net_usd": net_pnl,
+                    "pnl_pct": pnl_pct
+                },
+                "position_removed": final_position is None,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat()
+            }
+            
+            return json.dumps(result, indent=2)
+            
+        except Exception as e:
+            import traceback
+            return json.dumps({
+                "ok": False,
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }, indent=2)
+
+    # force short test [symbol] - Test SHORT selling system with margin orders
+    m = re.fullmatch(r"(?i)force\s+short\s+test(?:\s+([A-Za-z0-9:/\-\._]+))?", s)
+    if m:
+        from datetime import datetime, timezone
+        import json
+        import time
+        from execution_manager import execute_market_short_entry, execute_market_short_exit
+        from position_tracker import add_position, get_position_summary, get_position, remove_position
+        from candle_strategy import calculate_atr
+        from exchange_manager import get_manager
+        from margin_config import is_shorts_enabled
+        
+        symbol = _norm_sym(m.group(1) or "BTC/USD")
+        
+        try:
+            print(f"\n{'='*70}")
+            print(f"🧪 SHORT SELLING SYSTEM TEST - {symbol}")
+            print(f"{'='*70}\n")
+            
+            # Check ENABLE_FORCE_TRADE flag
+            enable_force_trade = os.getenv("ENABLE_FORCE_TRADE", "0").strip().lower() in ("1", "true", "yes", "on")
+            if not enable_force_trade:
+                return json.dumps({
+                    "ok": False,
+                    "error": "ENABLE_FORCE_TRADE is not enabled. Set ENABLE_FORCE_TRADE=1 in .env to allow force tests."
+                }, indent=2)
+            
+            # Check if shorts are enabled
+            if not is_shorts_enabled():
+                return json.dumps({
+                    "ok": False,
+                    "error": "Short selling is disabled. Set ENABLE_SHORTS=true in .env"
+                }, indent=2)
+            
+            ex = _ex()
+            mode = get_mode_str()
+            
+            # STEP 1: Get current price and ATR
+            print("[STEP 1] Fetching market data...")
+            ticker = ex.fetch_ticker(symbol)
+            current_price = ticker.get('last') or ticker.get('close') or ticker.get('bid', 0)
+            
+            # Get ATR for SL/TP calculation
+            manager = get_manager()
+            ohlcv = manager.fetch_ohlc(symbol, timeframe='5m', limit=20)
+            atr = calculate_atr(ohlcv, period=14)
+            
+            print(f"   Price: ${current_price:.4f}")
+            print(f"   ATR: {atr:.4f}\n")
+            
+            # STEP 2: Execute margin SHORT entry (market sell)
+            test_usd = 10.0  # Small test amount
+            print(f"[STEP 2] Executing margin SHORT (sell to open, ${test_usd})")
+            short_result = execute_market_short_entry(
+                symbol=symbol,
+                size_usd=test_usd,
+                source="force_short_test",
+                atr=atr,
+                reason="force_short_test"
+            )
+            
+            if not short_result.success:
+                return json.dumps({
+                    "ok": False,
+                    "error": f"SHORT entry failed: {short_result.error}"
+                }, indent=2)
+            
+            print(f"   ✅ SHORT filled: {short_result.filled_qty:.6f} @ ${short_result.fill_price:.4f}")
+            print(f"   Cost: ${short_result.total_cost:.2f}, Fee: ${short_result.fee:.4f}\n")
+            
+            # STEP 3: Store position with INVERTED mental SL/TP (SL above, TP below)
+            print("[STEP 3] Storing SHORT position with inverted mental SL/TP...")
+            position = add_position(
+                symbol=symbol,
+                entry_price=short_result.fill_price,
+                quantity=short_result.filled_qty,
+                atr=atr,
+                atr_sl_multiplier=2.0,
+                atr_tp_multiplier=3.0,
+                source="force_short_test",
+                is_short=True  # CRITICAL: Inverts SL/TP logic
+            )
+            
+            print(f"   📍 SHORT position stored:")
+            print(f"      Entry: ${position.entry_price:.4f}")
+            print(f"      Stop Loss: ${position.stop_loss_price:.4f} (+{((position.stop_loss_price - position.entry_price) / position.entry_price * 100):.2f}% ABOVE entry)")
+            print(f"      Take Profit: ${position.take_profit_price:.4f} (-{((position.entry_price - position.take_profit_price) / position.entry_price * 100):.2f}% BELOW entry)")
+            print(f"      Quantity: {position.quantity:.6f}")
+            print(f"      ⚠️  Inverted logic: Profit when price FALLS, stop when price RISES\n")
+            
+            # STEP 4: Verify position tracking
+            print("[STEP 4] Verifying position tracker...")
+            retrieved_position = get_position(symbol)
+            if not retrieved_position:
+                print(f"   ❌ ERROR: Position not found in tracker!\n")
+            else:
+                print(f"   ✅ SHORT position retrieved from tracker successfully")
+                print(f"   ✅ is_short flag = {retrieved_position.is_short}\n")
+            
+            print(f"{get_position_summary()}\n")
+            
+            # STEP 5: Wait a moment then execute market BUY to cover
+            print("[STEP 5] Executing market BUY to cover SHORT...")
+            time.sleep(2)  # Brief pause for dramatic effect
+            
+            cover_result = execute_market_short_exit(
+                symbol=symbol,
+                quantity=short_result.filled_qty,
+                full_position=True,
+                source="force_short_test",
+                reason="force_short_test_exit"
+            )
+            
+            if not cover_result.success:
+                return json.dumps({
+                    "ok": False,
+                    "partial": True,
+                    "error": f"SHORT cover failed: {cover_result.error}",
+                    "note": "SHORT position may still be open and tracked - manual intervention required"
+                }, indent=2)
+            
+            print(f"   ✅ BUY (cover) filled: {cover_result.filled_qty:.6f} @ ${cover_result.fill_price:.4f}")
+            print(f"   Cost: ${cover_result.total_cost:.2f}, Fee: ${cover_result.fee:.4f}\n")
+            
+            # Calculate P&L (INVERTED: profit when sell_price > buy_price for shorts)
+            gross_pnl = (short_result.fill_price - cover_result.fill_price) * cover_result.filled_qty
+            net_pnl = gross_pnl - short_result.fee - cover_result.fee
+            pnl_pct = (net_pnl / short_result.total_cost) * 100
+            
+            print(f"   💰 P&L: ${net_pnl:.2f} ({pnl_pct:+.2f}%)")
+            print(f"      Gross: ${gross_pnl:.2f}")
+            print(f"      Fees: ${short_result.fee + cover_result.fee:.4f}")
+            if gross_pnl > 0:
+                print(f"      ✅ SHORT profitable: sold @ ${short_result.fill_price:.4f}, covered @ ${cover_result.fill_price:.4f}\n")
+            else:
+                print(f"      ❌ SHORT loss: sold @ ${short_result.fill_price:.4f}, covered @ ${cover_result.fill_price:.4f}\n")
+            
+            # STEP 6: Verify position was removed
+            print("[STEP 6] Verifying SHORT position removed from tracker...")
+            final_position = get_position(symbol)
+            if final_position:
+                print(f"   ⚠️  WARNING: Position still exists in tracker!\n")
+            else:
+                print(f"   ✅ SHORT position removed from tracker successfully\n")
+            
+            print(f"{get_position_summary()}\n")
+            
+            # Final summary
+            print(f"\n{'='*70}")
+            print(f"✅ SHORT SELLING SYSTEM TEST COMPLETE")
+            print(f"{'='*70}\n")
+            
+            result = {
+                "ok": True,
+                "mode": mode,
+                "symbol": symbol,
+                "short_entry": {
+                    "price": short_result.fill_price,
+                    "quantity": short_result.filled_qty,
+                    "cost": short_result.total_cost,
+                    "fee": short_result.fee
+                },
+                "mental_levels": {
+                    "stop_loss": position.stop_loss_price,
+                    "stop_loss_note": "Above entry (exit on upside)",
+                    "take_profit": position.take_profit_price,
+                    "take_profit_note": "Below entry (exit on downside)",
+                    "atr": atr,
+                    "is_short": True
+                },
+                "short_exit": {
+                    "price": cover_result.fill_price,
+                    "quantity": cover_result.filled_qty,
+                    "cost": cover_result.total_cost,
+                    "fee": cover_result.fee
                 },
                 "pnl": {
                     "gross_usd": gross_pnl,

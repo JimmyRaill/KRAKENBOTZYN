@@ -1415,6 +1415,13 @@ def loop_once(ex, symbols: List[str]) -> None:
                     config = get_config()
                 except Exception as cfg_err:
                     print(f"[CONFIG-ERR] {sym} - Failed to load config: {cfg_err} - BLOCKING short trade")
+                    log_evaluation(
+                        symbol=sym,
+                        decision="ERROR",
+                        reason=f"Config load failed: {str(cfg_err)[:100]}",
+                        trading_mode=trading_mode,
+                        error_message=str(cfg_err)
+                    )
                     continue
                 
                 # Check if shorts are enabled
@@ -1426,85 +1433,173 @@ def loop_once(ex, symbols: List[str]) -> None:
                 eq_full: Dict[str, Any] = ex.fetch_balance()
                 eq_usd = account_equity_usd(eq_full)
                 
-                # Position sizing for shorts (same logic as longs)
-                usd_cash = safe_get_balance(eq_full, quote_currency, 0)
-                
-                try:
-                    from risk_manager import calculate_market_position_size
-                    
-                    usd_to_spend = calculate_market_position_size(
-                        symbol=sym,
-                        equity_usd=eq_usd,
-                        entry_price=price,
-                        atr=atr,
-                        method=config.risk.sizing_method
-                    )
-                    
-                    print(f"[POSITION-SIZE] {sym} - SHORT size: ${usd_to_spend:.2f} ({config.risk.sizing_method})")
-                    
-                except Exception as sizing_err:
-                    print(f"[SIZING-ERR] {sym}: {sizing_err} - using fallback")
-                    usd_to_spend = min(eq_usd * 0.005, usd_cash * 0.2)
-                
-                # Check market-only mode
+                # Position sizing for shorts (use same logic as longs)
                 if not config.use_brackets:
-                    print(f"[MARKET-MODE] {sym} - Executing margin SHORT (no brackets)")
+                    # MARKET-ONLY MODE: Use SL-independent position sizing
+                    print(f"[MARKET-SIZING] {sym} - Using calculate_market_position_size() for SHORT (no SL dependency)")
                     
-                    from execution_manager import execute_market_short_entry
-                    
-                    result = execute_market_short_entry(
-                        symbol=sym,
-                        size_usd=usd_to_spend,
-                        source="autopilot",
+                    sizing_result = calculate_market_position_size(
+                        equity=eq_usd,
+                        entry_price=price,
+                        risk_per_trade_pct=0.005,  # 0.5% risk per trade (same as longs)
                         atr=atr,
-                        reason=why
+                        use_synthetic_sl=True,  # Use ATR-based sizing if ATR available
+                        synthetic_sl_multiplier=2.0,
+                        max_position_pct=0.10  # Max 10% of equity
                     )
                     
-                    if result.success:
-                        print(f"✅ [SHORT-ENTRY-SUCCESS] {sym} - {result}")
-                        
-                        # Record trade for daily limits
-                        try:
-                            record_trade_opened(sym, mode_str)
-                            print(f"[DAILY-LIMIT] {sym} - Short trade recorded (mode: {mode_str})")
-                        except Exception as record_err:
-                            print(f"[DAILY-LIMIT-RECORD-ERR] {sym}: {record_err}")
-                        
-                        # Log to telemetry
-                        if TELEMETRY_ENABLED and log_decision:
-                            try:
-                                log_decision(sym, "sell_short", why, result.fill_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
-                                if notify_trade:
-                                    notify_trade(sym, "sell_short", result.filled_qty, result.fill_price, why)
-                            except Exception as log_err:
-                                print(f"[TELEMETRY-ERR] {log_err}")
-                        
-                        # MENTAL SL/TP: Store SHORT position with INVERTED exit levels
-                        # For shorts: SL is ABOVE entry (stop loss on upside), TP is BELOW entry (take profit on downside)
-                        try:
-                            position = add_position(
-                                symbol=sym,
-                                entry_price=result.fill_price,
-                                quantity=result.filled_qty,
-                                atr=atr if atr and atr > 0 else result.fill_price * 0.02,
-                                atr_sl_multiplier=2.0,
-                                atr_tp_multiplier=3.0,
-                                source="autopilot",
-                                is_short=True  # CRITICAL: Mark as short position for inverted SL/TP
-                            )
-                            print(f"📍 [SHORT-POSITION-STORED] {sym} - SL=${position.stop_loss_price:.4f} (above entry), TP=${position.take_profit_price:.4f} (below entry)")
-                        except Exception as pos_err:
-                            print(f"[POSITION-TRACKER-ERR] {sym}: {pos_err} - short position not tracked!")
-                        
-                        trade_log.append({"symbol": sym, "action": "market_short", "usd": float(f"{usd_to_spend:.2f}")})
-                        print(f"🎯 [MARKET-SHORT-COMPLETE] {sym} - Short position opened, monitoring for exit signals")
-                        
-                        continue
-                    else:
-                        print(f"❌ [SHORT-ENTRY-FAILED] {sym} - {result.error}")
-                        continue
+                    usd_to_spend = sizing_result["position_size_usd"]
+                    approx_qty = sizing_result["quantity"]
+                    sizing_method = sizing_result["method"]
+                    
+                    print(
+                        f"[MARKET-SIZING] {sym} - Method: {sizing_method}, "
+                        f"Position: ${usd_to_spend:.2f}, Qty: {approx_qty:.6f}, "
+                        f"Risk: ${sizing_result['risk_usd']:.2f} ({sizing_result['risk_pct']:.2f}%)"
+                    )
+                    
                 else:
+                    # BRACKET MODE: Not supported for shorts
                     print(f"[BRACKET-SKIP] {sym} - Brackets not supported for margin shorts, skipping")
+                    continue
+                
+                # Validate position size
+                if usd_to_spend <= 0.0:
+                    print(f"[SKIP] {sym} SHORT qty=0 ({why})")
+                    continue
+                
+                # Apply global position cap (backup safety check)
+                max_position_env = env_float("MAX_POSITION_USD", 10.0)
+                if usd_to_spend > max_position_env:
+                    print(f"[POSITION-CAP] {sym} SHORT - Capping ${usd_to_spend:.2f} → ${max_position_env:.2f}")
+                    usd_to_spend = max_position_env
+                
+                # ═══════════════════════════════════════════════════════════════
+                # RISK MANAGEMENT CHECKS (MANDATORY - ALL MUST PASS)
+                # ═══════════════════════════════════════════════════════════════
+                
+                # 1. DAILY TRADE LIMITS: Check global daily limit (applies to both paper/live)
+                try:
+                    mode_str = get_mode_str()
+                    allowed, limit_reason = can_open_new_trade(sym, mode_str)
+                    if not allowed:
+                        print(f"🚫 [DAILY-LIMIT-BLOCK] {sym} SHORT - {limit_reason}")
+                        log_evaluation(
+                            symbol=sym,
+                            decision="NO_TRADE",
+                            reason=f"Daily limit reached: {limit_reason}",
+                            trading_mode=trading_mode,
+                            price=price,
+                            rsi=rsi,
+                            atr=atr,
+                            regime=regime.value if regime else None,
+                            adx=adx,
+                            current_position_qty=pos_qty
+                        )
+                        continue
+                except Exception as e:
+                    print(f"[DAILY-LIMIT-CHECK-ERR] {sym}: {e}")
+                
+                # 2. FEE-AWARE EDGE CHECK: Verify edge > round-trip fees
+                try:
+                    # BYPASS CHECK: If BYPASS_FEE_BLOCK=1, skip all fee validation
+                    bypass_fee_check = env_str("BYPASS_FEE_BLOCK", "0") == "1"
+                    
+                    if bypass_fee_check:
+                        print(f"🔓 [FEE-BYPASS] {sym} SHORT - BYPASS_FEE_BLOCK=1, skipping fee validation")
+                    else:
+                        min_edge_required = get_minimum_edge_pct(safety_margin=0.10)  # 0.10% safety buffer
+                        taker_fee_pct = get_taker_fee(sym) * 100  # Convert to percentage
+                        
+                        # edge_pct is calculated earlier as: ((price - sma20) / sma20) * 100
+                        # For SHORT: Use absolute value since we profit on downward movement
+                        if edge_pct is not None:
+                            edge_abs = abs(edge_pct)
+                            if edge_abs < min_edge_required:
+                                print(f"🚫 [FEE-BLOCK] {sym} SHORT - Edge {edge_abs:.2f}% < required {min_edge_required:.2f}%")
+                                print(f"   Taker fee: {taker_fee_pct:.4f}%, Round-trip: {taker_fee_pct*2:.4f}%, Required with buffer: {min_edge_required:.2f}%")
+                                print(f"   SKIPPING: SHORT trade cannot profitably cover fees")
+                                
+                                # Log fee block event
+                                if TELEMETRY_ENABLED and log_decision:
+                                    log_decision(sym, "no_trade", f"fee_block_short_edge_{edge_abs:.2f}%", price, edge_abs, atr, pos_qty, eq_usd, executed=False)
+                                
+                                log_evaluation(
+                                    symbol=sym,
+                                    decision="NO_TRADE",
+                                    reason=f"FEE_BLOCK: Short edge {edge_abs:.2f}% < min {min_edge_required:.2f}%",
+                                    trading_mode=trading_mode,
+                                    price=price,
+                                    rsi=rsi,
+                                    atr=atr,
+                                    regime=regime.value if regime else None,
+                                    adx=adx,
+                                    current_position_qty=pos_qty
+                                )
+                                continue
+                            else:
+                                print(f"✅ [FEE-CHECK] {sym} SHORT - Edge {edge_abs:.2f}% > required {min_edge_required:.2f}% (taker: {taker_fee_pct:.4f}%)")
+                        else:
+                            print(f"⚠️  [FEE-CHECK] {sym} SHORT - No edge_pct available, proceeding with caution")
+                    
+                except Exception as fee_err:
+                    print(f"[FEE-CHECK-ERR] {sym} SHORT: {fee_err} - proceeding without fee validation (RISKY)")
+                
+                # 3. EXECUTE SHORT ENTRY
+                print(f"[MARKET-MODE] {sym} - Executing margin SHORT (no brackets)")
+                
+                from execution_manager import execute_market_short_entry
+                
+                result = execute_market_short_entry(
+                    symbol=sym,
+                    size_usd=usd_to_spend,
+                    source="autopilot",
+                    atr=atr,
+                    reason=why
+                )
+                
+                if result.success:
+                    print(f"✅ [SHORT-ENTRY-SUCCESS] {sym} - {result}")
+                    
+                    # Record trade for daily limits
+                    try:
+                        record_trade_opened(sym, mode_str)
+                        print(f"[DAILY-LIMIT] {sym} - Short trade recorded (mode: {mode_str})")
+                    except Exception as record_err:
+                        print(f"[DAILY-LIMIT-RECORD-ERR] {sym}: {record_err}")
+                        
+                    # Log to telemetry
+                    if TELEMETRY_ENABLED and log_decision:
+                        try:
+                            log_decision(sym, "sell_short", why, result.fill_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
+                            if notify_trade:
+                                notify_trade(sym, "sell_short", result.filled_qty, result.fill_price, why)
+                        except Exception as log_err:
+                            print(f"[TELEMETRY-ERR] {log_err}")
+                    
+                    # MENTAL SL/TP: Store SHORT position with INVERTED exit levels
+                    # For shorts: SL is ABOVE entry (stop loss on upside), TP is BELOW entry (take profit on downside)
+                    try:
+                        position = add_position(
+                            symbol=sym,
+                            entry_price=result.fill_price,
+                            quantity=result.filled_qty,
+                            atr=atr if atr and atr > 0 else result.fill_price * 0.02,
+                            atr_sl_multiplier=2.0,
+                            atr_tp_multiplier=3.0,
+                            source="autopilot",
+                            is_short=True  # CRITICAL: Mark as short position for inverted SL/TP
+                        )
+                        print(f"📍 [SHORT-POSITION-STORED] {sym} - SL=${position.stop_loss_price:.4f} (above entry), TP=${position.take_profit_price:.4f} (below entry)")
+                    except Exception as pos_err:
+                        print(f"[POSITION-TRACKER-ERR] {sym}: {pos_err} - short position not tracked!")
+                    
+                    trade_log.append({"symbol": sym, "action": "market_short", "usd": float(f"{usd_to_spend:.2f}")})
+                    print(f"🎯 [MARKET-SHORT-COMPLETE] {sym} - Short position opened, monitoring for exit signals")
+                    
+                    continue
+                else:
+                    print(f"❌ [SHORT-ENTRY-FAILED] {sym} - {result.error}")
                     continue
             
             # ═══════════════════════════════════════════════════════════════

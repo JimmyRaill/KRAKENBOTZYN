@@ -224,7 +224,7 @@ class TradingConfig:
         config.enable_multi_timeframe = os.getenv("ENABLE_MULTI_TIMEFRAME", "0") == "1"
         
         # Margin/Short Selling Configuration
-        enable_shorts_env = os.getenv("ENABLE_SHORTS", "0")
+        enable_shorts_env = os.getenv("ENABLE_SHORTS", "true")  # Default ON (matches dataclass default)
         config.risk.enable_shorts = enable_shorts_env in ("1", "true", "True", "yes")
         
         max_leverage_env = os.getenv("MAX_LEVERAGE", "1.0")
