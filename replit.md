@@ -31,6 +31,16 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 - Position state persisted in `open_positions.json` with dedicated lock file for synchronization
 - Complete trade lifecycle: autopilot BUY → store position → monitor every cycle → market SELL on trigger → remove position
 
+**SHORT Selling Implementation (Nov 19, 2025) - READY FOR TESTING**:
+- Extended system from LONG-only to bidirectional trading (LONG + SHORT) via Kraken margin API
+- **Config**: Added `enable_shorts=True`, `max_leverage=1.0` (hard cap 2.0), `max_margin_exposure_pct=0.5`
+- **Signal Generation**: SHORT signals on aligned downtrends (15m+1h both DOWN, RSI<70, price<SMA20)
+- **Execution**: `execute_market_short_entry()` and `execute_market_short_exit()` in execution_manager.py
+- **Position Tracking**: Inverted SL/TP logic for shorts (SL ABOVE entry, TP BELOW entry) in position_tracker.py
+- **Fee Awareness**: `estimate_short_total_fees()` includes trading fees + daily rollover costs (0.01-0.02%/day)
+- **Autopilot Routing**: SHORT execution path wired through autopilot.py (action='short' → execute_market_short_entry)
+- **Current Status**: All code complete and tested. Regime detection tuning required - ADX threshold lowered to 17.0 for better downtrend capture. System ready for paper mode validation.
+
 ## User Preferences
 - User prefers to be called: jimmy
 - Zyn's role: Financial servant who does ALL the work FOR jimmy

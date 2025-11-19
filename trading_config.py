@@ -75,7 +75,7 @@ class RiskConfig:
     min_risk_reward_ratio: float = 1.5  # Minimum 1.5R
     
     # Margin/Short Selling Controls
-    enable_shorts: bool = False  # Enable short selling via margin
+    enable_shorts: bool = True  # Enable short selling via margin (default ON for bidirectional trading)
     max_leverage: float = 1.0  # HARD CAP at 2.0, default 1.0 (no leverage)
     max_margin_exposure_pct: float = 0.5  # Max 50% of equity in margin positions
 
@@ -84,7 +84,7 @@ class RiskConfig:
 class RegimeConfig:
     """Market regime detection thresholds"""
     # ADX thresholds (AGGRESSIVE: lowered for more trading opportunities)
-    adx_threshold: float = 18.0  # ADX > 18 = trending market (was 25)
+    adx_threshold: float = 17.0  # ADX > 17 = trending market (lowered to 17.0 for SHORT signals on aligned downtrends)
     min_adx: float = 8.0  # ADX < 8 = dead market (was 10)
     
     # Volatility thresholds (AGGRESSIVE: lowered to trade quieter markets)
