@@ -1,0 +1,232 @@
+You are in BUILD mode for my Kraken trading bot “Zyn”.
+
+GOAL
+Extend Zyn from LONG-only spot trading to also support SHORT selling using Kraken margin, but with VERY STRICT risk guardrails:
+- Allow SHORT selling only when conditions are clearly bearish.
+- Use Kraken margin with a hard cap at 2× leverage (never higher).
+- For now, default live trading to 1× (no leverage), but make the leverage cap easy to adjust later via config/env.
+- Keep using market orders only (no brackets / TP/SL orders for now).
+- Absolutely NO increase in risk beyond what my config allows (0.25% risk per trade, $50 daily loss limit, etc.).
+- Zyn must still be able to trade all supported symbols from the current universe scanner.
+
+IMPORTANT CONSTRAINTS
+- I am margin-eligible on Kraken. Margin is allowed.
+- Risk philosophy is the same: capital preservation first, then profit.
+- I want more trades via shorts, NOT looser risk rules.
+
+================================
+SECTION 1 – CONFIG & FLAGS
+================================
+1) Add explicit short/margin config flags:
+   - In the main config file(s) (e.g. trading_config.py / env):
+     - ENABLE_SHORTS = env_bool("ENABLE_SHORTS", False)
+     - MAX_LEVERAGE = env_float("MAX_LEVERAGE", 1.0)  # Hard cap at 2.0, but DEFAULT = 1.0 (no leverage right now)
+     - MAX_MARGIN_EXPOSURE_PCT = env_float("MAX_MARGIN_EXPOSURE_PCT", 0.5)  # e.g. max 50% of equity in margin positions
+   - Enforce at code level:
+     - If MAX_LEVERAGE > 2.0, clamp it to 2.0 internally. Never allow > 2.0 even if env misconfigured.
+     - If ENABLE_SHORTS is False → bot must NEVER place margin / short orders.
+
+2) Central leverage + margin guard:
+   - Create a small utility (e.g. margin_config.py):
+     - get_effective_leverage() → returns min(MAX_LEVERAGE, 2.0)
+     - is_shorts_enabled() → checks ENABLE_SHORTS and confirms margin eligibility via Kraken API.
+   - Make all short-related code paths call these helpers so I only have ONE place to adjust leverage rules later.
+
+================================
+SECTION 2 – SIGNAL LOGIC (SHORT SETUPS)
+================================
+3) Use existing regime detection:
+   - Current behavior:
+     - Aligned up trend (15m + 1h down? up?) → LONG entries.
+     - Downtrends / bearish regimes → mostly HOLD.
+   - New behavior:
+     - When:
+       - 15m + 1h both clearly DOWN (whatever your “aligned downtrend” logic is).
+       - Regime = TREND_DOWN or BEARISH_RANGE (use your existing regime engine; do NOT invent new magic).
+       - Volume + volatility filters still pass (same safeguards used for longs).
+     - THEN:
+       - Generate a SHORT signal (action="short" or similar) instead of HOLD.
+   - Do NOT loosen filters to “force” trades. Use the same quality-level as long entries, just mirrored for downtrends:
+     - Avoid super illiquid trash.
+     - Respect volatility and chop filters.
+     - Respect daily trade limits and cooldowns.
+
+4) Keep long logic unchanged:
+   - Uptrend logic: LONG spot trades as before.
+   - Conflicting or choppy: HOLD both directions.
+
+================================
+SECTION 3 – EXECUTION LAYER (MARGIN SHORTS)
+================================
+5) Add margin short execution functions:
+   - In the existing execution manager / commands layer (where you now do market buys/sells):
+     - Implement:
+       - execute_market_short_entry(symbol, usd_risk)
+       - execute_market_short_exit(symbol, position_size)
+   - Behavior:
+     - SHORT ENTRY:
+       - Use Kraken’s margin/multi-collateral parameter (leverage field) for SELL to open a short position:
+         - type: 'market'
+         - side: 'sell'
+         - leverage: get_effective_leverage() (<= 2.0, default 1.0)
+       - Sizing:
+         - Use same risk_per_trade_pct as longs (0.25% by default).
+         - For shorts, risk is (distance to mental stop) × position_size.
+         - For now, mental stop can be defined as:
+           - mental_stop_price = entry_price + k × ATR   (e.g. k=2)
+         - Compute position size from equity and allowed risk, just like longs, but with upside risk.
+       - Check:
+         - Total active margin exposure must NOT exceed MAX_MARGIN_EXPOSURE_PCT × equity.
+         - Respect Kraken min trade size / cost like you already do.
+     - SHORT EXIT:
+       - Close the short using a market BUY:
+         - type: 'market'
+         - side: 'buy'
+         - amount: full remaining short size.
+
+6) Keep longs on spot only:
+   - Long entries/exists remain spot market BUY/SELL.
+   - Only shorts use margin parameters and leverage.
+   - No mixing spot + margin on same symbol in a way that confuses state.
+
+7) Risk guardrails at execution:
+   - Before placing ANY short:
+     - Check:
+       - ENABLE_SHORTS is True.
+       - Margin eligibility confirmed (e.g. via cached call to TradeBalance).
+       - get_effective_leverage() <= 2.0, else abort with explicit error.
+       - Daily loss so far < MAX_DAILY_LOSS_USD (currently $50).
+       - Current margin exposure (from Kraken margin endpoints) < MAX_MARGIN_EXPOSURE_PCT × equity.
+   - If any fails → DO NOT TRADE. Log clearly in evaluation_log (decision="SKIP_SHORT", reason="...").
+
+================================
+SECTION 4 – STRATEGY INTEGRATION
+================================
+8) Wire strategy → execution cleanly:
+   - For each symbol evaluation:
+     - If signal.action == "long":
+       - Current spot logic (market buy) as already implemented.
+     - If signal.action == "short":
+       - Call execute_market_short_entry() if:
+         - Not already short on that symbol.
+         - Risk + margin checks pass.
+     - If signal.action == "exit_long":
+       - Market SELL spot position.
+     - If signal.action == "exit_short":
+       - Market BUY to cover margin short.
+   - Make sure action names are consistent across:
+     - strategy_orchestrator
+     - autopilot
+     - execution manager
+   - NO “long”/“short” vs “buy”/“sell” mismatches like we had earlier.
+
+9) Cooldowns and limits apply to both directions:
+   - Existing:
+     - per-day trade limits
+     - per-symbol trade limits
+     - post-trade cooldowns
+   - Ensure:
+     - SHORTS also respect all cooldowns and daily limits.
+   - If I ever set “no max trades per day” in config:
+     - Keep at least the daily loss kill-switch and maybe a soft cap like 200 trades/day for sanity.
+
+================================
+SECTION 5 – FEE AWARENESS
+================================
+10) Fee handling for shorts:
+   - Ensure you explicitly account for:
+     - Taker fee on entry.
+     - Taker fee on exit.
+     - Margin opening fee (if separate).
+     - Rollover fee every 4 hours (estimate worst-case if holding beyond 4h).
+   - Implement a helper:
+     - estimate_short_trade_total_fee_usd(symbol, notional, expected_holding_hours)
+   - Before opening a short:
+     - Estimate:
+       - expected_reward_usd (based on your usual target move)
+       - expected_total_fees_usd (entry + exit + rollover)
+       - Only allow trade if:
+         - expected_reward_usd > expected_total_fees_usd × 2  (or similar reasonable buffer).
+   - This keeps micro-scalps that lose to fees from firing.
+
+================================
+SECTION 6 – LOGGING & TRANSPARENCY
+================================
+11) Logging for shorts:
+   - evaluation_log:
+     - decision field must log:
+       - "SHORT" on entry signal.
+       - "EXIT_SHORT" on successful exit.
+     - Include regime, ATR, RSI, etc.
+   - executed_orders:
+     - For each margin short entry:
+       - timestamp_utc
+       - symbol
+       - side="sell_short" (or clearly marked)
+       - quantity
+       - price
+       - order_id
+       - trading_mode ("live" / "paper")
+       - source ("autopilot")
+     - For each short exit:
+       - side="buy_cover" (or similar)
+   - Telemetry/trades table:
+     - Record PnL for short trades correctly:
+       - PnL = (entry_price - exit_price) × qty – all fees.
+       - Sign correctly: profit when price drops.
+
+12) Diagnostic commands:
+   - Ensure the chat interface (Zyn’s LLM side) can answer these accurately WITHOUT hallucination:
+     - “How many short trades have you placed in the last 24 hours?”
+     - “Show me the last 5 short trades with symbol, side, size, price, and PnL.”
+     - “What is your current margin exposure as a % of my equity?”
+     - “What is your current maximum leverage setting?”
+   - These must be answered ONLY from:
+     - executed_orders
+     - telemetry_db
+     - Kraken API (for margin exposure)
+   - No guessing. If data missing, say so explicitly.
+
+================================
+SECTION 7 – SAFETY & TESTING
+================================
+13) Paper-mode first:
+   - Implement full short logic in PAPER mode first:
+     - Simulate:
+       - margin exposure
+       - leverage
+       - fee model (entry, exit, rollover)
+     - Confirm:
+       - Risk per trade never exceeds config.
+       - MAX_MARGIN_EXPOSURE_PCT is respected.
+       - Daily loss kill-switch triggers when it should.
+   - Only after paper tests are passing:
+     - Enable LIVE shorts via ENABLE_SHORTS=true and MAX_LEVERAGE=1.0.
+
+14) Guard against catastrophic bugs:
+   - Add explicit sanity checks:
+     - If any short order is rejected by Kraken:
+       - Log clearly.
+       - Do NOT retry infinitely.
+     - If margin info or fee info cannot be fetched:
+       - Do NOT open new shorts.
+   - If PnL for the day <= -MAX_DAILY_LOSS_USD:
+       - Stop opening both longs and shorts until next day.
+
+================================
+SECTION 8 – FINAL CONFIRMATION
+================================
+15) When you’re done:
+   - Run a self-check and TELL ME (via Zyn’s chat or log output):
+     - Whether:
+       - ENABLE_SHORTS flag is wired correctly.
+       - MAX_LEVERAGE is correctly clamped at 2.0.
+       - execute_market_short_entry and execute_market_short_exit are implemented and tested.
+       - Short-related trades are correctly logged into executed_orders and telemetry/trades.
+       - Risk, limits, and margin exposure checks are enforced every time.
+   - Do NOT hallucinate. If anything is still not fully implemented or verified, say exactly what’s missing.
+
+Use my existing architecture, don’t rewrite everything – just extend it cleanly and safely so Zyn can:
+- LONG spot in uptrends.
+- SHORT with margin (≤2×, default 1×) in clear downtrends.
+- Respect all risk guardrails while trading more often.

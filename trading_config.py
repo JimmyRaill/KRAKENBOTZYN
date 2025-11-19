@@ -73,6 +73,11 @@ class RiskConfig:
     
     # R:R enforcement
     min_risk_reward_ratio: float = 1.5  # Minimum 1.5R
+    
+    # Margin/Short Selling Controls
+    enable_shorts: bool = False  # Enable short selling via margin
+    max_leverage: float = 1.0  # HARD CAP at 2.0, default 1.0 (no leverage)
+    max_margin_exposure_pct: float = 0.5  # Max 50% of equity in margin positions
 
 
 @dataclass
@@ -217,6 +222,36 @@ class TradingConfig:
         config.enable_profit_target = os.getenv("ENABLE_PROFIT_TARGET", "0") == "1"
         config.enable_api_watchdog = os.getenv("ENABLE_API_WATCHDOG", "0") == "1"
         config.enable_multi_timeframe = os.getenv("ENABLE_MULTI_TIMEFRAME", "0") == "1"
+        
+        # Margin/Short Selling Configuration
+        enable_shorts_env = os.getenv("ENABLE_SHORTS", "0")
+        config.risk.enable_shorts = enable_shorts_env in ("1", "true", "True", "yes")
+        
+        max_leverage_env = os.getenv("MAX_LEVERAGE", "1.0")
+        try:
+            leverage_value = float(max_leverage_env)
+            # HARD CAP: Never allow leverage > 2.0, even if misconfigured
+            if leverage_value > 2.0:
+                print(f"[CONFIG-WARN] MAX_LEVERAGE={leverage_value} exceeds hard cap of 2.0, clamping to 2.0")
+                leverage_value = 2.0
+            elif leverage_value < 1.0:
+                print(f"[CONFIG-WARN] MAX_LEVERAGE={leverage_value} below minimum 1.0, setting to 1.0")
+                leverage_value = 1.0
+            config.risk.max_leverage = leverage_value
+        except (ValueError, AttributeError) as e:
+            print(f"[CONFIG-WARN] MAX_LEVERAGE invalid: '{max_leverage_env}', falling back to default 1.0")
+            config.risk.max_leverage = 1.0
+        
+        max_margin_exposure_env = os.getenv("MAX_MARGIN_EXPOSURE_PCT", "0.5")
+        try:
+            exposure = float(max_margin_exposure_env)
+            if exposure < 0 or exposure > 1.0:
+                print(f"[CONFIG-WARN] MAX_MARGIN_EXPOSURE_PCT={exposure} out of range [0, 1.0], clamping to 0.5")
+                exposure = 0.5
+            config.risk.max_margin_exposure_pct = exposure
+        except (ValueError, AttributeError) as e:
+            print(f"[CONFIG-WARN] MAX_MARGIN_EXPOSURE_PCT invalid: '{max_margin_exposure_env}', falling back to default 0.5")
+            config.risk.max_margin_exposure_pct = 0.5
         
         return config
     

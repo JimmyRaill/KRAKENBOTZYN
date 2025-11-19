@@ -378,6 +378,340 @@ def execute_market_exit(
         return ExecutionResult(success=False, error=error_msg)
 
 
+def execute_market_short_entry(
+    symbol: str,
+    size_usd: float,
+    source: str = "autopilot",
+    atr: Optional[float] = None,
+    reason: Optional[str] = None
+) -> ExecutionResult:
+    """
+    Execute margin market SELL order to open a short position.
+    
+    Uses Kraken margin trading with leverage parameter (capped at 2.0).
+    
+    Args:
+        symbol: Trading pair (e.g., "BTC/USD")
+        size_usd: Target position size in USD (will be converted to quantity)
+        source: Order source ("autopilot", "command", etc.)
+        atr: ATR value for logging (optional)
+        reason: Trade reason for telemetry (optional)
+    
+    Returns:
+        ExecutionResult with order details and success status
+    """
+    from margin_config import can_open_short, get_effective_leverage
+    from account_state import get_balances
+    
+    logger.info(f"[SHORT-ENTRY] {symbol} - Attempting margin SHORT for ${size_usd:.2f} (source={source})")
+    
+    try:
+        exchange = get_exchange()
+        mode_str = get_mode_str()
+        
+        # Pre-flight check: Can we open shorts?
+        balances = get_balances()
+        total_equity = sum(bal.get('usd_value', 0) for bal in balances.values())
+        
+        can_short, check_msg = can_open_short(total_equity)
+        if not can_short:
+            error_msg = f"Short selling blocked: {check_msg}"
+            logger.error(f"[SHORT-ENTRY] ❌ {error_msg}")
+            return ExecutionResult(success=False, error=error_msg)
+        
+        logger.info(f"[SHORT-ENTRY] Pre-flight OK: {check_msg}")
+        
+        # Get current price
+        ticker = exchange.fetch_ticker(symbol)
+        current_price = ticker.get('last') or ticker.get('close') or ticker.get('bid', 0)
+        
+        if not current_price or current_price <= 0:
+            error_msg = f"Invalid price for {symbol}: {current_price}"
+            logger.error(f"[SHORT-ENTRY] {error_msg}")
+            return ExecutionResult(success=False, error=error_msg)
+        
+        # Calculate quantity
+        leverage = get_effective_leverage()
+        quantity = size_usd / current_price
+        
+        # Check exchange minimums
+        market = exchange.market(symbol) or {}
+        limits = market.get("limits") or {}
+        min_amt = float((limits.get("amount") or {}).get("min", 0) or 0)
+        min_cost = float((limits.get("cost") or {}).get("min", 0) or 0)
+        
+        if min_amt > 0 and quantity < min_amt:
+            logger.warning(f"[SHORT-ENTRY] {symbol} - Adjusting quantity from {quantity:.6f} to minimum {min_amt:.6f}")
+            quantity = min_amt * 1.01  # 1% buffer
+        
+        if min_cost > 0 and (quantity * current_price) < min_cost:
+            min_qty = min_cost / current_price
+            logger.warning(f"[SHORT-ENTRY] {symbol} - Adjusting quantity from {quantity:.6f} to meet min_cost ${min_cost:.2f} ({min_qty:.6f})")
+            quantity = min_qty * 1.01  # 1% buffer
+        
+        # Precision formatting
+        quantity = float(exchange.amount_to_precision(symbol, quantity))
+        
+        logger.info(f"[SHORT-ENTRY] {symbol} - Placing margin SELL (SHORT): {quantity:.6f} units @ ~${current_price:.4f}, leverage={leverage}x")
+        
+        # Rate limiting check BEFORE order placement
+        rate_limit_ok = wait_for_rate_limit(symbol=symbol, max_wait_seconds=5.0)
+        if not rate_limit_ok:
+            error_msg = f"Rate limit timeout - cannot execute order safely"
+            logger.error(f"[SHORT-ENTRY] {error_msg}")
+            return ExecutionResult(success=False, error=error_msg)
+        
+        # Execute margin short (market sell with leverage parameter)
+        order_params = {'leverage': int(leverage)} if leverage > 1.0 else {}
+        order = exchange.create_market_sell_order(symbol, quantity, order_params)
+        
+        # Record order execution for rate limiting
+        record_order_executed(symbol=symbol)
+        
+        # Extract fill details with defensive None checks
+        order_id = order.get('id', 'UNKNOWN')
+        filled_qty = float(order.get('filled') or 0)
+        
+        avg_price = order.get('average')
+        order_price = order.get('price')
+        fill_price = float(avg_price if avg_price is not None else (order_price if order_price is not None else current_price))
+        
+        total_proceeds = float(order.get('cost') or 0)
+        
+        # Extract fee
+        fee_dict = order.get('fee') or {}
+        fee = float(fee_dict.get('cost') or 0)
+        fee_currency = fee_dict.get('currency', 'USD')
+        
+        logger.info(
+            f"[SHORT-ENTRY] ✅ {symbol} SHORT FILLED: {order_id}, "
+            f"qty={filled_qty:.6f} @ ${fill_price:.4f}, "
+            f"proceeds=${total_proceeds:.2f}, fee=${fee:.4f} {fee_currency}, "
+            f"leverage={leverage}x"
+        )
+        
+        # Log to executed_orders table
+        if EVAL_LOG_ENABLED:
+            try:
+                register_executed_order(
+                    order_id=order_id,
+                    symbol=symbol,
+                    side='sell_short',
+                    order_type='market',
+                    quantity=filled_qty,
+                    price=fill_price,
+                    status='filled',
+                    trading_mode=mode_str,
+                    source=source,
+                    timestamp_utc=datetime.now(timezone.utc).isoformat()
+                )
+                logger.debug(f"[SHORT-ENTRY] Logged to executed_orders: {order_id}")
+            except Exception as log_err:
+                logger.error(f"[SHORT-ENTRY] Failed to log to executed_orders: {log_err}")
+        
+        # Log to telemetry
+        if TELEMETRY_ENABLED:
+            try:
+                log_trade(
+                    symbol=symbol,
+                    side='sell',
+                    action='open',
+                    quantity=filled_qty,
+                    price=fill_price,
+                    usd_amount=filled_qty * fill_price if filled_qty and fill_price else None,
+                    order_id=order.get('id') if order else None,
+                    reason=reason or f'short_entry_margin_{leverage}x',
+                    source=source,
+                    mode=mode_str,
+                    trade_id=order.get('id') if order else None,
+                    entry_price=fill_price,
+                    position_size=filled_qty
+                )
+                logger.debug(f"[SHORT-ENTRY] Logged to telemetry_db with source={source}")
+            except Exception as telem_err:
+                logger.error(f"[SHORT-ENTRY] Failed to log to telemetry: {telem_err}")
+        
+        return ExecutionResult(
+            success=True,
+            order_id=order_id,
+            filled_qty=filled_qty,
+            fill_price=fill_price,
+            total_cost=total_proceeds,
+            fee=fee,
+            fee_currency=fee_currency,
+            raw_response=order
+        )
+        
+    except Exception as e:
+        error_msg = f"Short entry failed: {str(e)}"
+        logger.error(f"[SHORT-ENTRY] ❌ {symbol} - {error_msg}")
+        return ExecutionResult(success=False, error=error_msg)
+
+
+def execute_market_short_exit(
+    symbol: str,
+    quantity: Optional[float] = None,
+    full_position: bool = True,
+    source: str = "autopilot",
+    reason: Optional[str] = None
+) -> ExecutionResult:
+    """
+    Execute margin market BUY order to close a short position.
+    
+    Args:
+        symbol: Trading pair (e.g., "BTC/USD")
+        quantity: Specific quantity to cover (None = auto-detect from position)
+        full_position: If True and quantity is None, close entire short
+        source: Order source ("autopilot", "command", etc.)
+        reason: Exit reason for telemetry (optional)
+    
+    Returns:
+        ExecutionResult with order details and success status
+    """
+    logger.info(f"[SHORT-EXIT] {symbol} - Attempting margin BUY to cover short (source={source}, full_position={full_position})")
+    
+    try:
+        exchange = get_exchange()
+        mode_str = get_mode_str()
+        
+        # Determine quantity to buy
+        if quantity is None:
+            if full_position:
+                # For shorts, we need to check open positions/orders from Kraken
+                # For now, use position tracker
+                try:
+                    from position_tracker import get_position
+                    position = get_position(symbol)
+                    
+                    if position and position.quantity > 0:
+                        quantity = float(position.quantity)
+                        logger.info(f"[SHORT-EXIT] {symbol} - Using tracked short position: {quantity:.6f}")
+                    else:
+                        error_msg = f"No tracked short position for {symbol}"
+                        logger.warning(f"[SHORT-EXIT] {error_msg}")
+                        return ExecutionResult(success=False, error=error_msg)
+                        
+                except Exception as tracker_err:
+                    error_msg = f"Failed to get short position from tracker: {tracker_err}"
+                    logger.error(f"[SHORT-EXIT] {error_msg}")
+                    return ExecutionResult(success=False, error=error_msg)
+            else:
+                error_msg = "Quantity must be specified if full_position=False"
+                logger.error(f"[SHORT-EXIT] {error_msg}")
+                return ExecutionResult(success=False, error=error_msg)
+        
+        # Precision formatting
+        quantity = float(exchange.amount_to_precision(symbol, quantity))
+        
+        # Get current price for logging
+        ticker = exchange.fetch_ticker(symbol)
+        current_price = ticker.get('last') or ticker.get('close') or ticker.get('ask', 0)
+        
+        logger.info(f"[SHORT-EXIT] {symbol} - Placing market BUY to cover: {quantity:.6f} units @ ~${current_price:.4f}")
+        
+        # Rate limiting check BEFORE order placement
+        rate_limit_ok = wait_for_rate_limit(symbol=symbol, max_wait_seconds=5.0)
+        if not rate_limit_ok:
+            error_msg = f"Rate limit timeout - cannot execute order safely"
+            logger.error(f"[SHORT-EXIT] {error_msg}")
+            return ExecutionResult(success=False, error=error_msg)
+        
+        # Execute market buy to cover short
+        order = exchange.create_market_buy_order(symbol, quantity)
+        
+        # Record order execution for rate limiting
+        record_order_executed(symbol=symbol)
+        
+        # Extract fill details with defensive None checks
+        order_id = order.get('id', 'UNKNOWN')
+        filled_qty = float(order.get('filled') or 0)
+        
+        avg_price = order.get('average')
+        order_price = order.get('price')
+        fill_price = float(avg_price if avg_price is not None else (order_price if order_price is not None else current_price))
+        
+        total_cost = float(order.get('cost') or 0)
+        
+        # Extract fee
+        fee_dict = order.get('fee') or {}
+        fee = float(fee_dict.get('cost') or 0)
+        fee_currency = fee_dict.get('currency', 'USD')
+        
+        logger.info(
+            f"[SHORT-EXIT] ✅ {symbol} COVER FILLED: {order_id}, "
+            f"qty={filled_qty:.6f} @ ${fill_price:.4f}, "
+            f"cost=${total_cost:.2f}, fee=${fee:.4f} {fee_currency}"
+        )
+        
+        # Log to executed_orders table
+        if EVAL_LOG_ENABLED:
+            try:
+                register_executed_order(
+                    order_id=order_id,
+                    symbol=symbol,
+                    side='buy_cover',
+                    order_type='market',
+                    quantity=filled_qty,
+                    price=fill_price,
+                    status='filled',
+                    trading_mode=mode_str,
+                    source=source,
+                    timestamp_utc=datetime.now(timezone.utc).isoformat()
+                )
+                logger.debug(f"[SHORT-EXIT] Logged to executed_orders: {order_id}")
+            except Exception as log_err:
+                logger.error(f"[SHORT-EXIT] Failed to log to executed_orders: {log_err}")
+        
+        # Log to telemetry (exit - PnL will be calculated by telemetry system)
+        if TELEMETRY_ENABLED:
+            try:
+                log_trade(
+                    symbol=symbol,
+                    side='buy',
+                    action='close',
+                    quantity=filled_qty,
+                    price=fill_price,
+                    usd_amount=filled_qty * fill_price if filled_qty and fill_price else None,
+                    order_id=order.get('id') if order else None,
+                    reason=reason or 'short_exit',
+                    source=source,
+                    mode=mode_str,
+                    trade_id=order.get('id') if order else None,
+                    exit_price=fill_price,
+                    position_size=filled_qty
+                )
+                logger.debug(f"[SHORT-EXIT] Logged to telemetry_db with source={source}")
+            except Exception as telem_err:
+                logger.error(f"[SHORT-EXIT] Failed to log to telemetry: {telem_err}")
+        
+        # Remove position from mental SL/TP tracker
+        try:
+            from position_tracker import remove_position
+            removed = remove_position(symbol)
+            if removed:
+                logger.info(f"[SHORT-EXIT] Short position removed from tracker: {symbol}")
+            else:
+                logger.debug(f"[SHORT-EXIT] No tracked short position found for: {symbol}")
+        except Exception as tracker_err:
+            logger.warning(f"[SHORT-EXIT] Failed to remove short position from tracker: {tracker_err}")
+        
+        return ExecutionResult(
+            success=True,
+            order_id=order_id,
+            filled_qty=filled_qty,
+            fill_price=fill_price,
+            total_cost=total_cost,
+            fee=fee,
+            fee_currency=fee_currency,
+            raw_response=order
+        )
+        
+    except Exception as e:
+        error_msg = f"Short exit failed: {str(e)}"
+        logger.error(f"[SHORT-EXIT] ❌ {symbol} - {error_msg}")
+        return ExecutionResult(success=False, error=error_msg)
+
+
 def get_position_quantity(symbol: str) -> float:
     """
     Get current position quantity for a symbol from position tracker.

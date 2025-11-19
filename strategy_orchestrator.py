@@ -237,16 +237,17 @@ class StrategyOrchestrator:
         """
         Trend down strategy for TREND_DOWN regime.
         
-        SPOT TRADING ONLY - NO SHORT SELLING:
-        - This strategy is for EXITING long positions in downtrends
-        - Kraken spot doesn't support true short selling
-        - Returns 'hold' (no action possible in spot without a position)
+        MARGIN SHORT SELLING (if enabled):
+        - Generate SHORT signals on aligned downtrends (15m + 1h both DOWN)
+        - Use same quality filters as longs (volume, volatility, etc.)
+        - Stop-loss placed ABOVE entry (inverted from longs)
         
-        Logic:
-        - Signal to exit (sell_all) would be handled by autopilot based on position
-        - For now, just return 'hold' to avoid taking new longs in downtrend
+        If shorts disabled:
+        - Returns 'hold' (no action in spot-only mode)
         """
-        # HTF check
+        from margin_config import is_shorts_enabled
+        
+        # HTF check: Skip if higher timeframes are bullish
         if htf.dominant_trend == 'up':
             return TradeSignal(
                 action='hold',
@@ -259,13 +260,80 @@ class StrategyOrchestrator:
                 symbol=symbol
             )
         
-        # SPOT TRADING: Cannot open short positions
-        # Just return hold - autopilot will handle position exits separately
+        # Check if shorts are enabled
+        if not is_shorts_enabled():
+            return TradeSignal(
+                action='hold',
+                regime=regime_result.regime,
+                confidence=0.0,
+                reason=f"TREND_DOWN regime - shorts disabled (set ENABLE_SHORTS=1 to enable)",
+                entry_price=price,
+                htf_aligned=htf.htf_aligned,
+                dominant_trend=htf.dominant_trend,
+                symbol=symbol
+            )
+        
+        # SHORT SELLING ENABLED - Check for quality setup
+        # Require aligned downtrend on HTF
+        if htf.dominant_trend != 'down':
+            return TradeSignal(
+                action='hold',
+                regime=regime_result.regime,
+                confidence=0.0,
+                reason=f"TREND_DOWN but HTF not aligned down ({htf.trend_15m}/{htf.trend_1h})",
+                entry_price=price,
+                htf_aligned=htf.htf_aligned,
+                dominant_trend=htf.dominant_trend,
+                symbol=symbol
+            )
+        
+        # Get indicators for quality checks
+        rsi = indicators_5m.get('rsi')
+        sma20 = indicators_5m.get('sma_fast')
+        atr = indicators_5m.get('atr')
+        volume = ohlcv_5m[-1][5] if len(ohlcv_5m) > 0 else 0
+        
+        # Quality filter: Avoid overbought RSI (don't short into strength)
+        if rsi and rsi > 70:
+            return TradeSignal(
+                action='hold',
+                regime=regime_result.regime,
+                confidence=0.0,
+                reason=f"TREND_DOWN but RSI overbought ({rsi:.1f}) - wait for weakness",
+                entry_price=price,
+                htf_aligned=htf.htf_aligned,
+                dominant_trend=htf.dominant_trend,
+                symbol=symbol
+            )
+        
+        # Short entry: Look for rally into resistance (SMA20) for better entry
+        if sma20 and price < sma20 * 0.98:
+            # Price is below SMA20, good short entry zone
+            atr_multiplier = self.config.indicators.atr_stop_multiplier
+            stop_loss = price + (atr_multiplier * atr) if atr else price * 1.02
+            
+            confidence = 0.75
+            if htf.htf_aligned:
+                confidence = 0.85
+            
+            return TradeSignal(
+                action='short',
+                regime=regime_result.regime,
+                confidence=confidence,
+                reason=f"TREND_DOWN short: price={price:.2f} below SMA20={sma20:.2f}, RSI={rsi:.1f if rsi else 0}, HTF={htf.dominant_trend}",
+                entry_price=price,
+                stop_loss=stop_loss,
+                htf_aligned=htf.htf_aligned,
+                dominant_trend=htf.dominant_trend,
+                symbol=symbol
+            )
+        
+        # Wait for better entry (rally to SMA20)
         return TradeSignal(
             action='hold',
             regime=regime_result.regime,
             confidence=0.0,
-            reason=f"TREND_DOWN regime - no spot trades (spot trading doesn't support shorts)",
+            reason=f"TREND_DOWN but waiting for rally (price={price:.2f}, SMA20={sma20:.2f if sma20 else 'N/A'})",
             entry_price=price,
             htf_aligned=htf.htf_aligned,
             dominant_trend=htf.dominant_trend,
