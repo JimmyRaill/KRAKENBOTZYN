@@ -1234,7 +1234,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                         if bypass_fee_check:
                             print(f"🔓 [FEE-BYPASS] {sym} - BYPASS_FEE_BLOCK=1, skipping fee validation")
                         else:
-                            min_edge_required = get_minimum_edge_pct(safety_margin=0.10)  # 0.10% safety buffer
+                            min_edge_required = get_minimum_edge_pct(safety_margin=0.08)  # 0.08% safety buffer (aggressive mode)
                             taker_fee_pct = get_taker_fee(sym) * 100  # Convert to percentage
                             
                             # edge_pct is calculated earlier as: ((price - sma20) / sma20) * 100
@@ -1514,7 +1514,7 @@ def loop_once(ex, symbols: List[str]) -> None:
                     if bypass_fee_check:
                         print(f"🔓 [FEE-BYPASS] {sym} SHORT - BYPASS_FEE_BLOCK=1, skipping fee validation")
                     else:
-                        min_edge_required = get_minimum_edge_pct(safety_margin=0.10)  # 0.10% safety buffer
+                        min_edge_required = get_minimum_edge_pct(safety_margin=0.08)  # 0.08% safety buffer (aggressive mode)
                         taker_fee_pct = get_taker_fee(sym) * 100  # Convert to percentage
                         
                         # edge_pct is calculated earlier as: ((price - sma20) / sma20) * 100

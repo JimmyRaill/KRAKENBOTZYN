@@ -84,7 +84,7 @@ class RiskConfig:
 class RegimeConfig:
     """Market regime detection thresholds"""
     # ADX thresholds (AGGRESSIVE: lowered for more trading opportunities)
-    adx_threshold: float = 17.0  # ADX > 17 = trending market (lowered to 17.0 for SHORT signals on aligned downtrends)
+    adx_threshold: float = 12.0  # ADX > 12 = trending market (lowered to 12.0 to match observed market ADX 11-14)
     min_adx: float = 8.0  # ADX < 8 = dead market (was 10)
     
     # Volatility thresholds (AGGRESSIVE: lowered to trade quieter markets)
@@ -106,7 +106,7 @@ class RegimeConfig:
     bb_std_dev: float = 2.0
     
     # Aggressive range trading thresholds
-    aggressive_mode: bool = False  # Enable aggressive range trading
+    aggressive_mode: bool = True  # Enable aggressive range trading (jimmy wants more trades)
     aggressive_bb_pct: float = 55.0  # Max BB position for LONG (55% = mid-range)
     aggressive_rsi_max: float = 60.0  # Max RSI for LONG entries
     conservative_bb_pct: float = 40.0  # Conservative BB threshold

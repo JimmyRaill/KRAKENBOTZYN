@@ -103,7 +103,8 @@ class RegimeDetector:
         self,
         ohlcv_5m: List[List[float]],
         indicators_5m: Dict[str, float],
-        indicators_htf: Dict[str, float]
+        indicators_htf: Dict[str, float],
+        htf_dominant_trend: Optional[str] = None
     ) -> RegimeResult:
         """
         Detect current market regime using multi-timeframe analysis.
@@ -131,7 +132,8 @@ class RegimeDetector:
         # Build signals object
         signals = self._build_signals(
             price, volume, ohlcv_5m,
-            indicators_5m, indicators_htf
+            indicators_5m, indicators_htf,
+            htf_dominant_trend
         )
         
         # Regime detection logic (sequential priority)
@@ -196,7 +198,8 @@ class RegimeDetector:
         volume: Optional[float],
         ohlcv_5m: List[List[float]],
         ind_5m: Dict[str, float],
-        ind_htf: Dict[str, float]
+        ind_htf: Dict[str, float],
+        htf_dominant_trend: Optional[str] = None
     ) -> RegimeSignals:
         """Build comprehensive signals object"""
         
