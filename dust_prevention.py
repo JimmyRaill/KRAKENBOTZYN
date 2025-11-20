@@ -82,8 +82,8 @@ class DustPrevention:
     def _get_exchange(self):
         """Get exchange instance (lazy load from ExchangeManager if needed)."""
         if self.exchange is None:
-            from exchange_manager import ExchangeManager
-            self.exchange = ExchangeManager.get_instance()
+            from exchange_manager import get_exchange
+            self.exchange = get_exchange()
         return self.exchange
     
     def get_minimum_order_size(self, symbol: str) -> Optional[Dict[str, float]]:
