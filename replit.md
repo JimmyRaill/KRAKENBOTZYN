@@ -41,6 +41,17 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 - **Autopilot Routing**: SHORT execution path wired through autopilot.py (action='short' → execute_market_short_entry)
 - **Current Status**: All code complete and tested. Regime detection tuning required - ADX threshold lowered to 17.0 for better downtrend capture. System ready for paper mode validation.
 
+**Dust Position Prevention (Nov 20, 2025)**:
+- **Problem**: Kraken rejects orders below asset-specific minimums (e.g., 0.00001 ASTER), causing stuck "dust" positions that cannot be sold
+- **Kraken Policy**: Each symbol has unique minimum order sizes (BTC=0.002, ETH=0.02, varies by asset). No automatic dust cleanup - dust positions remain until manually consolidated via "Buy Crypto" button at $1 minimum.
+- **Solution**: Comprehensive dust prevention system with 7% buffer on entry/exit validation
+- **Risk Update**: Increased position sizing to 2% of equity per trade (from 0.25%) for larger, more tradeable positions
+- **Components**:
+  - `dust_prevention.py`: Fetches/caches symbol-specific minimums from Kraken with 1-hour TTL
+  - `execution_manager.py`: Pre-flight validation with 7% buffer on all market entries/exits
+  - `position_tracker.py`: Dust detection warnings when positions fall below minimum
+  - `autopilot.py`: Skips exit attempts on dust positions to prevent API errors
+
 ## User Preferences
 - User prefers to be called: jimmy
 - Zyn's role: Financial servant who does ALL the work FOR jimmy

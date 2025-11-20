@@ -20,6 +20,13 @@ from pathlib import Path
 from loguru import logger
 import portalocker
 
+try:
+    from dust_prevention import get_dust_prevention
+    DUST_PREVENTION_ENABLED = True
+except ImportError:
+    DUST_PREVENTION_ENABLED = False
+    logger.warning("[POSITION-TRACKER] Dust prevention not available")
+
 
 POSITIONS_FILE = Path("open_positions.json")
 LOCK_FILE = Path("open_positions.lock")  # Dedicated lock file for interprocess synchronization
@@ -409,6 +416,49 @@ def check_exit_trigger(symbol: str, current_price: float) -> Optional[str]:
             return "take_profit"
     
     return None
+
+
+def check_if_dust_position(symbol: str, current_price: float) -> bool:
+    """
+    Check if a position has become dust (below Kraken minimum tradeable size).
+    
+    This can happen when:
+    - Position was partially closed
+    - Fees reduced the position size
+    - Precision rounding errors accumulated
+    
+    Args:
+        symbol: Trading pair
+        current_price: Current market price
+    
+    Returns:
+        True if position is dust, False otherwise
+    """
+    if not DUST_PREVENTION_ENABLED:
+        return False
+    
+    position = get_position(symbol)
+    if not position:
+        return False
+    
+    try:
+        dust_prevention = get_dust_prevention()
+        is_dust = dust_prevention.is_dust_position(symbol, position.quantity, current_price)
+        
+        if is_dust:
+            logger.warning(
+                f"[POSITION-TRACKER] ⚠️  DUST DETECTED: {symbol} position {position.quantity:.8f} "
+                f"is below Kraken minimum - cannot be sold via normal orders"
+            )
+            logger.warning(
+                f"[POSITION-TRACKER] Manual action required: Consolidate via Kraken 'Buy Crypto' button ($1 minimum)"
+            )
+        
+        return is_dust
+        
+    except Exception as e:
+        logger.error(f"[POSITION-TRACKER] Failed to check dust status for {symbol}: {e}")
+        return False
 
 
 def check_all_positions_for_exits(price_fetcher) -> List[Dict]:

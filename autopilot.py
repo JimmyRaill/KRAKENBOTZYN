@@ -38,7 +38,7 @@ from fee_model import get_minimum_edge_pct, get_taker_fee
 from execution_manager import execute_market_entry, execute_market_exit, has_open_position
 
 # POSITION TRACKING: Mental SL/TP for market-only mode
-from position_tracker import add_position, check_all_positions_for_exits, get_position_summary
+from position_tracker import add_position, check_all_positions_for_exits, get_position_summary, check_if_dust_position
 
 # Bracket order manager - OPTIONAL (only used if USE_BRACKETS=True)
 # Type hints for LSP
@@ -662,6 +662,12 @@ def loop_once(ex, symbols: List[str]) -> None:
             print(f"   Entry: ${position.entry_price:.4f} → Current: ${current_price:.4f}")
             print(f"   Target: ${position.stop_loss_price if trigger == 'stop_loss' else position.take_profit_price:.4f}")
             print(f"{'='*60}\n")
+            
+            # DUST PREVENTION: Check if position is dust before attempting exit
+            if check_if_dust_position(sym, current_price):
+                print(f"⚠️  [DUST-SKIP] {sym} - Position is DUST (below Kraken minimum), skipping exit attempt")
+                print(f"   Manual action required: Consolidate via Kraken 'Buy Crypto' button")
+                continue
             
             # Execute market SELL
             reason = f"{trigger}_trigger_{current_price:.4f}"

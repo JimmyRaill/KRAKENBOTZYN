@@ -12,6 +12,7 @@ from loguru import logger
 
 from exchange_manager import get_exchange, get_mode_str
 from rate_limiter import wait_for_rate_limit, record_order_executed
+from dust_prevention import get_dust_prevention
 
 
 # Telemetry logging (optional - graceful degradation if not available)
@@ -104,20 +105,21 @@ def execute_market_entry(
         # Calculate quantity
         quantity = size_usd / current_price
         
-        # Check exchange minimums
-        market = exchange.market(symbol) or {}
-        limits = market.get("limits") or {}
-        min_amt = float((limits.get("amount") or {}).get("min", 0) or 0)
-        min_cost = float((limits.get("cost") or {}).get("min", 0) or 0)
+        # DUST PREVENTION: Validate against Kraken minimums with 7% buffer
+        dust_prevention = get_dust_prevention()
+        is_valid, dust_reason = dust_prevention.validate_order_size(symbol, quantity, current_price, apply_buffer=True)
         
-        if min_amt > 0 and quantity < min_amt:
-            logger.warning(f"[MARKET-ENTRY] {symbol} - Adjusting quantity from {quantity:.6f} to minimum {min_amt:.6f}")
-            quantity = min_amt * 1.01  # 1% buffer
-        
-        if min_cost > 0 and (quantity * current_price) < min_cost:
-            min_qty = min_cost / current_price
-            logger.warning(f"[MARKET-ENTRY] {symbol} - Adjusting quantity from {quantity:.6f} to meet min_cost ${min_cost:.2f} ({min_qty:.6f})")
-            quantity = min_qty * 1.01  # 1% buffer
+        if not is_valid:
+            # Calculate minimum required quantity
+            min_qty = dust_prevention.calculate_minimum_trade_size(symbol, current_price, apply_buffer=True)
+            if min_qty:
+                logger.warning(f"[MARKET-ENTRY] {symbol} - Dust prevention: {dust_reason}")
+                logger.warning(f"[MARKET-ENTRY] {symbol} - Adjusting quantity from {quantity:.8f} to {min_qty:.8f} (7% above minimum)")
+                quantity = min_qty
+            else:
+                error_msg = f"Dust prevention: {dust_reason} - could not calculate safe minimum"
+                logger.error(f"[MARKET-ENTRY] ❌ {symbol} - {error_msg}")
+                return ExecutionResult(success=False, error=error_msg)
         
         # Precision formatting
         quantity = float(exchange.amount_to_precision(symbol, quantity))
@@ -271,6 +273,16 @@ def execute_market_exit(
         # Get current price for logging
         ticker = exchange.fetch_ticker(symbol)
         current_price = ticker.get('last') or ticker.get('close') or ticker.get('bid', 0)
+        
+        # DUST PREVENTION: Check if position is dust (below minimum tradeable size)
+        dust_prevention = get_dust_prevention()
+        is_dust = dust_prevention.is_dust_position(symbol, quantity, current_price)
+        
+        if is_dust:
+            error_msg = f"Position is DUST (below Kraken minimum) - cannot sell {quantity:.8f} {symbol.split('/')[0]}"
+            logger.warning(f"[MARKET-EXIT] ⚠️  {symbol} - {error_msg}")
+            logger.warning(f"[MARKET-EXIT] {symbol} - Dust positions must be consolidated via Kraken 'Buy Crypto' button ($1 minimum)")
+            return ExecutionResult(success=False, error=error_msg)
         
         logger.info(f"[MARKET-EXIT] {symbol} - Placing market SELL: {quantity:.6f} units @ ~${current_price:.4f}")
         

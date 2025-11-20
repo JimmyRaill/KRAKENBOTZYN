@@ -55,10 +55,10 @@ class MarketFilters:
 class RiskConfig:
     """Risk management parameters"""
     # Position sizing
-    risk_per_trade_pct: float = 0.0025  # 0.25% of equity per trade
+    risk_per_trade_pct: float = 0.02  # 2% of equity per trade (jimmy's updated risk tolerance)
     max_active_risk_pct: float = 0.02   # Max 2% total risk across all positions
     max_position_size_pct: float = 0.10  # Max 10% of equity in one position
-    max_position_usd: float = 15.0  # Max position size in USD (default $15)
+    max_position_usd: float = 50.0  # Max position size in USD (increased for 2% risk trades)
     
     # Trade limits
     max_trades_per_day: int = 10  # Per symbol

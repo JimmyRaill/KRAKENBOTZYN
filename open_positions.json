@@ -7,6 +7,62 @@
     "take_profit_price": 1.2900942857142856,
     "atr": 0.004421428571428576,
     "entry_timestamp": 1763582446.843629,
-    "source": "autopilot"
+    "source": "autopilot",
+    "is_short": false
+  },
+  "AAVE/USD": {
+    "symbol": "AAVE/USD",
+    "entry_price": 176.44,
+    "quantity": 0.0,
+    "stop_loss_price": 174.7757142857143,
+    "take_profit_price": 178.9364285714286,
+    "atr": 0.8321428571428616,
+    "entry_timestamp": 1763650253.2671268,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "AKT/USD": {
+    "symbol": "AKT/USD",
+    "entry_price": 0.5484,
+    "quantity": 0.0,
+    "stop_loss_price": 0.5443857142857143,
+    "take_profit_price": 0.5544214285714285,
+    "atr": 0.00200714285714285,
+    "entry_timestamp": 1763650323.9407346,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "APR/USD": {
+    "symbol": "APR/USD",
+    "entry_price": 0.27375,
+    "quantity": 0.0,
+    "stop_loss_price": 0.27332,
+    "take_profit_price": 0.274395,
+    "atr": 0.00021500000000000092,
+    "entry_timestamp": 1763650338.6984863,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "ADA/USD": {
+    "symbol": "ADA/USD",
+    "entry_price": 0.464979,
+    "quantity": 0.0,
+    "stop_loss_price": 0.4600838571428571,
+    "take_profit_price": 0.4723217142857143,
+    "atr": 0.00244757142857143,
+    "entry_timestamp": 1763650781.5990603,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "APT/USD": {
+    "symbol": "APT/USD",
+    "entry_price": 2.9964,
+    "quantity": 0.0,
+    "stop_loss_price": 2.9791,
+    "take_profit_price": 3.0223500000000003,
+    "atr": 0.008650000000000047,
+    "entry_timestamp": 1763650848.799291,
+    "source": "autopilot",
+    "is_short": false
   }
 }
