@@ -50,7 +50,7 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 - **Entry Condition Fix**: Changed SHORT entry from `price < sma20*0.98` (too restrictive) to `price <= sma20` (shorts at resistance)
 - **Formatting Bug Fixes**: Fixed f-string formatting crashes when SMA20 or RSI were None
 - **Validation Results**: TREND_DOWN regime detecting correctly (confidence 0.80), 6 SHORT signals generated in test cycle (ETH, XRP, ADA, DOGE, DOT, ARB)
-- **Action Taken (Nov 21)**: Disabled SHORT trading via `enable_shorts=False` until Kraken margin is activated by user
+- **Action Taken (Nov 21)**: Disabled SHORT trading via `enable_shorts=False` in trading_config.py. Fixed environment variable default (`ENABLE_SHORTS` default changed from "true" → "false") to prevent config override. System verified running in LONG-only mode - downtrend signals now generate HOLD instead of SHORT.
 
 **Dust Position Prevention (Nov 20, 2025)**:
 - **Problem**: Kraken rejects orders below asset-specific minimums (e.g., 0.00001 ASTER), causing stuck "dust" positions that cannot be sold
