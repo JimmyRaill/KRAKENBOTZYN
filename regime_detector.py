@@ -248,11 +248,17 @@ class RegimeDetector:
                 avg_volume = statistics.mean(recent_volumes)
                 volume_elevated = volume > (avg_volume * self.config.regime.volume_spike_multiplier)
         
-        # Higher timeframe context
-        htf_sma20 = ind_htf.get('sma20', price)
-        htf_sma50 = ind_htf.get('sma50', price)
-        htf_bullish = (price > htf_sma20) and (htf_sma20 > htf_sma50)
-        htf_bearish = (price < htf_sma20) and (htf_sma20 < htf_sma50)
+        # Higher timeframe context - use dominant_trend from MTF analysis
+        # This avoids key mismatches and leverages already-calculated HTF trends
+        if htf_dominant_trend:
+            htf_bullish = (htf_dominant_trend == 'up')
+            htf_bearish = (htf_dominant_trend == 'down')
+        else:
+            # Fallback: try to infer from HTF indicators if available
+            htf_sma20 = ind_htf.get('sma20', price)
+            htf_sma50 = ind_htf.get('sma50', price)
+            htf_bullish = (price > htf_sma20) and (htf_sma20 > htf_sma50)
+            htf_bearish = (price < htf_sma20) and (htf_sma20 < htf_sma50)
         
         return RegimeSignals(
             sma20=sma20,

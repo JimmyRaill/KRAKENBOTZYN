@@ -120,11 +120,12 @@ class StrategyOrchestrator:
             'atr_1h': htf.atr_1h or 0.0,
         }
         
-        # Step 2: Detect regime
+        # Step 2: Detect regime (pass HTF dominant trend to avoid key mismatches)
         regime_result = self.regime_detector.detect_regime(
             ohlcv_5m=ohlcv_5m,
             indicators_5m=indicators_5m,
-            indicators_htf=indicators_htf
+            indicators_htf=indicators_htf,
+            htf_dominant_trend=htf.dominant_trend
         )
         
         logger.info(
@@ -289,7 +290,7 @@ class StrategyOrchestrator:
         
         # Get indicators for quality checks
         rsi = indicators_5m.get('rsi')
-        sma20 = indicators_5m.get('sma_fast')
+        sma20 = indicators_5m.get('sma20')  # Fixed: match autopilot's indicator key
         atr = indicators_5m.get('atr')
         volume = ohlcv_5m[-1][5] if len(ohlcv_5m) > 0 else 0
         
@@ -306,9 +307,9 @@ class StrategyOrchestrator:
                 symbol=symbol
             )
         
-        # Short entry: Look for rally into resistance (SMA20) for better entry
-        if sma20 and price < sma20 * 0.98:
-            # Price is below SMA20, good short entry zone
+        # Short entry: Price at or below SMA20 resistance in confirmed downtrend
+        if sma20 and price <= sma20:
+            # Price is at/below SMA20 resistance - good short entry zone
             atr_multiplier = self.config.indicators.atr_stop_multiplier
             stop_loss = price + (atr_multiplier * atr) if atr else price * 1.02
             
@@ -316,11 +317,12 @@ class StrategyOrchestrator:
             if htf.htf_aligned:
                 confidence = 0.85
             
+            rsi_str = f"{rsi:.1f}" if rsi else "N/A"
             return TradeSignal(
                 action='short',
                 regime=regime_result.regime,
                 confidence=confidence,
-                reason=f"TREND_DOWN short: price={price:.2f} below SMA20={sma20:.2f}, RSI={rsi:.1f if rsi else 0}, HTF={htf.dominant_trend}",
+                reason=f"TREND_DOWN short: price={price:.2f} at/below SMA20={sma20:.2f}, RSI={rsi_str}, HTF={htf.dominant_trend}",
                 entry_price=price,
                 stop_loss=stop_loss,
                 htf_aligned=htf.htf_aligned,
@@ -329,11 +331,12 @@ class StrategyOrchestrator:
             )
         
         # Wait for better entry (rally to SMA20)
+        sma20_str = f"{sma20:.2f}" if sma20 else "N/A"
         return TradeSignal(
             action='hold',
             regime=regime_result.regime,
             confidence=0.0,
-            reason=f"TREND_DOWN but waiting for rally (price={price:.2f}, SMA20={sma20:.2f if sma20 else 'N/A'})",
+            reason=f"TREND_DOWN but waiting for rally (price={price:.2f}, SMA20={sma20_str})",
             entry_price=price,
             htf_aligned=htf.htf_aligned,
             dominant_trend=htf.dominant_trend,

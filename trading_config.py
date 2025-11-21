@@ -84,7 +84,7 @@ class RiskConfig:
 class RegimeConfig:
     """Market regime detection thresholds"""
     # ADX thresholds (AGGRESSIVE: lowered for more trading opportunities)
-    adx_threshold: float = 12.0  # ADX > 12 = trending market (lowered to 12.0 to match observed market ADX 11-14)
+    adx_threshold: float = 10.0  # ADX > 10 = trending market (lowered to 10.0 to match observed ADX 10.5-11.8)
     min_adx: float = 8.0  # ADX < 8 = dead market (was 10)
     
     # Volatility thresholds (AGGRESSIVE: lowered to trade quieter markets)
