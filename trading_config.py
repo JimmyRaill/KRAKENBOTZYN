@@ -75,7 +75,7 @@ class RiskConfig:
     min_risk_reward_ratio: float = 1.5  # Minimum 1.5R
     
     # Margin/Short Selling Controls
-    enable_shorts: bool = True  # Enable short selling via margin (default ON for bidirectional trading)
+    enable_shorts: bool = False  # DISABLED - Margin trading not enabled on Kraken account (requires manual activation)
     max_leverage: float = 1.0  # HARD CAP at 2.0, default 1.0 (no leverage)
     max_margin_exposure_pct: float = 0.5  # Max 50% of equity in margin positions
 
