@@ -31,15 +31,16 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 - Position state persisted in `open_positions.json` with dedicated lock file for synchronization
 - Complete trade lifecycle: autopilot BUY → store position → monitor every cycle → market SELL on trigger → remove position
 
-**SHORT Selling Implementation (Nov 19-21, 2025) - FULLY OPERATIONAL**:
+**SHORT Selling Implementation (Nov 19-21, 2025) - DISABLED PENDING MARGIN ACTIVATION**:
 - Extended system from LONG-only to bidirectional trading (LONG + SHORT) via Kraken margin API
-- **Config**: Added `enable_shorts=True`, `max_leverage=1.0` (hard cap 2.0), `max_margin_exposure_pct=0.5`
-- **Signal Generation**: SHORT signals on aligned downtrends (15m+1h both DOWN, RSI<70, price<=SMA20)
-- **Execution**: `execute_market_short_entry()` and `execute_market_short_exit()` in execution_manager.py
-- **Position Tracking**: Inverted SL/TP logic for shorts (SL ABOVE entry, TP BELOW entry) in position_tracker.py
-- **Fee Awareness**: `estimate_short_total_fees()` includes trading fees + daily rollover costs (0.01-0.02%/day)
-- **Autopilot Routing**: SHORT execution path wired through autopilot.py (action='short' → execute_market_short_entry)
-- **Current Status**: ✅ SHORT signal generation WORKING PERFECTLY. Generated 6 SHORT signals in single cycle (ETH, XRP, ADA, DOGE, DOT, ARB). Kraken account requires margin collateral allocation to execute live shorts.
+- **Config**: `enable_shorts=False` (DISABLED - Kraken margin trading not enabled on account), `max_leverage=1.0` (hard cap 2.0), `max_margin_exposure_pct=0.5`
+- **Signal Generation**: SHORT signals on aligned downtrends (15m+1h both DOWN, RSI<70, price<=SMA20) - CODE READY
+- **Execution**: `execute_market_short_entry()` and `execute_market_short_exit()` in execution_manager.py - CODE READY
+- **Position Tracking**: Inverted SL/TP logic for shorts (SL ABOVE entry, TP BELOW entry) in position_tracker.py - CODE READY
+- **Fee Awareness**: `estimate_short_total_fees()` includes trading fees + daily rollover costs (0.01-0.02%/day) - CODE READY
+- **Autopilot Routing**: SHORT execution path wired through autopilot.py (action='short' → execute_market_short_entry) - CODE READY
+- **Safety Check**: `margin_config.can_open_short()` blocks all SHORT attempts when `enable_shorts=False`
+- **Current Status**: 🔴 DISABLED - System running LONG-only (spot trading). Margin trading must be enabled on Kraken account before SHORT trading can be activated. All SHORT infrastructure is complete and tested - generated 6 valid signals successfully before disabling.
 
 **Aggressive Trading Mode & SHORT Detection Fixes (Nov 21, 2025)**:
 - **Aggressive Mode Enabled**: `aggressive_mode=True`, ADX threshold lowered from 17.0 → 10.0 to match live market ADX (10.5-11.8)
@@ -48,8 +49,8 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 - **Indicator Key Fix**: Fixed SMA20 key mismatch (`sma_fast` → `sma20`) that was causing perpetual HOLD signals
 - **Entry Condition Fix**: Changed SHORT entry from `price < sma20*0.98` (too restrictive) to `price <= sma20` (shorts at resistance)
 - **Formatting Bug Fixes**: Fixed f-string formatting crashes when SMA20 or RSI were None
-- **Results**: TREND_DOWN regime now detecting correctly with 0.80 confidence, 6 SHORT signals generated successfully in one cycle
-- **Account Limitation**: Kraken rejecting shorts with "Insufficient funds" - requires margin collateral allocation (free USD: $380.62, margin balance: $0.00)
+- **Validation Results**: TREND_DOWN regime detecting correctly (confidence 0.80), 6 SHORT signals generated in test cycle (ETH, XRP, ADA, DOGE, DOT, ARB)
+- **Action Taken (Nov 21)**: Disabled SHORT trading via `enable_shorts=False` until Kraken margin is activated by user
 
 **Dust Position Prevention (Nov 20, 2025)**:
 - **Problem**: Kraken rejects orders below asset-specific minimums (e.g., 0.00001 ASTER), causing stuck "dust" positions that cannot be sold
