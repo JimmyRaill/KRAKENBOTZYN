@@ -329,10 +329,11 @@ class SignalEngine:
         # ALL FILTERS PASSED - GENERATE SIGNAL
         # =====================================================================
         
+        rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
         signal_msg = (
             f"All filters passed: {direction.upper()} on SMA{self.ind_cfg.sma_fast} crossover "
             f"(price={current_close:.2f}, SMA{self.ind_cfg.sma_fast}={sma_fast:.2f}, "
-            f"SMA{self.ind_cfg.sma_slow}={sma_slow:.2f}, RSI={rsi:.1f if rsi else 'N/A'}, "
+            f"SMA{self.ind_cfg.sma_slow}={sma_slow:.2f}, RSI={rsi_str}, "
             f"ATR={atr:.2f})"
         )
         

@@ -215,11 +215,12 @@ class StrategyOrchestrator:
                 )
         
         # No pullback yet - hold
+        sma20_str = f"{sma20:.2f}" if sma20 is not None else "N/A"
         return TradeSignal(
             action='hold',
             regime=regime_result.regime,
             confidence=0.0,
-            reason=f"TREND_UP but no pullback (price={price:.2f}, SMA20={sma20:.2f if sma20 else 'N/A'})",
+            reason=f"TREND_UP but no pullback (price={price:.2f}, SMA20={sma20_str})",
             entry_price=price,
             htf_aligned=htf.htf_aligned,
             dominant_trend=htf.dominant_trend,
