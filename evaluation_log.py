@@ -4,7 +4,7 @@ Records every 5-minute evaluation with indicators, decisions, and reasons.
 """
 
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from loguru import logger
@@ -342,7 +342,7 @@ def register_executed_order(
         cursor.execute("""
             INSERT INTO executed_orders (
                 timestamp_utc, order_id, symbol, side, order_type,
-                quantity, price, status, trading_mode, source,
+                quantity, entry_price, status, trading_mode, source,
                 trade_reason, parent_order_id, fill_status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (

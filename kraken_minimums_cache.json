@@ -1,28 +1,8 @@
 {
-  "timestamp": "2025-11-20T16:14:31.763405",
+  "timestamp": "2025-11-23T16:12:38.601646",
   "minimums": {
-    "ASTER/USD": {
-      "amount": 2.0,
-      "cost": 0.5
-    },
-    "AAVE/USD": {
-      "amount": 0.015,
-      "cost": 0.5
-    },
-    "AKT/USD": {
-      "amount": 1.2,
-      "cost": 0.5
-    },
-    "APR/USD": {
-      "amount": 25.0,
-      "cost": 0.5
-    },
-    "ADA/USD": {
-      "amount": 4.4,
-      "cost": 0.5
-    },
-    "APT/USD": {
-      "amount": 0.4,
+    "UNI/USD": {
+      "amount": 0.3,
       "cost": 0.5
     }
   }

@@ -1,7 +1,9 @@
 {
-  "current_date": "2025-11-21",
-  "total_trades_today": 0,
-  "trades_by_symbol": {},
+  "current_date": "2025-11-23",
+  "total_trades_today": 1,
+  "trades_by_symbol": {
+    "UNI/USD": 1
+  },
   "max_trades_per_symbol": 10000,
   "max_total_trades": 10000
 }

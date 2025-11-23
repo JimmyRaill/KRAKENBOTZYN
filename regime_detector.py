@@ -329,8 +329,8 @@ class RegimeDetector:
         if not (s.price_above_sma20 and s.sma20_above_sma50):
             return False
         
-        # Higher timeframe confirmation
-        if not s.htf_bullish:
+        # Higher timeframe safety: block if HTF is bearish, allow if neutral or bullish
+        if s.htf_bearish:
             return False
         
         return True
@@ -345,8 +345,8 @@ class RegimeDetector:
         if s.price_above_sma20 or s.sma20_above_sma50:
             return False
         
-        # Higher timeframe confirmation
-        if not s.htf_bearish:
+        # Higher timeframe safety: block if HTF is bullish, allow if neutral or bearish
+        if s.htf_bullish:
             return False
         
         return True

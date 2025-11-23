@@ -1,1 +1,13 @@
-{}
+{
+  "UNI/USD": {
+    "symbol": "UNI/USD",
+    "entry_price": 6.235,
+    "quantity": 0.0,
+    "stop_loss_price": 6.201714285714286,
+    "take_profit_price": 6.284928571428571,
+    "atr": 0.01664285714285699,
+    "entry_timestamp": 1763914359.4269774,
+    "source": "autopilot",
+    "is_short": false
+  }
+}
