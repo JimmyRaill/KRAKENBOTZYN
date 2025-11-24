@@ -1,12 +1,56 @@
 {
-  "UNI/USD": {
-    "symbol": "UNI/USD",
-    "entry_price": 6.235,
+  "BTC/USD": {
+    "symbol": "BTC/USD",
+    "entry_price": 87411.0,
     "quantity": 0.0,
-    "stop_loss_price": 6.201714285714286,
-    "take_profit_price": 6.284928571428571,
-    "atr": 0.01664285714285699,
-    "entry_timestamp": 1763914359.4269774,
+    "stop_loss_price": 86948.47142857143,
+    "take_profit_price": 88104.79285714286,
+    "atr": 231.2642857142855,
+    "entry_timestamp": 1763952924.0916352,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "DOGE/USD": {
+    "symbol": "DOGE/USD",
+    "entry_price": 0.1462641,
+    "quantity": 233.86224014,
+    "stop_loss_price": 0.14540057142857143,
+    "take_profit_price": 0.14755939285714287,
+    "atr": 0.0004317642857142867,
+    "entry_timestamp": 1763915223.5151384,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "LINK/USD": {
+    "symbol": "LINK/USD",
+    "entry_price": 12.61511,
+    "quantity": 2.71148532,
+    "stop_loss_price": 12.546964285714285,
+    "take_profit_price": 12.717328571428572,
+    "atr": 0.03407285714285736,
+    "entry_timestamp": 1763915251.2528553,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "ALGO/USD": {
+    "symbol": "ALGO/USD",
+    "entry_price": 0.14236,
+    "quantity": 240.41364556,
+    "stop_loss_price": 0.14162999999999998,
+    "take_profit_price": 0.143455,
+    "atr": 0.0003650000000000022,
+    "entry_timestamp": 1763916399.7593749,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "XRP/USD": {
+    "symbol": "XRP/USD",
+    "entry_price": 2.07813,
+    "quantity": 16.43229329,
+    "stop_loss_price": 2.057545714285714,
+    "take_profit_price": 2.1090064285714285,
+    "atr": 0.010292142857142876,
+    "entry_timestamp": 1763954066.590272,
     "source": "autopilot",
     "is_short": false
   }

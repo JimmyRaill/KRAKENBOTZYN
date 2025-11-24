@@ -6,6 +6,7 @@ Completely bypasses bracket order system when USE_BRACKETS=False.
 """
 
 import time
+import os
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Tuple
 from loguru import logger
@@ -13,6 +14,13 @@ from loguru import logger
 from exchange_manager import get_exchange, get_mode_str
 from rate_limiter import wait_for_rate_limit, record_order_executed
 from dust_prevention import get_dust_prevention
+
+
+# Settlement polling configuration (prevents false fills from Kraken delays)
+SETTLEMENT_MAX_ATTEMPTS = int(os.getenv("SETTLEMENT_MAX_ATTEMPTS", "5"))
+SETTLEMENT_INITIAL_WAIT = float(os.getenv("SETTLEMENT_INITIAL_WAIT", "0.5"))
+SETTLEMENT_MAX_WAIT = float(os.getenv("SETTLEMENT_MAX_WAIT", "3.0"))
+SETTLEMENT_BACKOFF_MULTIPLIER = float(os.getenv("SETTLEMENT_BACKOFF_MULTIPLIER", "1.5"))
 
 
 # Telemetry logging (optional - graceful degradation if not available)
@@ -142,6 +150,60 @@ def execute_market_entry(
         # Extract fill details with defensive None checks
         order_id = order.get('id', 'UNKNOWN')
         filled_qty = float(order.get('filled') or 0)
+        
+        # CRITICAL FIX: Settlement delay polling to prevent false fills
+        if filled_qty == 0:
+            logger.warning(f"[MARKET-ENTRY] {symbol} - Kraken returned filled=0 (settlement delay), polling for actual fill...")
+            
+            # Poll for settlement with exponential backoff
+            max_attempts = SETTLEMENT_MAX_ATTEMPTS
+            wait_seconds = SETTLEMENT_INITIAL_WAIT
+            
+            for attempt in range(1, max_attempts + 1):
+                logger.info(f"[MARKET-ENTRY] {symbol} - Settlement poll attempt {attempt}/{max_attempts} (waiting {wait_seconds}s)...")
+                time.sleep(wait_seconds)
+                
+                try:
+                    fetched_order = exchange.fetch_order(order_id, symbol)
+                    order_status = fetched_order.get('status', 'unknown')
+                    fetched_filled = float(fetched_order.get('filled') or 0)
+                    order_cost = float(fetched_order.get('cost') or 0)
+                    
+                    logger.info(f"[MARKET-ENTRY] {symbol} - Poll result: status={order_status}, filled={fetched_filled:.6f}, cost=${order_cost:.2f}")
+                    
+                    # SUCCESS: Order filled and cost > 0 confirms real execution
+                    if fetched_filled > 0 and order_cost > 0:
+                        logger.info(f"[MARKET-ENTRY] {symbol} - Settlement confirmed: {fetched_filled:.6f} @ ${order_cost/fetched_filled:.4f}")
+                        filled_qty = fetched_filled
+                        order = fetched_order  # Update with settled order
+                        break
+                    
+                    # PARTIAL FILL: Accept it but warn
+                    elif fetched_filled > 0 and order_cost == 0:
+                        logger.warning(f"[MARKET-ENTRY] {symbol} - Partial fill detected: {fetched_filled:.6f} (cost not yet settled)")
+                        filled_qty = fetched_filled
+                        order = fetched_order
+                        break
+                    
+                    # REJECTED/CANCELLED: Fail immediately
+                    elif order_status in ('canceled', 'cancelled', 'rejected', 'expired'):
+                        error_msg = f"Order {order_status}: {order_id}"
+                        logger.error(f"[MARKET-ENTRY] ❌ {symbol} - {error_msg}")
+                        return ExecutionResult(success=False, error=error_msg)
+                    
+                    # STILL PENDING: Continue polling with backoff
+                    wait_seconds = min(wait_seconds * SETTLEMENT_BACKOFF_MULTIPLIER, SETTLEMENT_MAX_WAIT)
+                    
+                except Exception as fetch_err:
+                    logger.warning(f"[MARKET-ENTRY] {symbol} - Poll attempt {attempt} failed: {fetch_err}")
+                    wait_seconds = min(wait_seconds * SETTLEMENT_BACKOFF_MULTIPLIER, SETTLEMENT_MAX_WAIT)
+            
+            # TIMEOUT: Fail rather than fabricate fills
+            if filled_qty == 0:
+                error_msg = f"Settlement timeout after {max_attempts} attempts - cannot confirm fill (order_id: {order_id})"
+                logger.error(f"[MARKET-ENTRY] ❌ {symbol} - {error_msg}")
+                logger.error(f"[MARKET-ENTRY] {symbol} - Manual reconciliation required - check Kraken order {order_id}")
+                return ExecutionResult(success=False, error=error_msg)
         
         # Defensive: ensure fill_price never gets None
         avg_price = order.get('average')
@@ -302,6 +364,60 @@ def execute_market_exit(
         # Extract fill details with defensive None checks
         order_id = order.get('id', 'UNKNOWN')
         filled_qty = float(order.get('filled') or 0)
+        
+        # CRITICAL FIX: Settlement delay polling to prevent false fills
+        if filled_qty == 0:
+            logger.warning(f"[MARKET-EXIT] {symbol} - Kraken returned filled=0 (settlement delay), polling for actual fill...")
+            
+            # Poll for settlement with exponential backoff
+            max_attempts = SETTLEMENT_MAX_ATTEMPTS
+            wait_seconds = SETTLEMENT_INITIAL_WAIT
+            
+            for attempt in range(1, max_attempts + 1):
+                logger.info(f"[MARKET-EXIT] {symbol} - Settlement poll attempt {attempt}/{max_attempts} (waiting {wait_seconds}s)...")
+                time.sleep(wait_seconds)
+                
+                try:
+                    fetched_order = exchange.fetch_order(order_id, symbol)
+                    order_status = fetched_order.get('status', 'unknown')
+                    fetched_filled = float(fetched_order.get('filled') or 0)
+                    order_cost = float(fetched_order.get('cost') or 0)
+                    
+                    logger.info(f"[MARKET-EXIT] {symbol} - Poll result: status={order_status}, filled={fetched_filled:.6f}, cost=${order_cost:.2f}")
+                    
+                    # SUCCESS: Order filled and cost > 0 confirms real execution
+                    if fetched_filled > 0 and order_cost > 0:
+                        logger.info(f"[MARKET-EXIT] {symbol} - Settlement confirmed: {fetched_filled:.6f} @ ${order_cost/fetched_filled:.4f}")
+                        filled_qty = fetched_filled
+                        order = fetched_order  # Update with settled order
+                        break
+                    
+                    # PARTIAL FILL: Accept it but warn
+                    elif fetched_filled > 0 and order_cost == 0:
+                        logger.warning(f"[MARKET-EXIT] {symbol} - Partial fill detected: {fetched_filled:.6f} (cost not yet settled)")
+                        filled_qty = fetched_filled
+                        order = fetched_order
+                        break
+                    
+                    # REJECTED/CANCELLED: Fail immediately
+                    elif order_status in ('canceled', 'cancelled', 'rejected', 'expired'):
+                        error_msg = f"Order {order_status}: {order_id}"
+                        logger.error(f"[MARKET-EXIT] ❌ {symbol} - {error_msg}")
+                        return ExecutionResult(success=False, error=error_msg)
+                    
+                    # STILL PENDING: Continue polling with backoff
+                    wait_seconds = min(wait_seconds * SETTLEMENT_BACKOFF_MULTIPLIER, SETTLEMENT_MAX_WAIT)
+                    
+                except Exception as fetch_err:
+                    logger.warning(f"[MARKET-EXIT] {symbol} - Poll attempt {attempt} failed: {fetch_err}")
+                    wait_seconds = min(wait_seconds * SETTLEMENT_BACKOFF_MULTIPLIER, SETTLEMENT_MAX_WAIT)
+            
+            # TIMEOUT: Fail rather than fabricate fills
+            if filled_qty == 0:
+                error_msg = f"Settlement timeout after {max_attempts} attempts - cannot confirm fill (order_id: {order_id})"
+                logger.error(f"[MARKET-EXIT] ❌ {symbol} - {error_msg}")
+                logger.error(f"[MARKET-EXIT] {symbol} - Manual reconciliation required - check Kraken order {order_id}")
+                return ExecutionResult(success=False, error=error_msg)
         
         # Defensive: ensure fill_price never gets None
         avg_price = order.get('average')
