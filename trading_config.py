@@ -214,9 +214,11 @@ class TradingConfig:
             config.regime.aggressive_rsi_max = float(aggressive_rsi)
         
         # Execution mode
+        # Supported values: MARKET_ONLY (default), BRACKET, LIMIT_BRACKET
         execution_mode_env = os.getenv("EXECUTION_MODE", "MARKET_ONLY")
-        config.execution_mode = execution_mode_env if execution_mode_env in ("MARKET_ONLY", "BRACKET") else "MARKET_ONLY"
-        config.use_brackets = os.getenv("USE_BRACKETS", "0") == "1" or config.execution_mode == "BRACKET"
+        valid_modes = ("MARKET_ONLY", "BRACKET", "LIMIT_BRACKET")
+        config.execution_mode = execution_mode_env if execution_mode_env in valid_modes else "MARKET_ONLY"
+        config.use_brackets = os.getenv("USE_BRACKETS", "0") == "1" or config.execution_mode in ("BRACKET", "LIMIT_BRACKET")
         
         # Feature flags
         config.enable_profit_target = os.getenv("ENABLE_PROFIT_TARGET", "0") == "1"

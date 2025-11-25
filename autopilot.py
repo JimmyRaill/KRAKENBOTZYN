@@ -34,8 +34,8 @@ from trading_config import get_config
 # FEE MODEL: Real-time Kraken fee tracking for fee-aware trading
 from fee_model import get_minimum_edge_pct, get_taker_fee
 
-# MARKET EXECUTION: Simplified market-only order execution
-from execution_manager import execute_market_entry, execute_market_exit, has_open_position
+# MARKET EXECUTION: Simplified market-only order execution with mode routing
+from execution_manager import execute_market_entry, execute_market_exit, has_open_position, execute_entry_with_mode
 
 # POSITION TRACKING: Mental SL/TP for market-only mode
 from position_tracker import add_position, check_all_positions_for_exits, get_position_summary, check_if_dust_position
@@ -223,6 +223,10 @@ print(
 # Import exchange manager early to show trading mode
 from exchange_manager import get_exchange, get_mode_str, is_paper_mode
 print(f"[BOOT] Trading mode: {get_mode_str().upper()} (paper={is_paper_mode()})", flush=True)
+
+# Log execution mode at startup for debugging
+_boot_config = get_config()
+print(f"[EXECUTION] Mode: {_boot_config.execution_mode}", flush=True)
 
 # -------------------------------------------------------------------
 # env helpers (typed)
@@ -1265,9 +1269,9 @@ def loop_once(ex, symbols: List[str]) -> None:
                     except Exception as fee_err:
                         print(f"[FEE-CHECK-ERR] {sym}: {fee_err} - proceeding without fee validation")
                     
-                    print(f"[MARKET-MODE] {sym} - Executing market BUY (no brackets)")
+                    print(f"[MARKET-MODE] {sym} - Executing BUY via execute_entry_with_mode()")
                     
-                    result = execute_market_entry(
+                    result = execute_entry_with_mode(
                         symbol=sym,
                         size_usd=usd_to_spend,
                         source="autopilot",

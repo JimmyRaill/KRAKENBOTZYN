@@ -875,3 +875,249 @@ def has_open_position(symbol: str) -> bool:
     """
     qty = get_position_quantity(symbol)
     return qty > 0
+
+
+def execute_limit_bracket_entry(
+    symbol: str,
+    size_usd: float,
+    source: str = "autopilot",
+    atr: Optional[float] = None,
+    reason: Optional[str] = None
+) -> ExecutionResult:
+    """
+    Execute limit entry order with TP/SL brackets using existing bracket_order_manager.
+    
+    This is a thin wrapper that:
+    1. Calculates bracket prices using BracketOrderManager
+    2. Places entry order with brackets via place_entry_with_brackets()
+    3. Returns an ExecutionResult consistent with market entry patterns
+    
+    Args:
+        symbol: Trading pair (e.g., "BTC/USD")
+        size_usd: Target position size in USD
+        source: Order source ("autopilot", "command", etc.)
+        atr: ATR value for bracket calculation
+        reason: Trade reason for telemetry
+    
+    Returns:
+        ExecutionResult with order details and success status
+    """
+    logger.info(f"[LIMIT-BRACKET-ENTRY] {symbol} - Attempting limit entry with brackets for ${size_usd:.2f} (source={source})")
+    
+    try:
+        from bracket_order_manager import get_bracket_manager
+        
+        exchange = get_exchange()
+        mode_str = get_mode_str()
+        
+        ticker = exchange.fetch_ticker(symbol)
+        current_price = ticker.get('last') or ticker.get('close') or ticker.get('ask', 0)
+        
+        if not current_price or current_price <= 0:
+            error_msg = f"Invalid price for {symbol}: {current_price}"
+            logger.error(f"[LIMIT-BRACKET-ENTRY] {error_msg}")
+            return ExecutionResult(success=False, error=error_msg)
+        
+        quantity = size_usd / current_price
+        quantity = float(exchange.amount_to_precision(symbol, quantity))
+        
+        manager = get_bracket_manager()
+        bracket_order = manager.calculate_bracket_prices(
+            symbol=symbol,
+            side="buy",
+            entry_price=current_price,
+            atr=atr
+        )
+        
+        if not bracket_order:
+            error_msg = f"Failed to calculate bracket prices for {symbol}"
+            logger.error(f"[LIMIT-BRACKET-ENTRY] {error_msg}")
+            return ExecutionResult(success=False, error=error_msg)
+        
+        bracket_order.quantity = quantity
+        bracket_order.recalculate_metrics()
+        
+        can_place, validation_msg, adjusted_qty = manager.validate_bracket_can_be_placed(
+            bracket_order, exchange, allow_adjust=True
+        )
+        
+        if not can_place:
+            error_msg = f"Bracket validation failed: {validation_msg}"
+            logger.error(f"[LIMIT-BRACKET-ENTRY] {error_msg}")
+            return ExecutionResult(success=False, error=error_msg)
+        
+        if adjusted_qty:
+            logger.info(f"[LIMIT-BRACKET-ENTRY] {symbol} - Quantity adjusted: {validation_msg}")
+            bracket_order.quantity = adjusted_qty
+            bracket_order.recalculate_metrics()
+        
+        rate_limit_ok = wait_for_rate_limit(symbol=symbol, max_wait_seconds=5.0)
+        if not rate_limit_ok:
+            error_msg = f"Rate limit timeout - cannot execute order safely"
+            logger.error(f"[LIMIT-BRACKET-ENTRY] {error_msg}")
+            return ExecutionResult(success=False, error=error_msg)
+        
+        success, message, order_result = manager.place_entry_with_brackets(bracket_order, exchange)
+        
+        record_order_executed(symbol=symbol)
+        
+        if not success:
+            error_msg = f"Bracket order placement failed: {message}"
+            logger.error(f"[LIMIT-BRACKET-ENTRY] ❌ {symbol} - {error_msg}")
+            return ExecutionResult(success=False, error=error_msg)
+        
+        order_id = 'UNKNOWN'
+        filled_qty = bracket_order.quantity
+        fill_price = current_price
+        total_cost = filled_qty * fill_price
+        fee = 0.0
+        fee_currency = "USD"
+        
+        if order_result:
+            order_id = order_result.get('txid', ['UNKNOWN'])[0] if isinstance(order_result.get('txid'), list) else order_result.get('id', 'UNKNOWN')
+            
+            fill_data = order_result.get('fill_data')
+            if fill_data:
+                filled_qty = float(fill_data.get('filled', filled_qty) or filled_qty)
+                fill_price = float(fill_data.get('average', fill_price) or fill_price)
+                total_cost = float(fill_data.get('cost', total_cost) or total_cost)
+                
+                fee_info = fill_data.get('fee') or {}
+                fee = float(fee_info.get('cost', 0) or 0)
+                fee_currency = fee_info.get('currency', 'USD')
+        
+        logger.info(
+            f"[LIMIT-BRACKET-ENTRY] ✅ {symbol} FILLED: {order_id}, "
+            f"qty={filled_qty:.6f} @ ${fill_price:.4f}, "
+            f"cost=${total_cost:.2f}, fee=${fee:.4f} {fee_currency}, "
+            f"SL=${bracket_order.stop_price:.4f}, TP=${bracket_order.take_profit_price:.4f}"
+        )
+        
+        if EVAL_LOG_ENABLED:
+            try:
+                register_executed_order(
+                    order_id=order_id,
+                    symbol=symbol,
+                    side='buy',
+                    order_type='limit_bracket',
+                    quantity=filled_qty,
+                    price=fill_price,
+                    status='filled',
+                    trading_mode=mode_str,
+                    source=source,
+                    timestamp_utc=datetime.now(timezone.utc).isoformat()
+                )
+            except Exception as log_err:
+                logger.error(f"[LIMIT-BRACKET-ENTRY] Failed to log to executed_orders: {log_err}")
+        
+        if TELEMETRY_ENABLED:
+            try:
+                log_trade(
+                    symbol=symbol,
+                    side='buy',
+                    action='open',
+                    quantity=filled_qty,
+                    price=fill_price,
+                    usd_amount=total_cost,
+                    order_id=order_id,
+                    reason=reason or 'limit_bracket_entry',
+                    source=source,
+                    mode=mode_str,
+                    trade_id=order_id,
+                    entry_price=fill_price,
+                    position_size=filled_qty
+                )
+            except Exception as telem_err:
+                logger.error(f"[LIMIT-BRACKET-ENTRY] Failed to log to telemetry: {telem_err}")
+        
+        return ExecutionResult(
+            success=True,
+            order_id=order_id,
+            filled_qty=filled_qty,
+            fill_price=fill_price,
+            total_cost=total_cost,
+            fee=fee,
+            fee_currency=fee_currency,
+            raw_response=order_result
+        )
+        
+    except ImportError as e:
+        error_msg = f"Bracket order manager not available: {e}"
+        logger.error(f"[LIMIT-BRACKET-ENTRY] {error_msg}")
+        return ExecutionResult(success=False, error=error_msg)
+    except Exception as e:
+        error_msg = f"Limit bracket entry failed: {str(e)}"
+        logger.error(f"[LIMIT-BRACKET-ENTRY] ❌ {symbol} - {error_msg}")
+        return ExecutionResult(success=False, error=error_msg)
+
+
+def execute_entry_with_mode(
+    symbol: str,
+    size_usd: float,
+    source: str = "autopilot",
+    atr: Optional[float] = None,
+    reason: Optional[str] = None
+) -> ExecutionResult:
+    """
+    Route trade entry behavior based on execution_mode configuration.
+    
+    This is the main entry point for trade execution in autopilot.
+    Routes to appropriate execution function based on EXECUTION_MODE env var.
+    
+    Supported modes:
+    - MARKET_ONLY (default): Uses execute_market_entry() - simple market orders
+    - LIMIT_BRACKET: Uses execute_limit_bracket_entry() - limit entry with TP/SL
+    
+    Args:
+        symbol: Trading pair (e.g., "BTC/USD")
+        size_usd: Target position size in USD
+        source: Order source ("autopilot", "command", etc.)
+        atr: ATR value for position sizing and brackets
+        reason: Trade reason for telemetry
+    
+    Returns:
+        ExecutionResult with order details and success status
+    """
+    from trading_config import get_config
+    
+    config = get_config()
+    execution_mode = config.execution_mode
+    
+    logger.info(f"[EXEC-ROUTER] {symbol} - Mode: {execution_mode}, Size: ${size_usd:.2f}")
+    
+    if execution_mode == "MARKET_ONLY":
+        return execute_market_entry(
+            symbol=symbol,
+            size_usd=size_usd,
+            source=source,
+            atr=atr,
+            reason=reason
+        )
+    
+    elif execution_mode == "LIMIT_BRACKET":
+        return execute_limit_bracket_entry(
+            symbol=symbol,
+            size_usd=size_usd,
+            source=source,
+            atr=atr,
+            reason=reason
+        )
+    
+    elif execution_mode == "BRACKET":
+        return execute_limit_bracket_entry(
+            symbol=symbol,
+            size_usd=size_usd,
+            source=source,
+            atr=atr,
+            reason=reason
+        )
+    
+    else:
+        logger.warning(f"[EXEC-ROUTER] Unknown execution_mode '{execution_mode}', falling back to MARKET_ONLY")
+        return execute_market_entry(
+            symbol=symbol,
+            size_usd=size_usd,
+            source=source,
+            atr=atr,
+            reason=reason
+        )
