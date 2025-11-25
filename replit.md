@@ -16,8 +16,12 @@ The bot provides a chat interface on port 5000 for real-time interaction and a d
 ### Technical Implementations
 The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural components include:
 
--   **Market-Only Execution System**: Pure market buy/sell orders.
-    -   **Execution Manager (`execution_manager.py`)**: Centralized market order execution with rate limiting, fee logging, and telemetry integration. Handles settlement polling with exponential backoff for accurate fill data.
+-   **Execution Mode System**: Supports multiple execution strategies via EXECUTION_MODE env var.
+    -   **Execution Manager (`execution_manager.py`)**: Centralized order execution with rate limiting, fee logging, and telemetry. Features `execute_entry_with_mode()` router that dispatches to appropriate execution strategy:
+        - `MARKET_ONLY` (default): Pure market buy/sell via `execute_market_entry()`
+        - `LIMIT_BRACKET`: Limit-maker entries with bracket TP/SL via `execute_limit_bracket_entry()` (Phase 1 infrastructure complete Nov 2025)
+        - `BRACKET`: Alias for LIMIT_BRACKET mode
+    -   Handles settlement polling with exponential backoff for accurate fill data.
     -   **Position Tracker (`position_tracker.py`)**: Implements "mental stop-loss/take-profit" using ATR-based levels (3x ATR for SL, 4.5x for TP - widened Nov 2025 to reduce stop-outs). Monitors positions and triggers market SELL. Uses `portalocker` for interprocess synchronization. Includes stop validation warning if ATR compression creates unexpectedly tight stops.
     -   **Fee Model (`fee_model.py`)**: Tracks real-time Kraken fees with caching, enabling fee-adjusted profitability checks.
     -   **Rate Limiter (`rate_limiter.py`)**: Enforces API call limits.
