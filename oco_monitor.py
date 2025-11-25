@@ -8,11 +8,14 @@ This module provides synthetic OCO logic:
 
 This prevents double-fills and maintains proper bracket order semantics.
 Runs as background task in reconciliation cycle (every 60 seconds).
+
+PHASE 2B-2: Full bracket exit handling with position_tracker cleanup.
 """
 
 from typing import List, Dict, Any, Optional
 from loguru import logger
 from evaluation_log import _get_connection
+from position_tracker import remove_position
 
 
 def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, int]:
@@ -115,6 +118,16 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
                         # Mark bracket as complete
                         _mark_bracket_complete(entry_id, "tp_filled", db)
                         
+                        # PHASE 2B-2: Clean up position_tracker
+                        try:
+                            removed = remove_position(symbol)
+                            if removed:
+                                logger.info(f"[OCO-MONITOR-{trading_mode}] ✅ Position closed (TP): {symbol}")
+                            else:
+                                logger.debug(f"[OCO-MONITOR-{trading_mode}] Position not in tracker: {symbol}")
+                        except Exception as pos_err:
+                            logger.warning(f"[OCO-MONITOR-{trading_mode}] Failed to remove position {symbol}: {pos_err}")
+                        
                     except Exception as e:
                         logger.error(f"[OCO-MONITOR-{trading_mode}] Failed to cancel SL {sl_id}: {e}")
                         stats["errors"] += 1
@@ -140,6 +153,16 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
                         # Mark bracket as complete
                         _mark_bracket_complete(entry_id, "sl_filled", db)
                         
+                        # PHASE 2B-2: Clean up position_tracker
+                        try:
+                            removed = remove_position(symbol)
+                            if removed:
+                                logger.info(f"[OCO-MONITOR-{trading_mode}] ✅ Position closed (SL): {symbol}")
+                            else:
+                                logger.debug(f"[OCO-MONITOR-{trading_mode}] Position not in tracker: {symbol}")
+                        except Exception as pos_err:
+                            logger.warning(f"[OCO-MONITOR-{trading_mode}] Failed to remove position {symbol}: {pos_err}")
+                        
                     except Exception as e:
                         logger.error(f"[OCO-MONITOR-{trading_mode}] Failed to cancel TP {tp_id}: {e}")
                         stats["errors"] += 1
@@ -148,6 +171,14 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
                 elif not tp_still_open and not sl_still_open:
                     logger.warning(f"[OCO-MONITOR-{trading_mode}] {symbol}: Both TP and SL closed ({tp_id}, {sl_id})")
                     _mark_bracket_complete(entry_id, "both_filled", db)
+                    
+                    # PHASE 2B-2: Clean up position_tracker even in edge case
+                    try:
+                        removed = remove_position(symbol)
+                        if removed:
+                            logger.info(f"[OCO-MONITOR-{trading_mode}] ✅ Position closed (both): {symbol}")
+                    except Exception as pos_err:
+                        logger.warning(f"[OCO-MONITOR-{trading_mode}] Failed to remove position {symbol}: {pos_err}")
                 
                 # Case 4: Both still open → Normal state, continue monitoring
                 else:
