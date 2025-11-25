@@ -1,5 +1,5 @@
 {
-  "timestamp": "2025-11-25T14:11:57.389506",
+  "timestamp": "2025-11-25T14:19:56.284813",
   "minimums": {
     "SOL/USD": {
       "amount": 0.02,
@@ -7,6 +7,10 @@
     },
     "ATOM/USD": {
       "amount": 0.5,
+      "cost": 0.5
+    },
+    "LTC/USD": {
+      "amount": 0.04,
       "cost": 0.5
     }
   }
