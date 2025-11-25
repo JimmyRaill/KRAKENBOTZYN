@@ -26,6 +26,8 @@ from multi_timeframe_context import get_mtf_context, HTFContext
 from trading_config import TradingConfig
 import candle_strategy as cs
 from loguru import logger
+from fee_model import compute_required_edge_pct
+from evaluation_log import log_evaluation
 
 
 @dataclass
@@ -75,6 +77,90 @@ class StrategyOrchestrator:
         logger.info(f"StrategyOrchestrator initialized (aggressive_mode={self.config.regime.aggressive_mode}, "
                    f"BB_threshold={self.config.regime.aggressive_bb_pct if self.config.regime.aggressive_mode else self.config.regime.conservative_bb_pct}%, "
                    f"RSI_max={self.config.regime.aggressive_rsi_max if self.config.regime.aggressive_mode else self.config.regime.conservative_rsi_max})")
+        
+        if self.config.fee_gate_enabled:
+            logger.info(f"[FEE-GATE] Fee gate ENABLED (safety_multiplier={self.config.fee_safety_multiplier})")
+        else:
+            logger.info("[FEE-GATE] Fee gate disabled (set FEE_GATE_ENABLED=1 to enable)")
+    
+    def _apply_fee_gate(self, signal: TradeSignal) -> TradeSignal:
+        """
+        Apply fee gate filter to actionable signals.
+        
+        For signals with action='long' or 'short':
+        1. Compute expected edge from TP vs entry price
+        2. Compare to required edge based on execution mode and fees
+        3. Log the decision with full transparency
+        4. If fee_gate_enabled and edge < required, convert to 'hold'
+        
+        Args:
+            signal: TradeSignal from strategy method
+            
+        Returns:
+            Original signal if passes gate, or modified 'hold' signal if blocked
+        """
+        if signal.action not in ('long', 'short'):
+            return signal
+        
+        if not signal.take_profit or not signal.entry_price:
+            logger.debug(f"[FEE-GATE] {signal.symbol} - skipping gate (no TP/entry)")
+            return signal
+        
+        if signal.action == 'long':
+            expected_edge_pct = ((signal.take_profit - signal.entry_price) / signal.entry_price) * 100
+        else:
+            expected_edge_pct = ((signal.entry_price - signal.take_profit) / signal.entry_price) * 100
+        
+        required_edge_pct = compute_required_edge_pct(
+            execution_mode=self.config.execution_mode,
+            fee_safety_multiplier=self.config.fee_safety_multiplier,
+            symbol=signal.symbol
+        )
+        
+        edge_sufficient = expected_edge_pct >= required_edge_pct
+        
+        from exchange_manager import get_mode_str
+        gate_result = "PASS" if edge_sufficient else "FAIL"
+        fee_gate_reason = (
+            f"FEE_GATE {gate_result}: {signal.action} edge={expected_edge_pct:.2f}% vs "
+            f"required={required_edge_pct:.2f}% (mode={self.config.execution_mode}, "
+            f"multiplier={self.config.fee_safety_multiplier}, gate_enabled={self.config.fee_gate_enabled})"
+        )
+        
+        log_evaluation(
+            symbol=signal.symbol,
+            decision=f"FEE_GATE_{gate_result}",
+            reason=fee_gate_reason,
+            trading_mode=get_mode_str(),
+            price=signal.entry_price,
+            regime=signal.regime.value if signal.regime else "unknown"
+        )
+        
+        if edge_sufficient:
+            logger.info(
+                f"[FEE-GATE] {signal.symbol} PASSED: edge={expected_edge_pct:.2f}% >= "
+                f"required={required_edge_pct:.2f}% ({signal.action})"
+            )
+            return signal
+        
+        logger.warning(
+            f"[FEE-GATE] {signal.symbol} INSUFFICIENT: edge={expected_edge_pct:.2f}% < "
+            f"required={required_edge_pct:.2f}%"
+        )
+        
+        if self.config.fee_gate_enabled:
+            return TradeSignal(
+                action='hold',
+                regime=signal.regime,
+                confidence=0.0,
+                reason=f"FEE_GATE blocked: edge={expected_edge_pct:.2f}% < required={required_edge_pct:.2f}% (fees + {self.config.fee_safety_multiplier}x buffer)",
+                entry_price=signal.entry_price,
+                htf_aligned=signal.htf_aligned,
+                dominant_trend=signal.dominant_trend,
+                symbol=signal.symbol
+            )
+        
+        return signal
     
     def generate_signal(
         self,
@@ -135,22 +221,25 @@ class StrategyOrchestrator:
         
         # Step 3: Route to strategy based on regime
         if regime_result.regime == MarketRegime.NO_TRADE:
-            return self._no_trade_signal(symbol, price, regime_result, htf)
+            signal = self._no_trade_signal(symbol, price, regime_result, htf)
         
         elif regime_result.regime == MarketRegime.TREND_UP:
-            return self._trend_up_strategy(symbol, price, ohlcv_5m, indicators_5m, regime_result, htf)
+            signal = self._trend_up_strategy(symbol, price, ohlcv_5m, indicators_5m, regime_result, htf)
         
         elif regime_result.regime == MarketRegime.TREND_DOWN:
-            return self._trend_down_strategy(symbol, price, ohlcv_5m, indicators_5m, regime_result, htf)
+            signal = self._trend_down_strategy(symbol, price, ohlcv_5m, indicators_5m, regime_result, htf)
         
         elif regime_result.regime == MarketRegime.RANGE:
-            return self._range_strategy(symbol, price, ohlcv_5m, indicators_5m, regime_result, htf)
+            signal = self._range_strategy(symbol, price, ohlcv_5m, indicators_5m, regime_result, htf)
         
         elif regime_result.regime == MarketRegime.BREAKOUT_EXPANSION:
-            return self._breakout_strategy(symbol, price, ohlcv_5m, indicators_5m, regime_result, htf)
+            signal = self._breakout_strategy(symbol, price, ohlcv_5m, indicators_5m, regime_result, htf)
         
         else:
-            return self._no_trade_signal(symbol, price, regime_result, htf, "Unknown regime")
+            signal = self._no_trade_signal(symbol, price, regime_result, htf, "Unknown regime")
+        
+        # Step 4: Apply fee gate filter to actionable signals
+        return self._apply_fee_gate(signal)
     
     def _trend_up_strategy(
         self,
