@@ -19,15 +19,17 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
 -   **Execution Mode System**: Supports multiple execution strategies via EXECUTION_MODE env var.
     -   **Execution Manager (`execution_manager.py`)**: Centralized order execution with rate limiting, fee logging, and telemetry. Features `execute_entry_with_mode()` router that dispatches to appropriate execution strategy:
         - `MARKET_ONLY` (default): Pure market buy/sell via `execute_market_entry()`
-        - `LIMIT_BRACKET`: Limit-maker entries with bracket TP/SL via `execute_limit_bracket_entry()` - **PHASE 2A+2B-1 COMPLETE (Nov 2025)**:
+        - `LIMIT_BRACKET`: Limit-maker entries with bracket TP/SL via `execute_limit_bracket_entry()` - **PHASE 2A+2B COMPLETE (Nov 2025)**:
           - Maker-friendly pricing: BUY orders 0.2% below market, SELL orders 0.2% above (configurable via LIMIT_OFFSET_PCT)
           - Timeout/retry loop: 120s timeout per attempt (LIMIT_TIMEOUT_SECONDS), up to 3 retries (LIMIT_MAX_RETRIES)
           - Safe order cancellation with Kraken eventual consistency handling
           - Optional market fallback (LIMIT_FALLBACK_TO_MARKET=1) when all limit retries exhaust
           - Fee reduction target: 0.16% maker fee vs 0.26% taker fee
           - **Phase 2B-1**: Position tracker integration - bracket entries now tracked in `position_tracker.py` with real SL/TP prices (not recalculated mental levels)
+          - **Phase 2B-2**: OCO monitor cleans up position_tracker when TP/SL orders fill - dual tracking synchronized (pending_child_orders in SQLite AND open_positions.json for dashboard)
           - Fill data extraction improved to handle nested `fill_data` structure from `bracket_order_manager.py`
         - `BRACKET`: Alias for LIMIT_BRACKET mode
+    -   **OCO Monitor (`oco_monitor.py`)**: Synthetic OCO (One-Cancels-Other) for LIMIT_BRACKET mode - when TP fills, cancels SL and cleans up position_tracker; when SL fills, cancels TP and cleans up position_tracker. Runs in reconciliation cycle.
     -   Handles settlement polling with exponential backoff for accurate fill data.
     -   **Position Tracker (`position_tracker.py`)**: Implements "mental stop-loss/take-profit" using ATR-based levels (3x ATR for SL, 4.5x for TP - widened Nov 2025 to reduce stop-outs). Monitors positions and triggers market SELL. Uses `portalocker` for interprocess synchronization. Includes stop validation warning if ATR compression creates unexpectedly tight stops.
     -   **Fee Model (`fee_model.py`)**: Tracks real-time Kraken fees with caching, enabling fee-adjusted profitability checks.
