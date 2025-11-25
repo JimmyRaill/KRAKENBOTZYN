@@ -1,6 +1,6 @@
 {
   "current_date": "2025-11-25",
-  "total_trades_today": 15,
+  "total_trades_today": 16,
   "trades_by_symbol": {
     "SOL/USD": 2,
     "ATOM/USD": 1,
@@ -14,7 +14,8 @@
     "BTC/USD": 1,
     "LINK/USD": 1,
     "UNI/USD": 1,
-    "DOGE/USD": 1
+    "DOGE/USD": 1,
+    "OP/USD": 1
   },
   "max_trades_per_symbol": 10000,
   "max_total_trades": 10000

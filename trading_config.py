@@ -141,6 +141,10 @@ class TradingConfig:
     limit_max_retries: int = 3            # Max retry attempts for limit entries
     limit_fallback_to_market: bool = False  # Fallback to market order if limit times out
     
+    # Fee gate settings (Phase 3A - fee-aware minimum edge filter)
+    fee_gate_enabled: bool = False         # Default OFF - set FEE_GATE_ENABLED=1 to enable
+    fee_safety_multiplier: float = 1.5     # Required edge = round_trip_fees * this multiplier
+    
     # Feature flags
     enable_profit_target: bool = False
     enable_api_watchdog: bool = False
@@ -249,6 +253,16 @@ class TradingConfig:
                 print(f"[CONFIG-WARN] LIMIT_MAX_RETRIES invalid: '{limit_retries_env}', using default 3")
         
         config.limit_fallback_to_market = os.getenv("LIMIT_FALLBACK_TO_MARKET", "0") == "1"
+        
+        # Fee gate settings (Phase 3A)
+        config.fee_gate_enabled = os.getenv("FEE_GATE_ENABLED", "0") == "1"
+        
+        fee_multiplier_env = os.getenv("FEE_SAFETY_MULTIPLIER")
+        if fee_multiplier_env:
+            try:
+                config.fee_safety_multiplier = float(fee_multiplier_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] FEE_SAFETY_MULTIPLIER invalid: '{fee_multiplier_env}', using default 1.5")
         
         # Feature flags
         config.enable_profit_target = os.getenv("ENABLE_PROFIT_TARGET", "0") == "1"

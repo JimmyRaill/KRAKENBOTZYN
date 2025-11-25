@@ -315,6 +315,63 @@ def get_maker_fee(symbol: Optional[str] = None) -> float:
     return get_fee_model().get_maker_fee(symbol)
 
 
+def compute_required_edge_pct(
+    execution_mode: str = "MARKET_ONLY",
+    fee_safety_multiplier: float = 1.5,
+    symbol: Optional[str] = None
+) -> float:
+    """
+    Compute the minimum expected edge (%) required to justify a trade,
+    based on fees and a safety multiplier.
+    
+    This is a conservative rule of thumb intended as a gate to filter out
+    trades where expected profit is too small to overcome fees. Can be refined
+    in later phases with more sophisticated edge calculations.
+    
+    PHASE 3A: Simple approximation based on execution mode:
+    
+    For MARKET_ONLY:
+        round_trip_fee_pct = taker_fee * 2
+        (Both entry and exit are market orders)
+    
+    For LIMIT_BRACKET / BRACKET:
+        round_trip_fee_pct = maker_fee + max(maker_fee, taker_fee)
+        (Entry is maker, exit could be maker TP or taker SL - conservative estimate)
+    
+    Then: required_edge_pct = round_trip_fee_pct * fee_safety_multiplier
+    
+    Args:
+        execution_mode: "MARKET_ONLY", "LIMIT_BRACKET", or "BRACKET"
+        fee_safety_multiplier: Multiplier for safety margin (default 1.5)
+        symbol: Trading pair (optional, for future per-pair fee support)
+    
+    Returns:
+        Required edge as percentage (e.g., 0.78 for 0.78%)
+    """
+    try:
+        maker_fee = get_maker_fee(symbol)
+        taker_fee = get_taker_fee(symbol)
+        
+        if execution_mode in ("LIMIT_BRACKET", "BRACKET"):
+            round_trip_fee_pct = maker_fee + max(maker_fee, taker_fee)
+        else:
+            round_trip_fee_pct = taker_fee * 2
+        
+        required_edge_pct = round_trip_fee_pct * fee_safety_multiplier * 100
+        
+        logger.debug(
+            f"[FEE-GATE] mode={execution_mode}, maker={maker_fee*100:.4f}%, "
+            f"taker={taker_fee*100:.4f}%, round_trip={round_trip_fee_pct*100:.4f}%, "
+            f"multiplier={fee_safety_multiplier}, required_edge={required_edge_pct:.4f}%"
+        )
+        
+        return required_edge_pct
+        
+    except Exception as e:
+        logger.warning(f"[FEE-GATE] Failed to compute required edge: {e} - using conservative default")
+        return 0.78  # Conservative default (0.26% * 2 * 1.5)
+
+
 def get_minimum_edge_pct(safety_margin: float = 0.1) -> float:
     """
     Get minimum edge needed to cover fees profitably.

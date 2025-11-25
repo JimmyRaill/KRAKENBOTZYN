@@ -1,0 +1,258 @@
+You are working on the existing KrakenTradingBot project in Replit.
+
+This is PHASE 3A of a long-term, incremental upgrade.
+Zyn is being upgraded over MANY sessions, so all changes must be:
+- Small and controlled,
+- Backwards compatible,
+- Easy to extend later,
+- Simple to reason about when we return in later phases.
+
+PHASE 3A GOAL (FEE-AWARE STRATEGY FILTER + DECISION LOGGING):
+1. Add a **fee-aware minimum edge gate** that can optionally block trades when expected edge is too small to beat fees.
+2. Add **clear decision logging** so we can see:
+   - Expected edge (%),
+   - Required minimum edge (%),
+   - Whether the trade was allowed or blocked,
+   - The reason for “NO_TRADE”.
+3. Keep this behavior behind a config flag so it can be turned ON/OFF.
+4. MARKET_ONLY behavior must remain unchanged when the fee gate is disabled.
+
+At the end of this prompt, you MUST:
+- Re-read every file you edited,
+- Double-check all logic, imports, and signatures,
+- Confirm there are no syntax errors,
+- Confirm that when the fee gate is DISABLED, behavior is identical to today,
+- Provide a clear summary of what changed so we can build on it later.
+
+==================================================
+        STEP 0 — READ THESE FILES FIRST
+==================================================
+
+Before editing anything, OPEN and READ these files from the repo:
+
+- trading_config.py
+- fee_model.py
+- strategy_orchestrator.py
+- autopilot.py         (READ-ONLY unless strictly needed)
+- trading_limits.py    (READ-ONLY for context, if present)
+- risk_manager.py      (READ-ONLY for context, if present)
+
+You MUST base your work on the real code:
+- Do NOT guess function names or signatures,
+- Do NOT invent new fields if matching ones already exist,
+- Do NOT rewrite large sections of any file.
+
+==================================================
+ STEP 1 — ADD FEE-GATE CONFIG (SAFE, DEFAULT-OFF)
+==================================================
+
+In trading_config.py:
+
+1. Add new config parameters for the fee gate, with safe defaults:
+
+   - fee_gate_enabled: bool
+     - Default: False
+     - Load from env var FEE_GATE_ENABLED ("0"/"1"), fallback to False.
+
+   - fee_safety_multiplier: float
+     - Default: 1.5
+     - Load from env var FEE_SAFETY_MULTIPLIER, fallback to "1.5".
+
+   Example pattern (adapt to the project’s style):
+
+   fee_gate_enabled: bool = os.getenv("FEE_GATE_ENABLED", "0") == "1"
+   fee_safety_multiplier: float = float(os.getenv("FEE_SAFETY_MULTIPLIER", "1.5"))
+
+2. Do NOT change existing config semantics.
+3. These settings should be used ONLY by the new fee-aware edge gate logic for now.
+
+==================================================
+ STEP 2 — ADD A FEE-AWARE MINIMUM EDGE HELPER
+==================================================
+
+In fee_model.py:
+
+1. Check if a helper already exists for minimum edge requirements (e.g. get_minimum_edge_pct or similar from prior analysis).
+
+2. If such a function exists:
+   - Extend it to accept:
+     - execution_mode (e.g. "MARKET_ONLY", "LIMIT_BRACKET"),
+     - fee_safety_multiplier,
+     - and any other relevant data needed to decide minimum edge.
+
+   If no such function exists:
+   - Create a new helper function with a clear name, for example:
+
+     def compute_required_edge_pct(symbol, execution_mode, config) -> float:
+         """
+         Compute the minimum expected edge (%) required to justify a trade,
+         based on fees and a safety multiplier.
+         """
+
+3. For now, use a **simple, robust approximation**:
+
+   For MARKET_ONLY:
+   - Approximate round-trip fee % as:
+     round_trip_fee_pct = taker_fee * 2
+
+   For LIMIT_BRACKET:
+   - Approximate round-trip fee % as:
+     - Best case (TP): maker entry + maker TP
+     - Worst case (SL): maker entry + taker SL
+   - Take a conservative estimate, e.g.:
+     round_trip_fee_pct = maker_fee + max(maker_fee, taker_fee)
+
+   Then:
+   - required_edge_pct = round_trip_fee_pct * fee_safety_multiplier
+
+4. Use existing functions like get_maker_fee() / get_taker_fee() if they already exist.
+   - Do NOT invent new fee logic if equivalent helpers already exist.
+
+5. The helper should return a float (e.g. 0.01 for 1% or 1.0 for 1%) consistent with how edge is represented in the rest of the project. Match the existing convention.
+
+6. Document clearly in a docstring that this is a conservative rule of thumb intended to be used as a gate and can be refined in later phases.
+
+==================================================
+ STEP 3 — INTEGRATE FEE GATE INTO STRATEGY DECISION FLOW
+==================================================
+
+In strategy_orchestrator.py:
+
+1. Locate the part of the code where:
+   - A trade candidate is evaluated,
+   - The “edge” / “score” / “expected edge” is computed,
+   - A decision is made whether to OPEN a trade or return NO_TRADE.
+
+   This might be in a main evaluation loop or in a function that returns a TradeDecision or similar.
+
+2. Add logic to:
+
+   - Read the fee gate settings from config (fee_gate_enabled, fee_safety_multiplier).
+   - Determine the current execution_mode (e.g. passed via context or imported from trading_config).
+   - Call the helper from fee_model.py to compute required_edge_pct.
+
+   Then, for each potential entry:
+
+   - Let edge_pct be the current strategy’s estimated edge (use the existing representation).
+   - Let required_edge_pct be from the fee_model helper.
+
+   If fee_gate_enabled is False:
+   - Do NOT block trades.
+   - Only log the comparison (see Step 4).
+
+   If fee_gate_enabled is True:
+   - If edge_pct < required_edge_pct:
+     - Mark the decision as NO_TRADE (or equivalent “skip” decision),
+     - Attach a clear reason such as "FEE_GATE: edge 0.8% < required 1.2%",
+     - Ensure NO order is sent to execution_manager for that symbol.
+
+   - If edge_pct >= required_edge_pct:
+     - Allow the trade as normal.
+
+3. Do NOT change how other NO_TRADE reasons are computed.
+   - Simply add this as one more filter in the chain.
+
+4. Ensure this logic is applied to ALL strategies that produce entries (trend-following, mean-reversion, etc.) in a consistent way.
+
+==================================================
+ STEP 4 — DECISION LOGGING (WHY TRADE VS NO_TRADE)
+==================================================
+
+In strategy_orchestrator.py (and/or autopilot.py if that’s where logging happens):
+
+1. When a trade is considered, add logging that includes:
+
+   - Symbol / pair,
+   - Timeframe (if available),
+   - edge_pct,
+   - required_edge_pct,
+   - execution_mode,
+   - Whether the fee gate is enabled,
+   - The final decision: TRADE or NO_TRADE,
+   - If NO_TRADE due to fee gate, include a reason containing a clear tag like "FEE_GATE".
+
+   Example log messages (adapt to the real logging system):
+
+   [DECISION] SYMBOL=BTC/USD edge=1.0% required_edge=1.5% mode=LIMIT_BRACKET fee_gate=ON → NO_TRADE (FEE_GATE)
+   [DECISION] SYMBOL=XRP/USD edge=2.3% required_edge=1.5% mode=LIMIT_BRACKET fee_gate=ON → TRADE
+
+2. If the fee gate is disabled (fee_gate_enabled=False):
+   - Still log edge and required_edge_pct,
+   - But indicate fee_gate=OFF and never block based on it.
+
+   Example:
+
+   [DECISION] SYMBOL=ETH/USD edge=0.7% required_edge=1.1% mode=MARKET_ONLY fee_gate=OFF → TRADE (gate disabled)
+
+3. Ensure logs are not excessively noisy, but provide enough context to debug behavior later.
+
+==================================================
+ STEP 5 — NO STRATEGY FORMULA CHANGES YET
+==================================================
+
+In PHASE 3A, you MUST NOT:
+
+- Change how edge_pct itself is calculated (no change to indicators/ATR/RSI logic),
+- Change strategy parameters,
+- Change risk position sizing,
+- Change exit logic.
+
+The ONLY new behavior introduced should be:
+- A config-controlled fee gate that can block trades when edge is too small to beat fees,
+- Decision logging that shows edge vs required_edge and whether the gate triggered.
+
+==================================================
+ STEP 6 — MANDATORY SELF-REVIEW & SANITY CHECK
+==================================================
+
+Before you finish, you MUST:
+
+1. Re-read ALL files you changed:
+   - trading_config.py
+   - fee_model.py
+   - strategy_orchestrator.py
+   - (and autopilot.py ONLY if you modified it)
+
+2. Verify:
+   - No syntax errors,
+   - All imports resolve,
+   - All functions called actually exist,
+   - edge_pct and required_edge_pct are on a consistent scale,
+   - When fee_gate_enabled=False, behavior is exactly as before (no trades blocked by the new logic).
+
+3. Think through the flows:
+
+   fee_gate_enabled = False:
+     - Strategy computes edge as before.
+     - Fee model computes required_edge_pct.
+     - Decision logging prints both, but does NOT block trades based on fee.
+
+   fee_gate_enabled = True:
+     - Strategy computes edge.
+     - Fee model computes required_edge_pct.
+     - If edge < required_edge → NO_TRADE (FEE_GATE).
+     - If edge >= required_edge → TRADE as before.
+
+4. Confirm explicitly (in your final response) that:
+   - MARKET_ONLY mode behavior is unchanged when the gate is off,
+   - LIMIT_BRACKET mode now has a fee-aware decision gate available when enabled,
+   - No unrelated code paths were affected.
+
+==================================================
+ STEP 7 — SUMMARY OUTPUT (REQUIRED FOR FUTURE PHASES)
+==================================================
+
+At the end of your answer, output a concise summary including:
+
+- Which files you edited,
+- What new config variables you added,
+- What helper(s) you added or modified in fee_model.py,
+- Where in strategy_orchestrator the fee gate logic lives,
+- What the log lines look like when:
+  - a trade is allowed,
+  - a trade is blocked by the fee gate,
+- How to enable/disable the fee gate via environment variables.
+
+This summary is crucial so we can build more strategy improvements on top of this in later phases.
+
+End of build request (PHASE 3A).
