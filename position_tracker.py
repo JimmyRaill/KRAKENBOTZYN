@@ -32,6 +32,12 @@ POSITIONS_FILE = Path("open_positions.json")
 LOCK_FILE = Path("open_positions.lock")  # Dedicated lock file for interprocess synchronization
 LOCK_TIMEOUT = 10.0  # Maximum seconds to wait for file lock
 
+# PHASE 2B-2: Ensure lock file exists at module load to prevent FileNotFoundError
+# This is defensive - 'a+' mode also creates the file, but this ensures it exists early
+if not LOCK_FILE.exists():
+    LOCK_FILE.touch()
+    logger.debug(f"[POSITION-TRACKER] Created lock file: {LOCK_FILE}")
+
 
 class Position:
     """Represents an open position with mental SL/TP levels"""

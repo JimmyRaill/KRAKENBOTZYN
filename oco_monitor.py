@@ -118,13 +118,16 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
                         # Mark bracket as complete
                         _mark_bracket_complete(entry_id, "tp_filled", db)
                         
-                        # PHASE 2B-2: Clean up position_tracker
+                        # PHASE 2B-2: Clean up position_tracker (non-blocking - bracket already marked complete above)
                         try:
                             removed = remove_position(symbol)
                             if removed:
                                 logger.info(f"[OCO-MONITOR-{trading_mode}] ✅ Position closed (TP): {symbol}")
                             else:
                                 logger.debug(f"[OCO-MONITOR-{trading_mode}] Position not in tracker: {symbol}")
+                        except FileNotFoundError as fnf_err:
+                            # Lock file may not exist yet - non-fatal, position_tracker will create on next add
+                            logger.warning(f"[OCO-MONITOR-{trading_mode}] Lock file not found, skipping cleanup: {fnf_err}")
                         except Exception as pos_err:
                             logger.warning(f"[OCO-MONITOR-{trading_mode}] Failed to remove position {symbol}: {pos_err}")
                         
@@ -153,13 +156,16 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
                         # Mark bracket as complete
                         _mark_bracket_complete(entry_id, "sl_filled", db)
                         
-                        # PHASE 2B-2: Clean up position_tracker
+                        # PHASE 2B-2: Clean up position_tracker (non-blocking - bracket already marked complete above)
                         try:
                             removed = remove_position(symbol)
                             if removed:
                                 logger.info(f"[OCO-MONITOR-{trading_mode}] ✅ Position closed (SL): {symbol}")
                             else:
                                 logger.debug(f"[OCO-MONITOR-{trading_mode}] Position not in tracker: {symbol}")
+                        except FileNotFoundError as fnf_err:
+                            # Lock file may not exist yet - non-fatal, position_tracker will create on next add
+                            logger.warning(f"[OCO-MONITOR-{trading_mode}] Lock file not found, skipping cleanup: {fnf_err}")
                         except Exception as pos_err:
                             logger.warning(f"[OCO-MONITOR-{trading_mode}] Failed to remove position {symbol}: {pos_err}")
                         
@@ -172,11 +178,13 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
                     logger.warning(f"[OCO-MONITOR-{trading_mode}] {symbol}: Both TP and SL closed ({tp_id}, {sl_id})")
                     _mark_bracket_complete(entry_id, "both_filled", db)
                     
-                    # PHASE 2B-2: Clean up position_tracker even in edge case
+                    # PHASE 2B-2: Clean up position_tracker even in edge case (non-blocking)
                     try:
                         removed = remove_position(symbol)
                         if removed:
                             logger.info(f"[OCO-MONITOR-{trading_mode}] ✅ Position closed (both): {symbol}")
+                    except FileNotFoundError as fnf_err:
+                        logger.warning(f"[OCO-MONITOR-{trading_mode}] Lock file not found, skipping cleanup: {fnf_err}")
                     except Exception as pos_err:
                         logger.warning(f"[OCO-MONITOR-{trading_mode}] Failed to remove position {symbol}: {pos_err}")
                 
