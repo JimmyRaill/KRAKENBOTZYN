@@ -1,11 +1,11 @@
 {
   "current_date": "2025-11-25",
-  "total_trades_today": 14,
+  "total_trades_today": 15,
   "trades_by_symbol": {
     "SOL/USD": 2,
     "ATOM/USD": 1,
     "LTC/USD": 1,
-    "XRP/USD": 1,
+    "XRP/USD": 2,
     "AAVE/USD": 1,
     "AVAX/USD": 1,
     "ETH/USD": 1,

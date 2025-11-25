@@ -1367,11 +1367,18 @@ def loop_once(ex, symbols: List[str]) -> None:
                         continue
                     
                     # Extract actual fill info from order result
+                    # NOTE: Fill data is nested inside order_result['fill_data'] from bracket_order_manager
                     actual_qty = approx_qty  # Default to estimate
                     actual_price = price
                     if order_result:
-                        actual_qty = order_result.get('filled', approx_qty)
-                        actual_price = order_result.get('average', price) or price
+                        fill_data = order_result.get('fill_data', {})
+                        if fill_data:
+                            actual_qty = fill_data.get('filled', approx_qty)
+                            actual_price = fill_data.get('average', price) or price
+                        else:
+                            # Fallback for direct keys (legacy or immediate fills)
+                            actual_qty = order_result.get('filled', approx_qty)
+                            actual_price = order_result.get('average', price) or price
                     
                     print(f"✅ [TRADE-SUCCESS] {sym} - Entry filled: {actual_qty:.6f} @ ${actual_price:.4f} | TP/SL attached via Kraken conditional close")
                     
@@ -1401,6 +1408,45 @@ def loop_once(ex, symbols: List[str]) -> None:
                             print(f"[TARGET-RECORD-ERR] {e}")
                     
                     trade_log.append({"symbol": sym, "action": "buy_with_brackets", "usd": float(f"{usd_to_spend:.2f}")})
+                    
+                    # POSITION TRACKER: Store position for monitoring alongside exchange orders
+                    # This ensures position_tracker.py tracks the position with actual SL/TP prices
+                    try:
+                        bracket_sl_price = bracket_order.stop_price if bracket_order else None
+                        bracket_tp_price = bracket_order.take_profit_price if bracket_order else None
+                        
+                        if bracket_sl_price and bracket_tp_price and actual_qty > 0:
+                            # Create Position with ACTUAL bracket prices (not mental recalculation)
+                            from position_tracker import Position, _load_positions_locked, _save_positions_locked, LOCK_FILE
+                            import portalocker
+                            
+                            position = Position(
+                                symbol=sym,
+                                entry_price=actual_price,
+                                quantity=actual_qty,
+                                stop_loss_price=bracket_sl_price,
+                                take_profit_price=bracket_tp_price,
+                                atr=atr if atr and atr > 0 else actual_price * 0.02,
+                                entry_timestamp=time.time(),
+                                source="bracket_order",
+                                is_short=False
+                            )
+                            
+                            # Store with exclusive lock
+                            with open(LOCK_FILE, 'a+') as lock_handle:
+                                portalocker.lock(lock_handle, portalocker.LOCK_EX)
+                                try:
+                                    positions = _load_positions_locked(lock_handle)
+                                    positions[sym] = position
+                                    _save_positions_locked(positions, lock_handle)
+                                finally:
+                                    portalocker.unlock(lock_handle)
+                            
+                            print(f"📍 [BRACKET-POSITION-STORED] {sym} - SL=${bracket_sl_price:.4f}, TP=${bracket_tp_price:.4f} (real orders on Kraken)")
+                        else:
+                            print(f"⚠️  [BRACKET-POSITION-SKIP] {sym} - Missing SL/TP prices or qty, position not tracked")
+                    except Exception as pos_err:
+                        print(f"[BRACKET-POSITION-ERR] {sym}: {pos_err} - position not tracked in position_tracker!")
                     
                     # SUCCESS: Brackets are GUARANTEED by atomic order (conditional close API)
                     # No emergency flatten needed - if brackets fail, the entire order is rejected

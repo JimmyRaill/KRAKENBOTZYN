@@ -1,0 +1,239 @@
+You are working on the existing KrakenTradingBot project in Replit.
+
+This is PHASE 2B-1 of a long-term, incremental upgrade.
+Zyn is being upgraded over MANY sessions, so all changes must be:
+- Small and controlled,
+- Easy to extend later,
+- Backwards compatible,
+- Safe to reason about when we come back in future phases.
+
+PHASE 2B-1 GOAL (BASIC BRACKET EXITS):
+For LIMIT_BRACKET mode ONLY, ensure that AFTER a successful entry fill:
+- A REAL take-profit LIMIT order is placed,
+- A REAL stop-loss STOP-MARKET order is placed,
+- Their order IDs and levels are tracked in the existing state structures (pending_child_orders / position tracker),
+- MARKET_ONLY behavior remains unchanged,
+- No OCO / cancel-on-fill behavior is modified yet (that will be PHASE 2B-2).
+
+You are NOT building full OCO behavior yet.
+You are ONLY ensuring that TP + SL are properly created and tracked after a filled LIMIT_BRACKET entry.
+
+At the end of this prompt, you MUST:
+- Re-read every file you edited,
+- Double-check logic and imports,
+- Confirm no syntax errors,
+- Confirm MARKET_ONLY mode still behaves exactly as before,
+- Provide a clear summary of changes so we can continue in PHASE 2B-2.
+
+==================================================
+        STEP 0 — READ THESE FILES FIRST
+==================================================
+
+Before editing anything, OPEN and READ these files from the repo:
+
+- bracket_order_manager.py
+- execution_manager.py  (READ-ONLY unless absolutely necessary)
+- oco_monitor.py        (READ-ONLY in this phase)
+- position_tracker.py
+- evaluation_log.py
+- trading_config.py     (READ-ONLY in this phase)
+
+You MUST base your work on the REAL code.
+Do NOT assume function names or signatures.
+Do NOT invent new primitives if equivalent ones already exist.
+
+==================================================
+     STEP 1 — IDENTIFY EXISTING BRACKET EXIT LOGIC
+==================================================
+
+In bracket_order_manager.py:
+
+1. Locate the function that handles placing:
+   - The bracket entry order,
+   - And/or the follow-up TP/SL orders.
+   From prior analysis, this was likely place_entry_with_brackets(...) or similar.
+
+2. Determine:
+   - Where in that flow the entry fill is processed.
+   - Where (if anywhere) a TP limit and/or SL order are currently being placed.
+   - How child order IDs (TP/SL) are recorded (if at all).
+
+In evaluation_log.py and/or any DB helper:
+
+1. Identify how pending_child_orders (or equivalent) is defined and used:
+   - Which fields store entry_id, tp_order_id, sl_order_id, symbol, etc.
+   - How inserts/updates are done today.
+
+In position_tracker.py:
+
+1. Determine how open positions are currently represented and tracked.
+2. Identify fields for:
+   - entry_price
+   - stop_loss_price / take_profit_price (if they exist)
+   - symbol / side / size
+
+Do NOT modify anything yet. This step is purely for grounding.
+
+==================================================
+     STEP 2 — DEFINE THE “AFTER ENTRY FILL” HOOK
+==================================================
+
+In bracket_order_manager.py:
+
+1. Identify the exact place in the LIMIT_BRACKET path where:
+   - A limit entry order has been placed AND confirmed FILLED (full fill, not timeout/no-fill).
+
+2. Create a small, clearly named helper function to handle post-fill bracket setup, for example:
+
+   def setup_bracket_after_fill(symbol, side, amount, entry_price, context, config, entry_order_id):
+       """
+       After a successful LIMIT_BRACKET entry fill, place TP and SL orders
+       and record them in the appropriate tracking structures.
+       """
+
+   Adjust parameter names/types to match existing patterns:
+   - Use whatever “context” object / config structure the project already uses.
+   - Use real side representations (“buy”/“sell” or enums) consistent with existing code.
+
+3. This helper should ONLY be called once it is confirmed that:
+   - The entry order is fully filled, AND
+   - We are in LIMIT_BRACKET mode.
+
+4. Do NOT call oco_monitor here. That will remain separate and is for PHASE 2B-2.
+
+==================================================
+  STEP 3 — PLACE REAL TP LIMIT & SL STOP-MARKET ORDERS
+==================================================
+
+In setup_bracket_after_fill(...) (or its equivalent):
+
+1. Determine TP and SL prices from existing risk/ATR logic:
+   - Reuse the same calculations currently used for “mental” SL/TP in bracket_order_manager or position_tracker.
+   - Do NOT invent new profit/stop formulas if there are already TP/SL multiplier settings present.
+   - If config already defines multipliers (e.g., bracket_tp_multiplier, bracket_sl_multiplier), reuse them.
+
+2. Use the existing Kraken API wrapper functions (in kraken_native_api or equivalent) for:
+   - Creating a take-profit LIMIT order.
+   - Creating a stop-loss STOP-MARKET order.
+
+   You MUST:
+   - Only use API functions that actually exist in this repo.
+   - Reuse existing helpers if they already create TP or SL orders.
+   - Avoid new low-level Kraken API calls if the project already wraps them.
+
+3. On successful placement:
+   - Capture TP order ID and SL order ID.
+   - Log clear messages, e.g.:
+
+     [BRACKET-TP] Placed TP limit for SYMBOL at price X (order Y)
+     [BRACKET-SL] Placed SL stop-market for SYMBOL at price Z (order W)
+
+4. If TP or SL placement fails:
+   - Log a clear error.
+   - Do NOT crash the system.
+   - For now, leave the position open and rely on existing risk mechanisms.
+   - We will handle more advanced recovery in later phases.
+
+We are NOT yet doing cancel-on-fill behavior — just placement and tracking.
+
+==================================================
+     STEP 4 — RECORD TP & SL IN STATE / DB
+==================================================
+
+In setup_bracket_after_fill(...) and related modules:
+
+1. Update the appropriate state storage so that:
+   - pending_child_orders (or equivalent) contains:
+     - symbol
+     - entry_order_id
+     - tp_order_id
+     - sl_order_id
+     - any relevant prices (entry/TP/SL)
+     - mode (e.g., "LIMIT_BRACKET" if such a field exists or is useful)
+
+2. Update position_tracker.py so that the position record for this symbol includes:
+   - entry_price
+   - stop_loss_price
+   - take_profit_price
+   - any other existing fields that reference SL/TP.
+
+3. Ensure the inserts/updates respect existing schema and usage patterns.
+   - Do NOT change table schemas unless absolutely necessary.
+   - If you must adjust schema in evaluation_log.py, keep it backward compatible and minimal.
+
+4. The goal of this step:
+   - After a successful LIMIT_BRACKET entry fill, any other component (like oco_monitor) can clearly see:
+     - “This position has TP order X and SL order Y at these prices.”
+
+We will use this in PHASE 2B-2 to implement OCO behavior and cleanup.
+
+==================================================
+ STEP 5 — DO *NOT* CHANGE ANY OCO/EXIT LOGIC YET
+==================================================
+
+In this PHASE 2B-1, you must NOT:
+
+- Change oco_monitor.py behavior.
+- Change how exits are currently triggered.
+- Implement new cancel-on-fill logic.
+- Change risk_manager.py.
+- Change strategy or signal generation.
+
+The ONLY new behavior in PHASE 2B-1 is:
+- After a successful LIMIT_BRACKET entry fill:
+  - A TP LIMIT order and SL STOP-MARKET order are placed,
+  - Their IDs and prices are stored consistently in the existing state structures.
+
+==================================================
+ STEP 6 — MANDATORY SELF-REVIEW & SANITY CHECK
+==================================================
+
+Before you finish, you MUST perform a careful self-check:
+
+1. Re-read ALL files you changed:
+   - bracket_order_manager.py
+   - position_tracker.py (if modified)
+   - evaluation_log.py (if modified)
+
+2. Validate:
+   - No syntax errors.
+   - All imports resolve.
+   - Any functions you call exist and have compatible signatures.
+   - LIMIT_BRACKET code paths import and run cleanly.
+   - MARKET_ONLY behavior is completely untouched.
+
+3. Think through the flows:
+
+   MARKET_ONLY:
+     - Strategy → autopilot → execute_entry_with_mode → execute_market_entry → Kraken
+     - No TP/SL logic changed in this mode.
+
+   LIMIT_BRACKET:
+     - Strategy → autopilot → execute_entry_with_mode → execute_limit_bracket_entry → bracket_order_manager
+     - Entry: LIMIT-MAKER with timeout/retry (from PHASE 2A).
+     - On full fill:
+       - setup_bracket_after_fill(...) runs,
+       - TP + SL orders are placed,
+       - Their IDs + prices are recorded.
+
+4. Confirm:
+   - No changes to oco_monitor logic.
+   - No changes to risk_manager.
+   - No unexpected behavior in paper/futures paths (if they exist).
+
+==================================================
+ STEP 7 — SUMMARY OUTPUT (REQUIRED FOR FUTURE PHASES)
+==================================================
+
+At the end of your answer, output a concise summary including:
+
+- Which files you edited.
+- What helper functions you added or modified.
+- How TP + SL are now placed after a filled LIMIT_BRACKET entry.
+- Where and how TP/SL order IDs and prices are stored.
+- How to confirm in logs that TP/SL placement is working.
+- An explicit statement confirming that MARKET_ONLY mode behavior is unchanged.
+
+This summary is critical so that we can safely build PHASE 2B-2 (OCO + cleanup) on top of your work.
+
+End of build request (PHASE 2B-1).
