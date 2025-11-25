@@ -1,0 +1,136 @@
+1. Multi-file modification skills
+
+When I give you a multi-module architectural change (touching 5–10 files), do you:
+
+Modify all needed files in a single response?
+
+Or do you require smaller, isolated prompts per file?
+Explain your preferred workflow.
+
+2. Architecture comprehension
+
+Given a large repo with interconnected modules, are you able to:
+
+Understand cross-file relationships (e.g., execution_manager ↔ autopilot ↔ risk_manager)?
+
+Make edits that respect those boundaries such as not breaking API contracts between modules?
+Explain what level of architectural context you maintain during edits.
+
+3. Safety and non-destructive editing
+
+If asked to change functionality, will you:
+
+Modify only targeted sections?
+
+Avoid rewriting entire files unless explicitly instructed?
+
+Preserve existing code structure unless change is necessary?
+Explain your approach.
+
+4. Kraken API understanding
+
+How confident are you with:
+
+Kraken Spot REST API
+
+Limit orders
+
+Stop-loss orders
+
+Take-profit limit orders
+
+Understanding Kraken’s restriction that TP + SL cannot be combined in a single OCO?
+Tell me what you already know and what assumptions you typically make.
+
+5. Handling state machines and bracket logic
+
+If I instruct you to design or modify a state machine like:
+FLAT → ENTRY_PLACED → ENTRY_FILLED → BRACKET_ACTIVE → EXIT
+can you:
+
+Keep logic consistent across multiple modules?
+
+Avoid race-condition-prone edits?
+
+Respect existing locking files or state files?
+Explain your comfort level.
+
+6. Respecting existing configuration flags
+
+If I instruct you to add new config flags or env vars (e.g., EXECUTION_MODE), are you able to:
+
+Integrate them across modules
+
+Ensure they toggle behavior safely
+
+Ensure backward compatibility
+Explain how you handle config-driven behavior.
+
+7. Safeguards against hallucination
+
+Do you sometimes:
+
+Invent functions that do not exist?
+
+Assume Kraken supports features it does not?
+
+Alter API calls incorrectly?
+If so, how can I prompt you clearly so that you remain grounded in the actual codebase?
+
+8. Incremental build workflow
+
+If I say:
+“PLAN only — do not write code yet”
+or
+“BUILD this exact part only — nothing else”
+will you reliably follow that?
+Explain how I can structure prompts to make sure you don’t take unwanted actions.
+
+9. Understanding trading logic & strategy
+
+Are you able to reason about:
+
+Strategy logic
+
+Risk management
+
+Position sizing
+
+Fees
+
+Execution behaviors
+without rewriting large parts of the code?
+Give your honest limits.
+
+10. Your best-working prompt style
+
+What style of prompts do you respond best to?
+
+Long-form, detailed instructions?
+
+Structured bullet points?
+
+Short incremental steps?
+
+One-file-at-a-time?
+
+High-level architecture plans?
+Tell me which format leads to the safest and most accurate work from you.
+
+11. Testing & verification
+
+After making changes, can you:
+
+Validate that imports still work?
+
+Verify that adjacent modules still match expected function signatures?
+
+Perform internal logic consistency checks?
+Explain your validation approach.
+
+12. Limitations
+
+Finally — tell me all of your limitations when working on a project like this.
+I need to know exactly what you struggle with so that I (and ChatGPT/GPT-5.1) can compensate for it.
+
+Please answer each question clearly and in detail. This will let us tailor all future prompts so we work together effectively.

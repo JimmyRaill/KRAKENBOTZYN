@@ -1,0 +1,184 @@
+You are working on the existing KrakenTradingBot project in Replit.
+
+This is a SMALL, CONTROLLED BUILD REQUEST (PHASE 1).
+We will be upgrading Zyn slowly over many sessions, so everything you do must be incremental, safe, and easy to extend later.
+ALL code changes requested here must remain isolated, minimal, and reversible.
+
+At the end of this prompt, you MUST:
+- Re-read every file you edited,
+- Double-check all logic,
+- Ensure there are NO syntax errors,
+- Confirm imports resolve,
+- Confirm MARKET_ONLY mode behaves EXACTLY as before,
+- Provide a summary of exactly what you changed.
+
+==================================================
+                OVERALL GOAL (PHASE 1)
+==================================================
+
+Introduce a new execution mode called "LIMIT_BRACKET" that:
+- Uses the existing bracket infrastructure in the repo,
+- Leaves MARKET_ONLY behavior completely unchanged,
+- Is fully controlled via config/env flags,
+- DOES NOT modify strategy logic, state machines, risk logic, futures, or paper mode.
+
+This is an incremental step toward a larger upgrade. You must implement ONLY what is described here.
+
+==================================================
+        STEP 0 — READ THESE FILES FIRST
+==================================================
+
+Before editing anything, you MUST open and read the following files from the repo:
+- trading_config.py
+- autopilot.py
+- execution_manager.py
+- bracket_order_manager.py
+- oco_monitor.py  (READ-ONLY for this phase)
+
+You must ground your work in the REAL code. Do NOT assume anything.
+
+==================================================
+         STEP 1 — EXECUTION MODE CONFIG
+==================================================
+
+In trading_config.py:
+1. If execution_mode already exists, KEEP it.
+2. If missing, add:
+
+   execution_mode: str = os.getenv("EXECUTION_MODE", "MARKET_ONLY")
+
+3. Supported values for now:
+   - "MARKET_ONLY" (default)
+   - "LIMIT_BRACKET"
+
+4. If EXECUTION_MODE is not set, behavior MUST remain identical to current bot behavior.
+
+==================================================
+ STEP 2 — ADD MODE-AWARE ENTRY ROUTER FUNCTION
+==================================================
+
+In execution_manager.py:
+
+1. Add a new function:
+
+   def execute_entry_with_mode(symbol, side, amount, context) -> ExecutionResult:
+       """
+       Route trade entry behavior based on execution_mode.
+
+       MARKET_ONLY → uses existing market entry logic exactly as today.
+       LIMIT_BRACKET → uses existing bracket infrastructure.
+       """
+       # implement routing logic here
+
+2. Logic required:
+   - Import execution_mode from trading_config.
+   - If execution_mode == "MARKET_ONLY":
+       Call existing execute_market_entry(...) unchanged.
+   - If execution_mode == "LIMIT_BRACKET":
+       Call a new helper you will add (see Step 3).
+   - Any other value → Log warning + fallback to market entry.
+
+3. DO NOT modify execute_market_entry itself.
+4. DO NOT modify exit logic.
+
+This router function will be the main extension point for future upgrades.
+
+==================================================
+ STEP 3 — WRAP EXISTING BRACKET ENTRY LOGIC
+==================================================
+
+You MUST reuse the existing bracket code — do NOT invent new Kraken API behavior.
+
+1. In bracket_order_manager.py:
+   - FIND the true function responsible for limit-entry-with-brackets placement
+     (likely place_entry_with_brackets or similar).
+   - Do NOT modify it in this phase.
+
+2. Back in execution_manager.py:
+   - Add:
+
+     def execute_limit_bracket_entry(symbol, side, amount, context) -> ExecutionResult:
+         """
+         Thin wrapper using existing bracket_order_manager behavior.
+         """
+
+   - Inside:
+       - Import the real bracket placement function from bracket_order_manager.
+       - Call it with the correct parameters.
+       - Build and return an ExecutionResult consistent with existing patterns.
+       - DO NOT invent new parameters or structures.
+
+3. In execute_entry_with_mode(...):
+   - Route LIMIT_BRACKET → execute_limit_bracket_entry(...).
+
+==================================================
+ STEP 4 — AUTOPILOT INTEGRATION (MINIMAL)
+==================================================
+
+In autopilot.py:
+
+1. Locate where entry orders are currently executed (existing execute_market_entry calls).
+2. Replace direct calls with execute_entry_with_mode(...), passing the same arguments.
+
+Restrictions:
+- NO changes to strategy logic.
+- NO changes to signal generation.
+- NO changes to risk logic.
+- NO changes to exit logic.
+- NO changes to OCO monitor scheduling.
+
+MARKET_ONLY mode must remain bit-for-bit identical to current behavior.
+
+==================================================
+ STEP 5 — EXECUTION MODE LOGGING & SAFETY
+==================================================
+
+Add a simple log during startup:
+
+[EXECUTION] Mode: MARKET_ONLY
+or
+[EXECUTION] Mode: LIMIT_BRACKET
+
+This is only for debugging and must not disrupt normal flow.
+
+Ensure:
+- If EXECUTION_MODE is missing → defaults to MARKET_ONLY → no behavior change.
+
+==================================================
+ STEP 6 — MANDATORY SELF-CHECK (DOUBLECHECK EVERYTHING)
+==================================================
+
+Before finishing, you MUST:
+
+1. Re-read ALL changed files.
+2. Validate:
+   - No syntax errors,
+   - No circular imports,
+   - All functions called actually exist,
+   - ExecutionResult usage is consistent,
+   - MARKET_ONLY still behaves exactly as before.
+
+3. Think through both paths:
+
+MARKET_ONLY:
+  strategy → autopilot → execute_entry_with_mode → execute_market_entry → Kraken
+
+LIMIT_BRACKET:
+  strategy → autopilot → execute_entry_with_mode → execute_limit_bracket_entry → bracket_order_manager
+
+4. Confirm:
+   - No unrelated code was touched.
+   - No new behavior activates unless LIMIT_BRACKET is selected.
+   - No placeholder or dead code remains.
+
+==================================================
+ STEP 7 — SUMMARY OUTPUT (REQUIRED)
+==================================================
+
+At the end of your answer, output a summary that includes:
+- All files you edited,
+- All functions added or modified,
+- How to switch between MARKET_ONLY and LIMIT_BRACKET,
+- A statement confirming MARKET_ONLY behavior is unchanged.
+
+End of build request (PHASE 1).

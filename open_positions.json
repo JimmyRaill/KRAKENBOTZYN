@@ -1,1 +1,24 @@
-{}
+{
+  "UNI/USD": {
+    "symbol": "UNI/USD",
+    "entry_price": 6.087,
+    "quantity": 3.58456992,
+    "stop_loss_price": 6.042428571428571,
+    "take_profit_price": 6.1538571428571425,
+    "atr": 0.02228571428571418,
+    "entry_timestamp": 1764096260.672648,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "DOGE/USD": {
+    "symbol": "DOGE/USD",
+    "entry_price": 0.1514001,
+    "quantity": 195.05244733,
+    "stop_loss_price": 0.15064848571428574,
+    "take_profit_price": 0.15252752142857143,
+    "atr": 0.00037580714285714064,
+    "entry_timestamp": 1764096827.4775362,
+    "source": "autopilot",
+    "is_short": false
+  }
+}

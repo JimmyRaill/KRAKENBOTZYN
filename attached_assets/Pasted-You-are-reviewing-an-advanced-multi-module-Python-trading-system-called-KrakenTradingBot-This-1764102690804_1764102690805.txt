@@ -1,0 +1,201 @@
+You are reviewing an advanced multi-module Python trading system called **KrakenTradingBot**. 
+This is a PLAN-ONLY request. 
+Do NOT write or modify any code yet. 
+Your job is analysis and architectural planning ONLY.
+
+Before producing the plan, ensure you READ all referenced files directly from the repo. 
+Do NOT assume functionality. 
+Do NOT invent functions. 
+Do NOT rewrite or simplify architecture. 
+Use only the code that actually exists.
+
+==================================================
+               CONTEXT & CONSTRAINTS
+==================================================
+
+The user’s constraints:
+
+1. Trading must remain on **Kraken Spot only**.
+2. The user will **not use paper mode**.
+3. The user does **not** yet have access to Kraken Futures.
+4. Kraken Spot **does NOT support** a native OCO bracket combining:
+   - limit-entry
+   - take-profit
+   - stop-loss
+   in a single order request.
+5. All changes must be:
+   - Incremental
+   - Backwards compatible
+   - Behind config/env flags
+   - Safe and reversible
+
+Current problem:  
+The bot relies too heavily on **market buy + market sell orders**, and the taker fees are causing large losses. We need to move toward limit-maker entries and Python-managed bracket behavior.
+
+==================================================
+         GOAL OF THIS PLAN SESSION (NO BUILD)
+==================================================
+
+Your job is to design a safe, detailed plan for implementing a **Python-managed bracket system** for Kraken Spot, including:
+- Limit-maker entries
+- Separate stop-loss and take-profit orders
+- Internal state management
+- Monitoring logic to cancel the sibling order when one fills
+- Integration with existing modules
+- Fee minimization strategy
+- Safety and revert mechanisms
+
+You will NOT write code.  
+You will ONLY analyze feasibility and outline the necessary architectural steps.
+
+==================================================
+           PART 1 — LIMIT-MAKER ENTRY LOGIC
+==================================================
+
+Analyze how the bot can:
+
+- Place limit-maker **entry orders** by default.
+- Choose safe limit prices (slightly below for longs).
+- Handle runaway price (cancel, retry, or skip).
+- Identify which modules currently control entry execution:
+  e.g., `execution_manager.py`, `autopilot.py`.
+
+Explain how limit entries can be integrated without breaking any existing paths.
+
+==================================================
+   PART 2 — PYTHON-SIDE BRACKET SYSTEM (CUSTOM)
+==================================================
+
+Because Kraken Spot cannot attach TP and SL together in a single OCO:
+
+Design the full architecture for a **Python-managed bracket** system:
+
+- After an entry limit order fills:
+  - Place a **stop-loss** (stop-market).
+  - Place a **take-profit** (limit).
+- Store both order IDs in internal state via existing files or JSON.
+- Monitor Kraken fills continuously:
+  - If TP fills → cancel SL.
+  - If SL fills → cancel TP.
+- Handle partial fills correctly.
+
+You must evaluate which existing files already support this partially:
+- `bracket_order_manager.py`
+- `oco_monitor.py`
+- `execution_manager.py`
+- `open_positions lock/state files`
+
+Identify what’s missing or half-implemented.
+
+==================================================
+   PART 3 — POSITION STATE MACHINE RECOMMENDATION
+==================================================
+
+Evaluate how to introduce or improve a clear state machine:
+
+Possible states:
+- FLAT
+- ENTRY_PLACED
+- ENTRY_FILLED
+- BRACKET_ACTIVE
+- TP_FILLED
+- SL_FILLED
+- EXIT_COMPLETE
+
+Identify where state is currently tracked (JSON files, DB, locks) and propose how to integrate a cleaner flow WITHOUT rewriting the entire architecture.
+
+==================================================
+     PART 4 — FEE MINIMIZATION STRATEGY IN SPOT
+==================================================
+
+Analyze how the bracket system reduces fees:
+
+- Maker entry (limit)
+- Maker take-profit (limit)
+- Taker only for stop-loss
+
+Review:
+- `fee_model.py`
+- Fee logic inside `autopilot.py`
+- Any edge % logic
+
+Explain how to plug this into the new bracket behavior.
+
+==================================================
+   PART 5 — INTEGRATION WITH AUTOPILOT & RISK
+==================================================
+
+Explain how the new bracket logic should connect to:
+
+- `autopilot.py` (main loop)
+- `execution_manager.py` (order routing)
+- `risk_manager.py` (pre-trade checks)
+- Strategy modules (if applicable)
+
+Identify:
+- Where the centralized “can we trade?” risk gate belongs
+- How to prevent multiple brackets from stacking accidentally
+
+==================================================
+  PART 6 — CONFIG FLAGS & BACKWARD COMPATIBILITY
+==================================================
+
+Design config/env settings needed to control the new behavior:
+
+Examples:
+- `EXECUTION_MODE = "MARKET_ONLY"` (default)
+- `EXECUTION_MODE = "LIMIT_BRACKET"`
+- Parameters for:
+  - limit-offset
+  - TP/SL multipliers
+  - bracket activation
+  - fallback behavior
+
+Explain how to introduce these options WITHOUT breaking existing default behavior.
+
+==================================================
+       PART 7 — MODULES THAT WILL NEED EDITS
+==================================================
+
+List each file that will require modification during the BUILD phase and briefly explain why.
+
+Examples:
+- `autopilot.py`
+- `execution_manager.py`
+- `bracket_order_manager.py`
+- `oco_monitor.py`
+- `open_positions.json` or other state files
+- `trading_config.py`
+
+==================================================
+              PART 8 — PITFALLS TO AVOID
+==================================================
+
+Identify potential issues such as:
+
+- Race conditions between TP/SL monitoring and fills
+- Conflicts with lock files
+- Orphaned bracket orders
+- Multi-module inconsistencies
+- Fee miscalculations
+- Kraken API quirks
+- Partial fill edge cases
+- Misalignment between state machine and strategy engine
+
+==================================================
+                  FINAL TASK
+==================================================
+
+Deliver a structured, step-by-step **architectural plan** confirming:
+
+- The feasibility of implementing Python-side bracket behavior
+- The modules involved
+- Necessary config changes
+- How risk, strategy, execution, and state tie together
+- How we safely transition away from market-only execution without breaking anything
+
+DO NOT write code.  
+DO NOT modify files.  
+PLAN ONLY.
+
+End of prompt.

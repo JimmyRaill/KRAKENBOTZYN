@@ -1,16 +1,48 @@
 {
-  "timestamp": "2025-11-25T14:19:56.284813",
+  "timestamp": "2025-11-25T20:25:01.330756",
   "minimums": {
+    "XRP/USD": {
+      "amount": 1.65,
+      "cost": 0.5
+    },
+    "AAVE/USD": {
+      "amount": 0.015,
+      "cost": 0.5
+    },
+    "AVAX/USD": {
+      "amount": 0.1,
+      "cost": 0.5
+    },
+    "ETH/USD": {
+      "amount": 0.001,
+      "cost": 0.5
+    },
+    "ADA/USD": {
+      "amount": 4.4,
+      "cost": 0.5
+    },
     "SOL/USD": {
       "amount": 0.02,
       "cost": 0.5
     },
-    "ATOM/USD": {
-      "amount": 0.5,
+    "ARB/USD": {
+      "amount": 5.2,
       "cost": 0.5
     },
-    "LTC/USD": {
-      "amount": 0.04,
+    "BTC/USD": {
+      "amount": 5e-05,
+      "cost": 0.5
+    },
+    "LINK/USD": {
+      "amount": 0.2,
+      "cost": 0.5
+    },
+    "UNI/USD": {
+      "amount": 0.3,
+      "cost": 0.5
+    },
+    "DOGE/USD": {
+      "amount": 13.0,
       "cost": 0.5
     }
   }
