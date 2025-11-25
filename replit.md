@@ -32,7 +32,10 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
     -   **OCO Monitor (`oco_monitor.py`)**: Synthetic OCO (One-Cancels-Other) for LIMIT_BRACKET mode - when TP fills, cancels SL and cleans up position_tracker; when SL fills, cancels TP and cleans up position_tracker. Runs in reconciliation cycle.
     -   Handles settlement polling with exponential backoff for accurate fill data.
     -   **Position Tracker (`position_tracker.py`)**: Implements "mental stop-loss/take-profit" using ATR-based levels (3x ATR for SL, 4.5x for TP - widened Nov 2025 to reduce stop-outs). Monitors positions and triggers market SELL. Uses `portalocker` for interprocess synchronization. Includes stop validation warning if ATR compression creates unexpectedly tight stops.
-    -   **Fee Model (`fee_model.py`)**: Tracks real-time Kraken fees with caching, enabling fee-adjusted profitability checks.
+    -   **Fee Model (`fee_model.py`)**: Tracks real-time Kraken fees with caching, enabling fee-adjusted profitability checks. **PHASE 3A (Nov 2025)**: Added `compute_required_edge_pct()` - calculates execution-mode-aware minimum edge requirements:
+          - MARKET_ONLY: round_trip = taker_fee * 2 (both entry and exit are market orders)
+          - LIMIT_BRACKET: round_trip = maker_fee + max(maker_fee, taker_fee) (entry is maker, exit could be either)
+          - Safety multiplier applied (default 1.5x) for profitability buffer
     -   **Rate Limiter (`rate_limiter.py`)**: Enforces API call limits.
     -   **Market Position Sizing**: SL-independent position sizing (fixed-fraction or synthetic ATR-based) with a 10% max position cap.
     -   **Fee-Adjusted Edge Check**: Pre-trade validation requiring sufficient edge after round-trip fees and safety margin.
@@ -47,7 +50,7 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
     -   **Autopilot (`autopilot.py`)**: Autonomous trading loop executing a 5-minute closed-candle strategy, monitoring mental SL/TP levels and integrating risk gatekeepers.
     -   **Trading Config (`trading_config.py`)**: Centralized configuration for indicators, market filters, risk parameters, and execution mode, supporting environment variable overrides.
     -   **Signal Engine (`signal_engine.py`)**: Multi-signal decision engine using technical filters (RSI, SMA, volume, volatility, chop, ATR).
-    -   **Strategy Orchestrator (`strategy_orchestrator.py`)**: Regime-aware strategy selection with IMPROVED pullback detection (Nov 2025) - requires 0.75 ATR retrace from swing high, price at/below SMA20, RSI < 65 for entries.
+    -   **Strategy Orchestrator (`strategy_orchestrator.py`)**: Regime-aware strategy selection with IMPROVED pullback detection (Nov 2025) - requires 0.75 ATR retrace from swing high, price at/below SMA20, RSI < 65 for entries. **PHASE 3A**: Fee gate filter integrated - all actionable signals pass through `_apply_fee_gate()` which computes expected edge vs required edge (fees + safety multiplier) and logs decisions to evaluation_log. Set `FEE_GATE_ENABLED=1` to block low-edge trades.
     -   **Paper Trading (`paper_trading.py`)**: Complete simulation system with realistic fills, slippage, fees, and P&L calculation.
     -   **Exchange Manager (`exchange_manager.py`)**: Singleton wrapper for `ccxt` instances, ensuring consistent data fetching.
     -   **Risk Manager (`risk_manager.py`)**: Calculates per-trade and portfolio-wide risk.
