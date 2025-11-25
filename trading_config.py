@@ -132,8 +132,14 @@ class TradingConfig:
     timeframe_seconds: int = 300
     
     # Execution mode
-    execution_mode: str = "MARKET_ONLY"  # "MARKET_ONLY" or "BRACKET"
+    execution_mode: str = "MARKET_ONLY"  # "MARKET_ONLY", "BRACKET", or "LIMIT_BRACKET"
     use_brackets: bool = False  # Enable bracket orders (TP/SL)
+    
+    # LIMIT_BRACKET mode settings (Phase 2A - maker-friendly limit entries)
+    limit_offset_pct: float = 0.002       # 0.2% below market for BUY, above for SELL
+    limit_timeout_seconds: int = 120      # Seconds to wait for limit order fill
+    limit_max_retries: int = 3            # Max retry attempts for limit entries
+    limit_fallback_to_market: bool = False  # Fallback to market order if limit times out
     
     # Feature flags
     enable_profit_target: bool = False
@@ -219,6 +225,30 @@ class TradingConfig:
         valid_modes = ("MARKET_ONLY", "BRACKET", "LIMIT_BRACKET")
         config.execution_mode = execution_mode_env if execution_mode_env in valid_modes else "MARKET_ONLY"
         config.use_brackets = os.getenv("USE_BRACKETS", "0") == "1" or config.execution_mode in ("BRACKET", "LIMIT_BRACKET")
+        
+        # LIMIT_BRACKET mode settings (Phase 2A)
+        limit_offset_env = os.getenv("LIMIT_OFFSET_PCT")
+        if limit_offset_env:
+            try:
+                config.limit_offset_pct = float(limit_offset_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] LIMIT_OFFSET_PCT invalid: '{limit_offset_env}', using default 0.002")
+        
+        limit_timeout_env = os.getenv("LIMIT_TIMEOUT_SECONDS")
+        if limit_timeout_env:
+            try:
+                config.limit_timeout_seconds = int(limit_timeout_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] LIMIT_TIMEOUT_SECONDS invalid: '{limit_timeout_env}', using default 120")
+        
+        limit_retries_env = os.getenv("LIMIT_MAX_RETRIES")
+        if limit_retries_env:
+            try:
+                config.limit_max_retries = int(limit_retries_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] LIMIT_MAX_RETRIES invalid: '{limit_retries_env}', using default 3")
+        
+        config.limit_fallback_to_market = os.getenv("LIMIT_FALLBACK_TO_MARKET", "0") == "1"
         
         # Feature flags
         config.enable_profit_target = os.getenv("ENABLE_PROFIT_TARGET", "0") == "1"

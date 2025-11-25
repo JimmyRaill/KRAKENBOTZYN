@@ -26,6 +26,111 @@ def env_bool(key: str, default: bool) -> bool:
     return val in ("true", "1", "yes", "on")
 
 
+def poll_order_fill(exchange, order_id: str, symbol: str, timeout_seconds: int, poll_interval: float = 2.0) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """
+    Poll for order fill status with timeout.
+    
+    Args:
+        exchange: CCXT exchange instance
+        order_id: Order ID to check
+        symbol: Trading pair
+        timeout_seconds: Maximum seconds to wait
+        poll_interval: Seconds between polls
+    
+    Returns:
+        (is_filled, fill_data) - fill_data contains order info if filled
+    """
+    import time
+    
+    start_time = time.time()
+    elapsed = 0
+    
+    while elapsed < timeout_seconds:
+        try:
+            order = exchange.fetch_order(order_id, symbol)
+            status = order.get('status', 'unknown')
+            filled = float(order.get('filled', 0) or 0)
+            
+            if status == 'closed' and filled > 0:
+                print(f"[LIMIT-POLL] ✅ Order {order_id} filled: {filled:.8f}")
+                return True, order
+            
+            if status in ('canceled', 'cancelled', 'rejected', 'expired'):
+                print(f"[LIMIT-POLL] ❌ Order {order_id} {status}")
+                return False, order
+            
+            # Still open - continue polling
+            time.sleep(poll_interval)
+            elapsed = time.time() - start_time
+            
+        except Exception as e:
+            print(f"[LIMIT-POLL] Poll error: {e}")
+            time.sleep(poll_interval)
+            elapsed = time.time() - start_time
+    
+    # Timeout reached
+    print(f"[LIMIT-POLL] ⏱️ Timeout after {timeout_seconds}s - order {order_id} not filled")
+    return False, None
+
+
+def cancel_order_safely(exchange, order_id: str, symbol: str) -> bool:
+    """
+    Cancel an order safely with error handling.
+    
+    Args:
+        exchange: CCXT exchange instance
+        order_id: Order ID to cancel
+        symbol: Trading pair
+    
+    Returns:
+        True if cancelled successfully or already closed/cancelled
+    """
+    try:
+        exchange.cancel_order(order_id, symbol)
+        print(f"[LIMIT-CANCEL] ✅ Order {order_id} cancelled")
+        return True
+    except Exception as e:
+        error_str = str(e).lower()
+        # These are OK - order is already gone
+        if 'unknown order' in error_str or 'already closed' in error_str or 'not found' in error_str:
+            print(f"[LIMIT-CANCEL] Order {order_id} already closed/cancelled")
+            return True
+        print(f"[LIMIT-CANCEL] ⚠️ Failed to cancel {order_id}: {e}")
+        return False
+
+
+def compute_maker_entry_price(side: str, current_price: float, offset_pct: float) -> float:
+    """
+    Compute a maker-friendly limit price for entry based on side and offset.
+    
+    For LIMIT_BRACKET mode, we want to place orders that provide liquidity:
+    - LONG/BUY: Place limit BELOW current market price (we wait for price to come to us)
+    - SHORT/SELL: Place limit ABOVE current market price (we wait for price to come to us)
+    
+    This earns maker rebates instead of paying taker fees.
+    
+    Args:
+        side: "buy" or "sell"
+        current_price: Current market price
+        offset_pct: Offset percentage as decimal (e.g., 0.002 for 0.2%)
+    
+    Returns:
+        Maker-friendly limit price
+    """
+    side_lower = side.lower()
+    
+    if side_lower == "buy":
+        # LONG: Place below market to be maker
+        return current_price * (1 - offset_pct)
+    elif side_lower == "sell":
+        # SHORT: Place above market to be maker
+        return current_price * (1 + offset_pct)
+    else:
+        # Fallback: Return current price (shouldn't happen)
+        print(f"[MAKER-PRICE] ⚠️ Unknown side '{side}', returning current price")
+        return current_price
+
+
 @dataclass
 class BracketConfig:
     """Configuration for bracket orders."""
@@ -401,66 +506,213 @@ class BracketOrderManager:
         # Required because Kraken REST API doesn't support stop-loss-profit ordertype
         try:
             from kraken_native_api import get_kraken_native_api
+            from trading_config import get_config
+            from evaluation_log import register_pending_entry
+            from exchange_manager import get_mode_str
             
             native_api = get_kraken_native_api()
+            trading_config = get_config()
             
-            # Calculate aggressive limit entry price for quick fill
-            # Buy: slightly above current price | Sell: slightly below current price
-            ticker = exchange.fetch_ticker(bracket.symbol)
-            current_price = float(ticker['last'])
+            # PHASE 2A: Timeout/retry settings
+            use_maker_pricing = trading_config.execution_mode in ("LIMIT_BRACKET", "BRACKET")
+            max_retries = trading_config.limit_max_retries if use_maker_pricing else 1
+            timeout_seconds = trading_config.limit_timeout_seconds if use_maker_pricing else 5
+            fallback_to_market = trading_config.limit_fallback_to_market
             
-            if bracket.side.lower() == 'buy':
-                raw_entry_price = current_price * 1.001  # 0.1% above market (aggressive fill)
-            else:
-                raw_entry_price = current_price * 0.999  # 0.1% below market
-            
-            # Apply exchange price precision (critical for Kraken)
-            entry_limit_price = float(exchange.price_to_precision(bracket.symbol, raw_entry_price))
             stop_price_p = float(exchange.price_to_precision(bracket.symbol, bracket.stop_price))
             tp_price_p = float(exchange.price_to_precision(bracket.symbol, bracket.take_profit_price))
             
             print(f"[BRACKET-SEQ] Using sequential bracket approach (Kraken REST limitation)")
-            print(f"[BRACKET-SEQ] Step 1: LIMIT entry + SL protection")
-            print(f"[BRACKET-SEQ]   Entry: {bracket.side} {qty_p:.6f} {bracket.symbol} @ ${entry_limit_price:.5f}")
-            print(f"[BRACKET-SEQ]   Stop-Loss: ${stop_price_p:.5f}")
-            print(f"[BRACKET-SEQ] Step 2: TP limit order after fill")
-            print(f"[BRACKET-SEQ]   Take-Profit: ${tp_price_p:.5f}")
+            print(f"[BRACKET-SEQ] Config: maker_pricing={use_maker_pricing}, max_retries={max_retries}, timeout={timeout_seconds}s")
             
-            # Step 1: Place LIMIT entry with SL protection (atomic)
-            success, message, result = native_api.place_entry_with_stop_loss(
-                symbol=bracket.symbol,
-                side=bracket.side,
-                quantity=qty_p,
-                entry_price=entry_limit_price,
-                stop_loss_price=stop_price_p,
-                validate=False
-            )
+            entry_order_id = None
+            result = None
+            fill_data = None
+            filled_successfully = False
             
-            if not success:
-                print(f"[BRACKET-FAILED] ❌ Entry+SL placement failed: {message}")
-                return False, message, result
+            # PHASE 2A: Retry loop for limit entries
+            for attempt in range(1, max_retries + 1):
+                print(f"\n[BRACKET-RETRY] 🔄 Attempt {attempt}/{max_retries}")
+                
+                # Get fresh price for each attempt
+                ticker = exchange.fetch_ticker(bracket.symbol)
+                current_price = float(ticker['last'])
+                
+                # Calculate entry price based on mode
+                if use_maker_pricing:
+                    raw_entry_price = compute_maker_entry_price(
+                        side=bracket.side,
+                        current_price=current_price,
+                        offset_pct=trading_config.limit_offset_pct
+                    )
+                    print(f"[BRACKET-MAKER] Using maker-friendly pricing: offset={trading_config.limit_offset_pct*100:.2f}%")
+                else:
+                    if bracket.side.lower() == 'buy':
+                        raw_entry_price = current_price * 1.001  # 0.1% above market
+                    else:
+                        raw_entry_price = current_price * 0.999  # 0.1% below market
+                
+                entry_limit_price = float(exchange.price_to_precision(bracket.symbol, raw_entry_price))
+                
+                print(f"[BRACKET-SEQ] Step 1: LIMIT entry + SL protection")
+                print(f"[BRACKET-SEQ]   Entry: {bracket.side} {qty_p:.6f} {bracket.symbol} @ ${entry_limit_price:.5f}")
+                print(f"[BRACKET-SEQ]   Current market: ${current_price:.5f}")
+                print(f"[BRACKET-SEQ]   Stop-Loss: ${stop_price_p:.5f}")
+                print(f"[BRACKET-SEQ] Step 2: TP limit order after fill")
+                print(f"[BRACKET-SEQ]   Take-Profit: ${tp_price_p:.5f}")
+                
+                # Place LIMIT entry with SL protection (atomic)
+                success, message, result = native_api.place_entry_with_stop_loss(
+                    symbol=bracket.symbol,
+                    side=bracket.side,
+                    quantity=qty_p,
+                    entry_price=entry_limit_price,
+                    stop_loss_price=stop_price_p,
+                    validate=False
+                )
+                
+                if not success:
+                    print(f"[BRACKET-FAILED] ❌ Entry+SL placement failed: {message}")
+                    return False, message, result
+                
+                # Extract entry order ID
+                entry_order_id = result.get('txid', ['unknown'])[0] if result and 'txid' in result else 'unknown'
+                print(f"[BRACKET-SEQ] ✅ Entry+SL placed: {entry_order_id}")
+                
+                # Register entry for monitoring (ensures TP placement if fills later)
+                register_pending_entry(
+                    symbol=bracket.symbol,
+                    entry_order_id=entry_order_id,
+                    entry_side=bracket.side,
+                    entry_quantity=qty_p,
+                    entry_price=entry_limit_price,
+                    tp_price=tp_price_p,
+                    sl_price=stop_price_p,
+                    trading_mode=get_mode_str().lower()
+                )
+                
+                # Check if entry filled immediately
+                fill_data = result.get('fill_data') if result else None
+                
+                if fill_data and fill_data.get('status') == 'closed' and fill_data.get('filled', 0) > 0:
+                    print(f"[BRACKET-SEQ] ✅ Immediate fill!")
+                    filled_successfully = True
+                    break
+                
+                # PHASE 2A: Poll for fill with timeout
+                if use_maker_pricing:
+                    print(f"[BRACKET-POLL] ⏳ Polling for fill (timeout: {timeout_seconds}s)...")
+                    is_filled, poll_result = poll_order_fill(
+                        exchange=exchange,
+                        order_id=entry_order_id,
+                        symbol=bracket.symbol,
+                        timeout_seconds=timeout_seconds,
+                        poll_interval=3.0
+                    )
+                    
+                    if is_filled and poll_result:
+                        fill_data = poll_result
+                        result['fill_data'] = poll_result  # Update result with fill data
+                        print(f"[BRACKET-SEQ] ✅ Filled during polling!")
+                        filled_successfully = True
+                        break
+                    
+                    # Not filled - cancel and retry (or abort)
+                    if attempt < max_retries:
+                        print(f"[BRACKET-RETRY] ⏱️ Timeout - cancelling order for retry...")
+                        cancel_success = cancel_order_safely(exchange, entry_order_id, bracket.symbol)
+                        if not cancel_success:
+                            # Order might have filled while we tried to cancel - check again
+                            try:
+                                final_check = exchange.fetch_order(entry_order_id, bracket.symbol)
+                                if final_check.get('status') == 'closed' and final_check.get('filled', 0) > 0:
+                                    fill_data = final_check
+                                    result['fill_data'] = final_check
+                                    print(f"[BRACKET-SEQ] ✅ Filled during cancel attempt!")
+                                    filled_successfully = True
+                                    break
+                            except Exception:
+                                pass
+                        continue  # Next retry attempt
+                else:
+                    # For non-maker modes, don't poll - just continue with whatever we got
+                    if fill_data:
+                        filled_successfully = True
+                    break
             
-            # Extract entry order ID
-            entry_order_id = result.get('txid', ['unknown'])[0] if result and 'txid' in result else 'unknown'
-            print(f"[BRACKET-SEQ] ✅ Entry+SL placed: {entry_order_id}")
-            
-            # CRITICAL: Register entry for monitoring (ensures TP placement if fills later)
-            from evaluation_log import register_pending_entry
-            from exchange_manager import get_mode_str
-            
-            register_pending_entry(
-                symbol=bracket.symbol,
-                entry_order_id=entry_order_id,
-                entry_side=bracket.side,
-                entry_quantity=qty_p,
-                entry_price=entry_limit_price,
-                tp_price=tp_price_p,
-                sl_price=stop_price_p,
-                trading_mode=get_mode_str().lower()
-            )
-            
-            # Step 2: Check if entry filled (fill_data already queried in place_entry_with_stop_loss)
-            fill_data = result.get('fill_data') if result else None
+            # After retry loop - check if we have a fill
+            if not filled_successfully and use_maker_pricing:
+                print(f"[BRACKET-RETRY] ❌ All {max_retries} attempts exhausted without fill")
+                
+                # PHASE 2A: Market fallback option
+                if fallback_to_market:
+                    print(f"[BRACKET-FALLBACK] 🔄 Falling back to market order...")
+                    
+                    # Cancel any pending limit order first
+                    if entry_order_id:
+                        cancel_order_safely(exchange, entry_order_id, bracket.symbol)
+                    
+                    # Place market order with SL
+                    ticker = exchange.fetch_ticker(bracket.symbol)
+                    market_price = float(ticker['last'])
+                    
+                    # For market order, use aggressive price (will fill at market anyway)
+                    if bracket.side.lower() == 'buy':
+                        aggressive_price = market_price * 1.005  # 0.5% above market
+                    else:
+                        aggressive_price = market_price * 0.995  # 0.5% below market
+                    
+                    aggressive_price = float(exchange.price_to_precision(bracket.symbol, aggressive_price))
+                    
+                    print(f"[BRACKET-FALLBACK] Placing aggressive limit @ ${aggressive_price:.5f} (market: ${market_price:.5f})")
+                    
+                    success, message, result = native_api.place_entry_with_stop_loss(
+                        symbol=bracket.symbol,
+                        side=bracket.side,
+                        quantity=qty_p,
+                        entry_price=aggressive_price,
+                        stop_loss_price=stop_price_p,
+                        validate=False
+                    )
+                    
+                    if not success:
+                        print(f"[BRACKET-FALLBACK] ❌ Fallback failed: {message}")
+                        return False, f"All limit retries failed and market fallback failed: {message}", result
+                    
+                    entry_order_id = result.get('txid', ['unknown'])[0] if result and 'txid' in result else 'unknown'
+                    print(f"[BRACKET-FALLBACK] ✅ Fallback order placed: {entry_order_id}")
+                    
+                    # Register the fallback entry
+                    register_pending_entry(
+                        symbol=bracket.symbol,
+                        entry_order_id=entry_order_id,
+                        entry_side=bracket.side,
+                        entry_quantity=qty_p,
+                        entry_price=aggressive_price,
+                        tp_price=tp_price_p,
+                        sl_price=stop_price_p,
+                        trading_mode=get_mode_str().lower()
+                    )
+                    
+                    # Quick poll for fallback fill
+                    is_filled, poll_result = poll_order_fill(
+                        exchange=exchange,
+                        order_id=entry_order_id,
+                        symbol=bracket.symbol,
+                        timeout_seconds=10,
+                        poll_interval=2.0
+                    )
+                    
+                    if is_filled and poll_result:
+                        fill_data = poll_result
+                        result['fill_data'] = poll_result
+                        filled_successfully = True
+                        print(f"[BRACKET-FALLBACK] ✅ Fallback order filled!")
+                else:
+                    # No fallback - order stays pending, reconciliation will handle
+                    print(f"[BRACKET-PENDING] ⏳ Entry pending (no market fallback enabled)")
+                    print(f"[BRACKET-PENDING] Reconciliation will monitor for fill and place TP")
+                    return True, f"Entry+SL placed (pending fill, attempt {max_retries}), TP will be placed on fill", result
             
             if fill_data and fill_data.get('status') == 'closed' and fill_data.get('filled', 0) > 0:
                 filled_qty = fill_data['filled']

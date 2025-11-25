@@ -1,0 +1,242 @@
+You are working on the existing KrakenTradingBot project in Replit.
+
+This is PHASE 2A of a long-term, incremental upgrade.
+Zyn will be upgraded over MANY sessions, so everything you do here must:
+- Be small and controlled,
+- Be easy to extend later,
+- NOT break existing behavior,
+- Be simple to reason about when we come back in future prompts.
+
+PHASE 2A GOAL (LIMIT-MAKER ENTRY ONLY):
+Implement a proper **limit-maker entry system** for LIMIT_BRACKET mode:
+- Below-market limit pricing for longs (above-market for shorts),
+- Basic timeout + retry + cancel behavior,
+- No changes to TP/SL logic yet (that will be PHASE 2B),
+- MARKET_ONLY must remain unchanged.
+
+At the end of this prompt, you MUST:
+- Re-read every file you edited,
+- Double-check all logic and imports,
+- Confirm there are no syntax errors,
+- Confirm MARKET_ONLY mode still behaves exactly as before,
+- Provide a clear summary of all changes so future phases can build on this.
+
+==================================================
+        STEP 0 — READ THESE FILES FIRST
+==================================================
+
+Before editing anything, OPEN and READ these files from the actual repo:
+
+- trading_config.py
+- execution_manager.py
+- bracket_order_manager.py
+- fee_model.py  (READ-ONLY for context)
+- autopilot.py  (READ-ONLY in this phase; no behavior change here)
+
+You must ground your work in the real codebase:
+- Do NOT assume function names or signatures.
+- Do NOT invent new functions that don’t exist.
+- Do NOT rewrite large sections.
+
+==================================================
+      STEP 1 — ADD LIMIT ENTRY CONFIG (SAFE)
+==================================================
+
+In trading_config.py:
+
+1. Confirm that execution_mode already exists and supports "LIMIT_BRACKET" from Phase 1. Do NOT remove it.
+
+2. Add new config parameters for limit entry behavior (with safe defaults):
+
+   - limit_offset_pct: float
+     - Default: read from env var LIMIT_OFFSET_PCT, fallback to 0.002 (0.2%)
+   - limit_timeout_seconds: int
+     - Default: read from env var LIMIT_TIMEOUT_SECONDS, fallback to 120
+   - limit_max_retries: int
+     - Default: read from env var LIMIT_MAX_RETRIES, fallback to 3
+   - limit_fallback_to_market: bool
+     - Default: based on env var LIMIT_FALLBACK_TO_MARKET ("0"/"1"), fallback False
+
+Example (adapt to existing style):
+
+   limit_offset_pct: float = float(os.getenv("LIMIT_OFFSET_PCT", "0.002"))
+   limit_timeout_seconds: int = int(os.getenv("LIMIT_TIMEOUT_SECONDS", "120"))
+   limit_max_retries: int = int(os.getenv("LIMIT_MAX_RETRIES", "3"))
+   limit_fallback_to_market: bool = os.getenv("LIMIT_FALLBACK_TO_MARKET", "0") == "1"
+
+3. Do NOT change any other existing config semantics.
+4. These settings must be used ONLY for LIMIT_BRACKET mode in this phase.
+
+These values will be needed again in future phases, so keep them clean and well-named.
+
+==================================================
+ STEP 2 — DESIGN LIMIT-MAKER PRICING LOGIC (NO TP/SL YET)
+==================================================
+
+In bracket_order_manager.py:
+
+1. Locate the existing function that determines the entry limit price for bracket entries.
+   - From your previous analysis, this used values like:
+     - Buy: current_price * 1.001 (0.1% above market)
+     - Sell: current_price * 0.999 (0.1% below market)
+   - Confirm the actual function and lines.
+
+2. Our new behavior for LIMIT_BRACKET entries is:
+
+   For LONG (buy):
+   - Entry limit price should be set BELOW the current price:
+     - price = current_price * (1 - limit_offset_pct)
+
+   For SHORT (sell):
+   - Entry limit price should be set ABOVE the current price:
+     - price = current_price * (1 + limit_offset_pct)
+
+3. Implement this logic in a small, clearly named helper function inside bracket_order_manager.py, for example:
+
+   def compute_maker_entry_price(side, current_price, config) -> float:
+       """
+       Compute a maker-friendly limit price for entry based on side and config.limit_offset_pct.
+       - LONG/BUY: place below market for maker.
+       - SHORT/SELL: place above market for maker.
+       """
+
+   Use the real side/type representation used in this project (e.g., "buy"/"sell" or Enums).
+
+4. Make sure this helper uses only existing types and patterns. Do NOT invent new side values.
+
+5. Integrate this helper where LIMIT_BRACKET entries are prepared, replacing any hard-coded 1.001 / 0.999 style multipliers for LIMIT_BRACKET mode.
+
+Important:
+- You are NOT yet changing how TP/SL are placed.
+- You are only changing the entry limit price computation for LIMIT_BRACKET mode.
+
+==================================================
+ STEP 3 — ADD TIMEOUT + RETRY AROUND LIMIT ENTRY
+==================================================
+
+Still in bracket_order_manager.py:
+
+1. Identify where the initial entry limit order is sent to Kraken for bracket mode (likely the call that combines entry + SL, or step 1 in the bracket flow).
+
+2. Wrap the limit entry placement with a basic timeout + retry loop for LIMIT_BRACKET mode:
+
+   Conceptual behavior:
+
+   - For up to limit_max_retries times:
+     - Place the limit entry order using your maker price.
+     - Wait/poll up to limit_timeout_seconds for the order to fill.
+       - Use existing order status helpers if they exist (e.g., functions that query the order status).
+       - If such helpers do not exist, keep the logic minimal and log clearly; do NOT invent complex polling logic.
+     - If the order fully fills within the timeout:
+       - Proceed as the current flow does for a filled entry (for now, keep existing TP/SL behavior untouched).
+       - Return success.
+     - If the order does NOT fill within the timeout:
+       - Cancel the order.
+       - If limit_fallback_to_market is True:
+         - Place a market entry instead (re-using existing market entry behavior where possible).
+         - Then proceed as a normal filled entry.
+       - If limit_fallback_to_market is False:
+         - Log that the entry was skipped due to no fill.
+         - Return a clean "no fill" / aborted result.
+
+3. Keep this logic as small and localized as possible:
+   - Do NOT build a full state machine yet.
+   - Do NOT touch oco_monitor.py in this phase.
+   - Do NOT change how TP/SL are attached after a successful entry (that will be PHASE 2B).
+
+4. Ensure that:
+   - This timeout+retry behavior is ONLY applied when execution_mode == "LIMIT_BRACKET".
+   - MARKET_ONLY entries are unaffected.
+
+==================================================
+ STEP 4 — ENSURE EXECUTION_MANAGER USES NEW ENTRY BEHAVIOR
+==================================================
+
+In execution_manager.py:
+
+1. Confirm that execute_entry_with_mode(...) already routes LIMIT_BRACKET mode into execute_limit_bracket_entry(...).
+
+2. Inside execute_limit_bracket_entry(...):
+
+   - Ensure that it now relies on the updated bracket_order_manager logic for placing the entry with the new maker limit pricing and timeout/retry behavior.
+   - You might need to pass config or context into bracket_order_manager so it can read:
+     - limit_offset_pct
+     - limit_timeout_seconds
+     - limit_max_retries
+     - limit_fallback_to_market
+
+3. Do NOT change the function signature of execute_entry_with_mode(...).
+4. Do NOT change execute_market_entry(...).
+
+We want execute_entry_with_mode to be the stable hinge that future phases will continue to use.
+
+==================================================
+ STEP 5 — NO STRATEGY/RISK/TP-SL CHANGES YET
+==================================================
+
+In this PHASE 2A, you must NOT:
+
+- Change strategy logic,
+- Change signal generation,
+- Change risk_manager.py behavior,
+- Change oco_monitor.py behavior,
+- Change the way TP or SL are calculated or placed (those are PHASE 2B tasks).
+
+The ONLY intended behavioral changes in this phase are:
+- LIMIT_BRACKET entries now use maker-friendly limit prices,
+- LIMIT_BRACKET entries now have basic timeout + retry + optional fallback-to-market behavior.
+
+==================================================
+ STEP 6 — MANDATORY SELF-REVIEW & SANITY CHECK
+==================================================
+
+Before you finish, you MUST perform a careful self-check:
+
+1. Re-read ALL files you changed:
+   - trading_config.py
+   - bracket_order_manager.py
+   - execution_manager.py
+
+2. Validate:
+   - No syntax errors,
+   - All imports resolve,
+   - Function signatures match where they are called,
+   - LIMIT_BRACKET code paths compile and import cleanly,
+   - MARKET_ONLY mode behavior remains unchanged.
+
+3. Think through both execution_mode flows:
+
+   MARKET_ONLY:
+     - Strategy → autopilot → execute_entry_with_mode → execute_market_entry → Kraken
+     - Behavior must be identical to before Phase 2A.
+
+   LIMIT_BRACKET:
+     - Strategy → autopilot → execute_entry_with_mode → execute_limit_bracket_entry → bracket_order_manager
+     - Entry limit price now uses maker-style offset,
+     - Timeout + retry + cancel/fallback logic is in place.
+
+4. Confirm explicitly (in your final message to the user) that:
+   - MARKET_ONLY mode is unchanged,
+   - LIMIT_BRACKET mode now uses maker-style entry pricing + timeout/retry as described,
+   - No unrelated code was touched.
+
+==================================================
+ STEP 7 — SUMMARY OUTPUT (REQUIRED FOR FUTURE PHASES)
+==================================================
+
+At the end of your answer, output a concise summary including:
+
+- Which files you edited,
+- What new config values you added,
+- What new helper functions you added or modified,
+- How LIMIT_BRACKET entry behavior changed compared to before,
+- How to configure:
+  - LIMIT_OFFSET_PCT
+  - LIMIT_TIMEOUT_SECONDS
+  - LIMIT_MAX_RETRIES
+  - LIMIT_FALLBACK_TO_MARKET
+- A clear statement confirming that MARKET_ONLY mode behaves exactly as before.
+
+This summary is critical so that we can resume the upgrade in PHASE 2B and beyond without confusion.
+
+End of build request (PHASE 2A).
