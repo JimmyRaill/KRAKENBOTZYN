@@ -1,10 +1,9 @@
 {
-  "current_date": "2025-11-24",
-  "total_trades_today": 3,
+  "current_date": "2025-11-25",
+  "total_trades_today": 2,
   "trades_by_symbol": {
-    "BTC/USD": 1,
-    "XRP/USD": 1,
-    "LTC/USD": 1
+    "SOL/USD": 1,
+    "ATOM/USD": 1
   },
   "max_trades_per_symbol": 10000,
   "max_total_trades": 10000
