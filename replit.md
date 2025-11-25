@@ -18,7 +18,7 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
 
 -   **Market-Only Execution System**: Pure market buy/sell orders.
     -   **Execution Manager (`execution_manager.py`)**: Centralized market order execution with rate limiting, fee logging, and telemetry integration. Handles settlement polling with exponential backoff for accurate fill data.
-    -   **Position Tracker (`position_tracker.py`)**: Implements "mental stop-loss/take-profit" using ATR-based levels (2x ATR for SL, 3x for TP). Monitors positions and triggers market SELL. Uses `portalocker` for interprocess synchronization.
+    -   **Position Tracker (`position_tracker.py`)**: Implements "mental stop-loss/take-profit" using ATR-based levels (3x ATR for SL, 4.5x for TP - widened Nov 2025 to reduce stop-outs). Monitors positions and triggers market SELL. Uses `portalocker` for interprocess synchronization. Includes stop validation warning if ATR compression creates unexpectedly tight stops.
     -   **Fee Model (`fee_model.py`)**: Tracks real-time Kraken fees with caching, enabling fee-adjusted profitability checks.
     -   **Rate Limiter (`rate_limiter.py`)**: Enforces API call limits.
     -   **Market Position Sizing**: SL-independent position sizing (fixed-fraction or synthetic ATR-based) with a 10% max position cap.
@@ -34,6 +34,7 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
     -   **Autopilot (`autopilot.py`)**: Autonomous trading loop executing a 5-minute closed-candle strategy, monitoring mental SL/TP levels and integrating risk gatekeepers.
     -   **Trading Config (`trading_config.py`)**: Centralized configuration for indicators, market filters, risk parameters, and execution mode, supporting environment variable overrides.
     -   **Signal Engine (`signal_engine.py`)**: Multi-signal decision engine using technical filters (RSI, SMA, volume, volatility, chop, ATR).
+    -   **Strategy Orchestrator (`strategy_orchestrator.py`)**: Regime-aware strategy selection with IMPROVED pullback detection (Nov 2025) - requires 0.75 ATR retrace from swing high, price at/below SMA20, RSI < 65 for entries.
     -   **Paper Trading (`paper_trading.py`)**: Complete simulation system with realistic fills, slippage, fees, and P&L calculation.
     -   **Exchange Manager (`exchange_manager.py`)**: Singleton wrapper for `ccxt` instances, ensuring consistent data fetching.
     -   **Risk Manager (`risk_manager.py`)**: Calculates per-trade and portfolio-wide risk.

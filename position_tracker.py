@@ -195,8 +195,8 @@ def add_position(
     entry_price: float,
     quantity: float,
     atr: float,
-    atr_sl_multiplier: float = 2.0,
-    atr_tp_multiplier: float = 3.0,
+    atr_sl_multiplier: float = 3.0,  # WIDENED from 2.0 - stops outside normal noise
+    atr_tp_multiplier: float = 4.5,  # INCREASED to 4.5 - ensures R:R >= 1.5 (4.5/3.0 = 1.5)
     source: str = "autopilot",
     is_short: bool = False
 ) -> Position:
@@ -276,6 +276,26 @@ def add_position(
         f"TP=${take_profit_price:.4f} ({atr_tp_multiplier}x ATR), "
         f"Qty={quantity:.6f}"
     )
+    
+    # VALIDATION: Warn if stop is too tight (less than expected ATR multiple)
+    if atr > 0:
+        actual_sl_distance = abs(entry_price - stop_loss_price)
+        actual_sl_atr_mult = actual_sl_distance / atr
+        expected_sl_atr_mult = atr_sl_multiplier
+        
+        # Warn if actual stop is significantly tighter than expected
+        if actual_sl_atr_mult < expected_sl_atr_mult * 0.9:
+            logger.warning(
+                f"[POSITION-TRACKER] ⚠️ STOP VALIDATION: {symbol} stop may be too tight! "
+                f"Expected {expected_sl_atr_mult:.1f}x ATR, got {actual_sl_atr_mult:.2f}x ATR "
+                f"(ATR=${atr:.4f}, SL distance=${actual_sl_distance:.4f})"
+            )
+        
+        # Also log stop distance as percentage for visibility
+        sl_pct = (actual_sl_distance / entry_price) * 100
+        logger.debug(
+            f"[POSITION-TRACKER] Stop distance for {symbol}: {sl_pct:.2f}% ({actual_sl_atr_mult:.2f}x ATR)"
+        )
     
     return position
 

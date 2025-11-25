@@ -25,8 +25,8 @@ class IndicatorConfig:
     
     # ATR settings
     atr_period: int = 14
-    atr_stop_multiplier: float = 2.0
-    atr_take_profit_multiplier: float = 3.0
+    atr_stop_multiplier: float = 3.0  # WIDENED from 2.0 - gives trades room to breathe
+    atr_take_profit_multiplier: float = 4.5  # INCREASED to 4.5 - ensures R:R >= 1.5 (4.5/3.0 = 1.5)
     
     # Fallback percentages (when ATR unavailable)
     fallback_stop_pct: float = 0.02  # 2%

@@ -164,11 +164,12 @@ class StrategyOrchestrator:
         """
         Trend pullback strategy for TREND_UP regime.
         
-        Logic:
+        IMPROVED Logic (v2 - wider stops, real pullbacks):
         - HTF must be aligned bullish (or neutral)
-        - Wait for pullback to SMA20 or slightly below
-        - RSI < 70 (not overbought)
-        - Enter long with tight stop below recent low
+        - Wait for REAL pullback: price must retrace >= 0.75 ATR from recent swing high
+        - Price must be at or below SMA20 (not chasing momentum)
+        - RSI < 65 (not overbought - tightened from 70)
+        - Enter long with 3x ATR stop (widened from 2x)
         """
         sma20 = indicators_5m.get('sma20')
         rsi = indicators_5m.get('rsi')
@@ -187,24 +188,42 @@ class StrategyOrchestrator:
                 symbol=symbol
             )
         
-        # Pullback condition: price near or slightly below SMA20
-        if sma20 and price >= sma20 * 0.998 and price <= sma20 * 1.002:
-            # Check RSI not overbought
-            if rsi and rsi < 70:
+        # Calculate recent swing high (highest high in last 10 candles)
+        lookback = min(10, len(ohlcv_5m))
+        recent_highs = [candle[2] for candle in ohlcv_5m[-lookback:]]  # [2] = high
+        swing_high = max(recent_highs) if recent_highs else price
+        
+        # Calculate pullback depth from swing high
+        pullback_depth = swing_high - price
+        min_pullback_atr = 0.75  # Require at least 0.75 ATR pullback
+        
+        # REAL PULLBACK condition:
+        # 1. Price has pulled back at least 0.75 ATR from recent swing high
+        # 2. Price is at or below SMA20 (not chasing extended price)
+        has_real_pullback = atr and pullback_depth >= (min_pullback_atr * atr)
+        price_at_support = sma20 and price <= sma20 * 1.002  # At or below SMA20
+        
+        if has_real_pullback and price_at_support:
+            # Check RSI not overbought (tightened threshold)
+            if rsi and rsi < 65:
                 # HTF bonus: increase confidence if aligned
                 confidence = 0.7
                 if htf.htf_aligned and htf.dominant_trend == 'up':
                     confidence = 0.85
                 
-                # Calculate stops
-                stop_loss = price - (2.0 * atr) if atr else price * 0.98
-                take_profit = price + (3.0 * atr) if atr else price * 1.045
+                # Calculate stops with WIDER ATR multipliers
+                atr_sl_mult = self.config.indicators.atr_stop_multiplier  # Now 3.0
+                atr_tp_mult = self.config.indicators.atr_take_profit_multiplier  # Now 4.0
+                stop_loss = price - (atr_sl_mult * atr) if atr else price * 0.97
+                take_profit = price + (atr_tp_mult * atr) if atr else price * 1.06
+                
+                pullback_pct = (pullback_depth / swing_high) * 100 if swing_high > 0 else 0
                 
                 return TradeSignal(
                     action='long',
                     regime=regime_result.regime,
                     confidence=confidence,
-                    reason=f"TREND_UP pullback: price={price:.2f} near SMA20={sma20:.2f}, RSI={rsi:.1f}, HTF={htf.dominant_trend}",
+                    reason=f"TREND_UP real pullback: price={price:.2f} ({pullback_pct:.1f}% from high {swing_high:.2f}), SMA20={sma20:.2f}, RSI={rsi:.1f}, HTF={htf.dominant_trend}",
                     entry_price=price,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
@@ -213,14 +232,35 @@ class StrategyOrchestrator:
                     dominant_trend=htf.dominant_trend,
                     symbol=symbol
                 )
+            else:
+                rsi_str = f"{rsi:.1f}" if rsi else "N/A"
+                return TradeSignal(
+                    action='hold',
+                    regime=regime_result.regime,
+                    confidence=0.0,
+                    reason=f"TREND_UP pullback but RSI too high ({rsi_str} >= 65)",
+                    entry_price=price,
+                    htf_aligned=htf.htf_aligned,
+                    dominant_trend=htf.dominant_trend,
+                    symbol=symbol
+                )
         
-        # No pullback yet - hold
+        # No real pullback yet - explain why
         sma20_str = f"{sma20:.2f}" if sma20 is not None else "N/A"
+        pullback_atr = pullback_depth / atr if atr and atr > 0 else 0
+        
+        if not has_real_pullback:
+            reason = f"TREND_UP but no pullback (need {min_pullback_atr:.2f}x ATR, have {pullback_atr:.2f}x ATR from high {swing_high:.2f})"
+        elif not price_at_support:
+            reason = f"TREND_UP but price extended above SMA20 (price={price:.2f} > SMA20={sma20_str})"
+        else:
+            reason = f"TREND_UP but conditions not met (price={price:.2f}, SMA20={sma20_str})"
+        
         return TradeSignal(
             action='hold',
             regime=regime_result.regime,
             confidence=0.0,
-            reason=f"TREND_UP but no pullback (price={price:.2f}, SMA20={sma20_str})",
+            reason=reason,
             entry_price=price,
             htf_aligned=htf.htf_aligned,
             dominant_trend=htf.dominant_trend,
@@ -523,14 +563,17 @@ class StrategyOrchestrator:
             if htf.dominant_trend == 'up':
                 confidence = min(confidence + 0.1, 0.9)
             
+            atr_sl_mult = self.config.indicators.atr_stop_multiplier  # Now 3.0
+            atr_tp_mult = self.config.indicators.atr_take_profit_multiplier  # Now 4.0
+            
             return TradeSignal(
                 action='long',
                 regime=regime_result.regime,
                 confidence=confidence,
                 reason=f"BREAKOUT_EXPANSION upside: volume_spike={volume_spike}, HTF={htf.dominant_trend}",
                 entry_price=price,
-                stop_loss=price - (2.5 * atr) if atr else price * 0.975,
-                take_profit=price + (4.0 * atr) if atr else price * 1.06,
+                stop_loss=price - (atr_sl_mult * atr) if atr else price * 0.97,
+                take_profit=price + (atr_tp_mult * atr) if atr else price * 1.06,
                 position_size_multiplier=confidence,
                 htf_aligned=htf.htf_aligned,
                 dominant_trend=htf.dominant_trend,
