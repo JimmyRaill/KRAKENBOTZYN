@@ -74,6 +74,19 @@ class StrategyOrchestrator:
         self.regime_detector = get_regime_detector()
         self.mtf_context = get_mtf_context()
         self.config = get_config()
+        
+        self._decision_stats = {
+            'total_evaluated': 0,
+            'blocked_by_symbol_whitelist': 0,
+            'blocked_by_symbol_blacklist': 0,
+            'blocked_by_regime_low_atr': 0,
+            'blocked_by_regime_low_volume': 0,
+            'blocked_by_regime_no_trend': 0,
+            'blocked_by_fee_gate': 0,
+            'passed_all_filters': 0,
+            'hold_signals': 0,
+        }
+        
         logger.info(f"StrategyOrchestrator initialized (aggressive_mode={self.config.regime.aggressive_mode}, "
                    f"BB_threshold={self.config.regime.aggressive_bb_pct if self.config.regime.aggressive_mode else self.config.regime.conservative_bb_pct}%, "
                    f"RSI_max={self.config.regime.aggressive_rsi_max if self.config.regime.aggressive_mode else self.config.regime.conservative_rsi_max})")
@@ -82,6 +95,15 @@ class StrategyOrchestrator:
             logger.info(f"[FEE-GATE] Fee gate ENABLED (safety_multiplier={self.config.fee_safety_multiplier})")
         else:
             logger.info("[FEE-GATE] Fee gate disabled (set FEE_GATE_ENABLED=1 to enable)")
+        
+        if self.config.regime_filter_enabled:
+            logger.info(f"[REGIME-FILTER] ENABLED (min_atr={self.config.regime_min_atr_pct}%, "
+                       f"min_vol=${self.config.regime_min_volume_usd}, trend_required={self.config.regime_trend_required})")
+        
+        if self.config.symbol_whitelist:
+            logger.info(f"[SYMBOL-FILTER] Whitelist active: {self.config.symbol_whitelist}")
+        if self.config.symbol_blacklist:
+            logger.info(f"[SYMBOL-FILTER] Blacklist active: {self.config.symbol_blacklist}")
     
     def _apply_fee_gate(self, signal: TradeSignal) -> TradeSignal:
         """
@@ -149,6 +171,7 @@ class StrategyOrchestrator:
         )
         
         if self.config.fee_gate_enabled:
+            self._decision_stats['blocked_by_fee_gate'] += 1
             return TradeSignal(
                 action='hold',
                 regime=signal.regime,
@@ -162,11 +185,210 @@ class StrategyOrchestrator:
         
         return signal
     
+    def _apply_symbol_filter(self, symbol: str, price: float) -> Optional[TradeSignal]:
+        """
+        Apply symbol whitelist/blacklist filter.
+        
+        Returns:
+            None if symbol passes filter (continue evaluation)
+            TradeSignal with action='hold' if symbol is blocked
+        """
+        base_symbol = symbol.replace('/USD', '').replace('/USDT', '').upper()
+        
+        if self.config.symbol_whitelist:
+            if base_symbol not in self.config.symbol_whitelist:
+                self._decision_stats['blocked_by_symbol_whitelist'] += 1
+                reason = f"SYMBOL_WHITELIST: {base_symbol} not in {self.config.symbol_whitelist}"
+                logger.debug(f"[SYMBOL-FILTER] {symbol} BLOCKED: {reason}")
+                
+                from exchange_manager import get_mode_str
+                log_evaluation(
+                    symbol=symbol,
+                    decision="SYMBOL_FILTER_BLOCKED",
+                    reason=reason,
+                    trading_mode=get_mode_str(),
+                    price=price,
+                    regime="pre_filter"
+                )
+                
+                return TradeSignal(
+                    action='hold',
+                    regime=MarketRegime.NO_TRADE,
+                    confidence=0.0,
+                    reason=reason,
+                    entry_price=price,
+                    symbol=symbol
+                )
+        
+        if self.config.symbol_blacklist:
+            if base_symbol in self.config.symbol_blacklist:
+                self._decision_stats['blocked_by_symbol_blacklist'] += 1
+                reason = f"SYMBOL_BLACKLIST: {base_symbol} in blacklist"
+                logger.debug(f"[SYMBOL-FILTER] {symbol} BLOCKED: {reason}")
+                
+                from exchange_manager import get_mode_str
+                log_evaluation(
+                    symbol=symbol,
+                    decision="SYMBOL_FILTER_BLOCKED",
+                    reason=reason,
+                    trading_mode=get_mode_str(),
+                    price=price,
+                    regime="pre_filter"
+                )
+                
+                return TradeSignal(
+                    action='hold',
+                    regime=MarketRegime.NO_TRADE,
+                    confidence=0.0,
+                    reason=reason,
+                    entry_price=price,
+                    symbol=symbol
+                )
+        
+        return None
+    
+    def _apply_regime_filter(
+        self,
+        symbol: str,
+        price: float,
+        indicators_5m: Dict[str, Any],
+        volume_usd_24h: Optional[float] = None
+    ) -> Optional[TradeSignal]:
+        """
+        Apply regime quality filter (ATR, volume, trend checks).
+        
+        Only blocks trades if regime_filter_enabled=True.
+        Always logs decision stats regardless.
+        
+        Args:
+            symbol: Trading pair
+            price: Current price
+            indicators_5m: Dict with 'atr', 'adx', etc.
+            volume_usd_24h: 24h volume in USD (optional)
+        
+        Returns:
+            None if passes filter (continue evaluation)
+            TradeSignal with action='hold' if blocked
+        """
+        if not self.config.regime_filter_enabled:
+            return None
+        
+        atr = indicators_5m.get('atr', 0)
+        adx = indicators_5m.get('adx', 0)
+        
+        atr_pct = (atr / price * 100) if price > 0 else 0
+        if atr_pct < self.config.regime_min_atr_pct:
+            self._decision_stats['blocked_by_regime_low_atr'] += 1
+            reason = f"REGIME_LOW_ATR: {atr_pct:.3f}% < min {self.config.regime_min_atr_pct}%"
+            logger.info(f"[REGIME-FILTER] {symbol} BLOCKED: {reason}")
+            
+            from exchange_manager import get_mode_str
+            log_evaluation(
+                symbol=symbol,
+                decision="REGIME_FILTER_BLOCKED",
+                reason=reason,
+                trading_mode=get_mode_str(),
+                price=price,
+                regime="low_atr"
+            )
+            
+            return TradeSignal(
+                action='hold',
+                regime=MarketRegime.NO_TRADE,
+                confidence=0.0,
+                reason=reason,
+                entry_price=price,
+                symbol=symbol
+            )
+        
+        if volume_usd_24h is not None and volume_usd_24h < self.config.regime_min_volume_usd:
+            self._decision_stats['blocked_by_regime_low_volume'] += 1
+            reason = f"REGIME_LOW_VOLUME: ${volume_usd_24h:,.0f} < min ${self.config.regime_min_volume_usd:,.0f}"
+            logger.info(f"[REGIME-FILTER] {symbol} BLOCKED: {reason}")
+            
+            from exchange_manager import get_mode_str
+            log_evaluation(
+                symbol=symbol,
+                decision="REGIME_FILTER_BLOCKED",
+                reason=reason,
+                trading_mode=get_mode_str(),
+                price=price,
+                regime="low_volume"
+            )
+            
+            return TradeSignal(
+                action='hold',
+                regime=MarketRegime.NO_TRADE,
+                confidence=0.0,
+                reason=reason,
+                entry_price=price,
+                symbol=symbol
+            )
+        
+        if self.config.regime_trend_required and adx < 20:
+            self._decision_stats['blocked_by_regime_no_trend'] += 1
+            reason = f"REGIME_NO_TREND: ADX={adx:.1f} < 20 (no clear trend)"
+            logger.info(f"[REGIME-FILTER] {symbol} BLOCKED: {reason}")
+            
+            from exchange_manager import get_mode_str
+            log_evaluation(
+                symbol=symbol,
+                decision="REGIME_FILTER_BLOCKED",
+                reason=reason,
+                trading_mode=get_mode_str(),
+                price=price,
+                regime="no_trend"
+            )
+            
+            return TradeSignal(
+                action='hold',
+                regime=MarketRegime.NO_TRADE,
+                confidence=0.0,
+                reason=reason,
+                entry_price=price,
+                symbol=symbol
+            )
+        
+        return None
+    
+    def get_decision_stats(self) -> Dict[str, int]:
+        """Return current decision statistics"""
+        return self._decision_stats.copy()
+    
+    def log_decision_stats(self):
+        """Log current decision statistics summary"""
+        stats = self._decision_stats
+        total = stats['total_evaluated']
+        if total == 0:
+            logger.info("[DECISION-STATS] No evaluations yet")
+            return
+        
+        blocked = (
+            stats['blocked_by_symbol_whitelist'] +
+            stats['blocked_by_symbol_blacklist'] +
+            stats['blocked_by_regime_low_atr'] +
+            stats['blocked_by_regime_low_volume'] +
+            stats['blocked_by_regime_no_trend'] +
+            stats['blocked_by_fee_gate']
+        )
+        
+        logger.info(
+            f"[DECISION-STATS] Total={total}, Blocked={blocked} "
+            f"(whitelist={stats['blocked_by_symbol_whitelist']}, "
+            f"blacklist={stats['blocked_by_symbol_blacklist']}, "
+            f"low_atr={stats['blocked_by_regime_low_atr']}, "
+            f"low_vol={stats['blocked_by_regime_low_volume']}, "
+            f"no_trend={stats['blocked_by_regime_no_trend']}, "
+            f"fee_gate={stats['blocked_by_fee_gate']}), "
+            f"Passed={stats['passed_all_filters']}, Hold={stats['hold_signals']}"
+        )
+    
     def generate_signal(
         self,
         symbol: str,
         ohlcv_5m: list,
-        indicators_5m: Dict[str, Any]
+        indicators_5m: Dict[str, Any],
+        volume_usd_24h: Optional[float] = None
     ) -> TradeSignal:
         """
         Generate trade signal based on regime and HTF context.
@@ -186,14 +408,23 @@ class StrategyOrchestrator:
                     'bb_lower': float,
                     'volume_percentile': float
                 }
+            volume_usd_24h: Optional 24h volume in USD for regime filter
         
         Returns:
             TradeSignal with action, regime, confidence, reasoning
         """
-        # Get current price
+        self._decision_stats['total_evaluated'] += 1
+        
         price = ohlcv_5m[-1][4]
         
-        # Step 1: Get HTF context for indicators_htf
+        symbol_block = self._apply_symbol_filter(symbol, price)
+        if symbol_block:
+            return symbol_block
+        
+        regime_block = self._apply_regime_filter(symbol, price, indicators_5m, volume_usd_24h)
+        if regime_block:
+            return regime_block
+        
         htf = self.mtf_context.get_context(symbol)
         
         # Build HTF indicators dict for regime detector
@@ -238,8 +469,17 @@ class StrategyOrchestrator:
         else:
             signal = self._no_trade_signal(symbol, price, regime_result, htf, "Unknown regime")
         
-        # Step 4: Apply fee gate filter to actionable signals
-        return self._apply_fee_gate(signal)
+        final_signal = self._apply_fee_gate(signal)
+        
+        if final_signal.action == 'hold':
+            self._decision_stats['hold_signals'] += 1
+        else:
+            self._decision_stats['passed_all_filters'] += 1
+        
+        if self.config.decision_stats_enabled and self._decision_stats['total_evaluated'] % 50 == 0:
+            self.log_decision_stats()
+        
+        return final_signal
     
     def _trend_up_strategy(
         self,
