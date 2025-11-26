@@ -232,7 +232,7 @@ class CryptoUniverseScanner:
         # This list is manually curated with top volume coins to avoid 25+ second startup delays
         static_high_volume_pairs = [
             "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD", 
-            "DOGE/USD", "AVAX/USD", "MATIC/USD", "DOT/USD", "LINK/USD",
+            "DOGE/USD", "AVAX/USD", "POL/USD", "DOT/USD", "LINK/USD",
             "UNI/USD", "ATOM/USD", "LTC/USD", "ARB/USD", "OP/USD",
             "AAVE/USD", "ALGO/USD", "APT/USD", "FIL/USD", "NEAR/USD"
         ]

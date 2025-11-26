@@ -1,5 +1,5 @@
 {
-  "last_scan": "2025-11-25T23:38:42.870738",
+  "last_scan": "2025-11-26T18:28:50.783474",
   "assets": [
     {
       "symbol": "BTC/USD",
@@ -72,8 +72,8 @@
       "rank": 7
     },
     {
-      "symbol": "MATIC/USD",
-      "base": "MATIC",
+      "symbol": "POL/USD",
+      "base": "POL",
       "quote": "USD",
       "volume_24h": 100000.0,
       "price": 1.0,
