@@ -213,6 +213,10 @@ def init_evaluation_log_db():
         cursor.execute("ALTER TABLE executed_orders ADD COLUMN parent_order_id TEXT DEFAULT NULL")
     if 'fill_status' not in columns:
         cursor.execute("ALTER TABLE executed_orders ADD COLUMN fill_status TEXT DEFAULT 'filled'")
+    if 'status' not in columns:
+        cursor.execute("ALTER TABLE executed_orders ADD COLUMN status TEXT DEFAULT 'filled'")
+    if 'trade_reason' not in columns:
+        cursor.execute("ALTER TABLE executed_orders ADD COLUMN trade_reason TEXT DEFAULT NULL")
     
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_executed_orders_timestamp 

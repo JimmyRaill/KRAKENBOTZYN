@@ -145,6 +145,19 @@ class TradingConfig:
     fee_gate_enabled: bool = False         # Default OFF - set FEE_GATE_ENABLED=1 to enable
     fee_safety_multiplier: float = 1.5     # Required edge = round_trip_fees * this multiplier
     
+    # Phase 3B: Regime filter settings (blocks trades in bad conditions)
+    regime_filter_enabled: bool = False    # Default OFF - set REGIME_FILTER_ENABLED=1 to enable
+    regime_min_atr_pct: float = 0.3        # Min ATR as % of price (0.3% = normal volatility)
+    regime_min_volume_usd: float = 10000.0 # Min 24h volume in USD
+    regime_trend_required: bool = False    # Require clear trend (ADX above threshold)
+    
+    # Phase 3B: Symbol whitelist/blacklist filtering
+    symbol_whitelist: Optional[list] = None   # If set, ONLY these symbols can trade (comma-separated via env)
+    symbol_blacklist: Optional[list] = None   # These symbols are blocked from trading
+    
+    # Phase 3B: Decision statistics tracking
+    decision_stats_enabled: bool = True    # Track how many trades blocked by each filter
+    
     # Feature flags
     enable_profit_target: bool = False
     enable_api_watchdog: bool = False
@@ -263,6 +276,37 @@ class TradingConfig:
                 config.fee_safety_multiplier = float(fee_multiplier_env)
             except (ValueError, TypeError):
                 print(f"[CONFIG-WARN] FEE_SAFETY_MULTIPLIER invalid: '{fee_multiplier_env}', using default 1.5")
+        
+        # Phase 3B: Regime filter settings
+        config.regime_filter_enabled = os.getenv("REGIME_FILTER_ENABLED", "0") == "1"
+        
+        regime_atr_env = os.getenv("REGIME_MIN_ATR_PCT")
+        if regime_atr_env:
+            try:
+                config.regime_min_atr_pct = float(regime_atr_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] REGIME_MIN_ATR_PCT invalid: '{regime_atr_env}', using default 0.3")
+        
+        regime_vol_env = os.getenv("REGIME_MIN_VOLUME_USD")
+        if regime_vol_env:
+            try:
+                config.regime_min_volume_usd = float(regime_vol_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] REGIME_MIN_VOLUME_USD invalid: '{regime_vol_env}', using default 10000.0")
+        
+        config.regime_trend_required = os.getenv("REGIME_TREND_REQUIRED", "0") == "1"
+        
+        # Phase 3B: Symbol whitelist/blacklist
+        whitelist_env = os.getenv("SYMBOL_WHITELIST", "")
+        if whitelist_env.strip():
+            config.symbol_whitelist = [s.strip().upper() for s in whitelist_env.split(",") if s.strip()]
+        
+        blacklist_env = os.getenv("SYMBOL_BLACKLIST", "")
+        if blacklist_env.strip():
+            config.symbol_blacklist = [s.strip().upper() for s in blacklist_env.split(",") if s.strip()]
+        
+        # Phase 3B: Decision stats
+        config.decision_stats_enabled = os.getenv("DECISION_STATS_ENABLED", "1") == "1"
         
         # Feature flags
         config.enable_profit_target = os.getenv("ENABLE_PROFIT_TARGET", "0") == "1"
