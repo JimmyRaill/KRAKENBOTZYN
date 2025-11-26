@@ -14,7 +14,10 @@ from evaluation_log import (
     get_pending_child_orders,
     mark_pending_order_filled,
     log_order_execution,
-    update_reconciliation_stats
+    update_reconciliation_stats,
+    get_entry_fill_state,
+    update_entry_fill_progress,
+    mark_bracket_initialized
 )
 from exchange_manager import get_exchange
 
@@ -130,8 +133,11 @@ def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
     """
     Monitor pending ENTRY orders and place TP orders when they fill.
     
-    CRITICAL: Solves the sequential bracket gap - ensures TP is placed even if
-    entry fills hours after initial placement.
+    PHASE 2B PARTIAL FILL HOTFIX:
+    - Uses cumulative fill tracking to handle partial fills correctly
+    - Only places TP ONCE when fill threshold (99%) is reached
+    - Sets bracket_initialized=1 to prevent duplicate TP orders
+    - Kraken creates SL per partial fill, so multiple SLs are expected
     
     Args:
         trading_mode: "live" or "paper"
@@ -140,8 +146,6 @@ def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
         Summary of reconciliation results
     """
     try:
-        from evaluation_log import get_pending_child_orders, mark_pending_order_filled
-        
         # Get all pending entries awaiting TP placement
         all_pending = get_pending_child_orders(trading_mode=trading_mode.lower(), status="pending")
         pending_entries = [p for p in all_pending if p['order_type'] == 'entry_pending_tp']
@@ -171,21 +175,65 @@ def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
                 entry_side = entry['side']
                 tp_price = entry['limit_price']  # TP price stored in limit_price field
                 
-                # Check if entry filled
-                is_filled, fill_data = _check_order_status(
+                # PHASE 2B: Get current fill state first
+                entry_state = get_entry_fill_state(entry_order_id)
+                
+                if entry_state and entry_state.get('bracket_initialized') == 1:
+                    # Bracket already placed - skip this entry
+                    logger.debug(
+                        f"[RECONCILE-ENTRIES-{trading_mode.upper()}] Skipping {entry_order_id} - "
+                        f"bracket_initialized=1 (TP already placed)"
+                    )
+                    continue
+                
+                # Check current fill status with Kraken (or partial fill info)
+                is_filled, fill_data, partial_fill_qty = _check_order_status_with_partials(
                     exchange=exchange,
                     order_id=entry_order_id,
                     symbol=symbol,
                     trading_mode=trading_mode
                 )
                 
-                if is_filled and fill_data:
+                # Handle partial fills - update cumulative tracking
+                # Note: partial_fill_qty from Kraken is already cumulative (not incremental)
+                if partial_fill_qty and partial_fill_qty > 0:
+                    progress = update_entry_fill_progress(
+                        entry_order_id=entry_order_id,
+                        kraken_filled_qty=partial_fill_qty,  # This is Kraken's cumulative filled value
+                        fill_threshold_pct=0.99  # 99% fill threshold
+                    )
+                    
+                    if progress['already_initialized']:
+                        logger.debug(
+                            f"[RECONCILE-ENTRIES-{trading_mode.upper()}] {entry_order_id} - "
+                            f"bracket already initialized, skipping"
+                        )
+                        continue
+                    
+                    if not progress['threshold_reached']:
+                        # Still accumulating fills, don't place TP yet
+                        logger.info(
+                            f"[RECONCILE-ENTRIES-{trading_mode.upper()}] {entry_order_id} - "
+                            f"partial fill progress: {progress['fill_pct']:.1f}% (waiting for threshold)"
+                        )
+                        continue
+                    
+                    # Threshold reached - use cumulative filled qty for TP
+                    filled_qty = progress['cumulative_filled']
+                    fill_price = fill_data.get('price', 0) if fill_data else 0
+                    is_filled = True
+                elif is_filled and fill_data:
+                    # Full fill detected via status='closed'
                     filled_qty = fill_data['quantity']
                     fill_price = fill_data['price']
-                    
+                else:
+                    # No fill detected
+                    continue
+                
+                if is_filled:
                     filled_count += 1
                     logger.info(
-                        f"[RECONCILE-ENTRIES-{trading_mode.upper()}] ✅ Entry filled: "
+                        f"[RECONCILE-ENTRIES-{trading_mode.upper()}] ✅ Entry fill threshold reached: "
                         f"{symbol} {filled_qty} @ ${fill_price:.5f} (order_id={entry_order_id})"
                     )
                     
@@ -225,8 +273,8 @@ def reconcile_pending_entries(trading_mode: str) -> Dict[str, Any]:
                             f"{symbol} {tp_side} {filled_qty} @ ${tp_price:.5f} (tp_id={tp_order_id}, sl_id={sl_order_id})"
                         )
                         
-                        # Mark entry as filled (no longer needs monitoring)
-                        mark_pending_order_filled(entry_order_id, tp_order_id=tp_order_id, sl_order_id=sl_order_id)
+                        # PHASE 2B: Mark bracket as initialized (prevents duplicate TP)
+                        mark_bracket_initialized(entry_order_id, tp_order_id=tp_order_id, sl_order_id=sl_order_id)
                     else:
                         error_msg = f"TP placement failed for entry {entry_order_id}: {tp_message}"
                         logger.error(f"[RECONCILE-ENTRIES-{trading_mode.upper()}] {error_msg}")
@@ -279,6 +327,94 @@ def _check_order_status(
     except Exception as e:
         logger.error(f"[ORDER-STATUS] Error checking {order_id}: {e}")
         return False, None
+
+
+def _check_order_status_with_partials(
+    exchange,
+    order_id: str,
+    symbol: str,
+    trading_mode: str
+) -> tuple[bool, Optional[Dict[str, Any]], Optional[float]]:
+    """
+    PHASE 2B PARTIAL FILL HOTFIX:
+    Check order status and return partial fill info for cumulative tracking.
+    
+    Unlike _check_order_status which only returns True on full fill,
+    this function also returns the current filled quantity even if order is still open.
+    
+    Returns:
+        (is_fully_filled, fill_data, current_filled_qty)
+        - is_fully_filled: True only if order status is 'closed'
+        - fill_data: Contains side, quantity (total filled), price
+        - current_filled_qty: The NEW fill quantity to add (delta from last check)
+                             Note: For now, returns total filled - caller should handle idempotency
+    """
+    try:
+        if trading_mode.upper() == "PAPER":
+            # For paper mode, partial fills aren't simulated
+            is_filled, fill_data = _check_paper_order_status(order_id, symbol)
+            filled_qty = fill_data.get('quantity', 0) if fill_data else 0
+            return is_filled, fill_data, filled_qty if is_filled else None
+        else:
+            # For live mode, query Kraken with partial fill awareness
+            return _check_live_order_status_with_partials(exchange, order_id, symbol)
+            
+    except Exception as e:
+        logger.error(f"[ORDER-STATUS-PARTIAL] Error checking {order_id}: {e}")
+        return False, None, None
+
+
+def _check_live_order_status_with_partials(
+    exchange, 
+    order_id: str, 
+    symbol: str
+) -> tuple[bool, Optional[Dict[str, Any]], Optional[float]]:
+    """
+    PHASE 2B PARTIAL FILL HOTFIX:
+    Check Kraken order status with awareness of partial fills.
+    
+    Returns partial fill quantity even when order is still 'open'.
+    This enables cumulative fill tracking for TP placement.
+    
+    Returns:
+        (is_fully_filled, fill_data, filled_qty)
+    """
+    try:
+        order_info = exchange.fetch_order(order_id, symbol)
+        
+        status = order_info.get('status', '').lower()
+        filled_qty = float(order_info.get('filled', 0) or 0)
+        remaining = float(order_info.get('remaining', 0) or 0)
+        avg_price = float(order_info.get('average', 0) or order_info.get('price', 0) or 0)
+        side = order_info.get('side', '').lower()
+        
+        # Full fill: status is closed and remaining is 0
+        is_fully_filled = status in ['closed', 'filled'] and remaining == 0
+        
+        if is_fully_filled and filled_qty > 0 and avg_price > 0:
+            logger.info(f"[ORDER-STATUS-PARTIAL] ✅ {order_id} FULLY FILLED: {filled_qty} @ ${avg_price:.5f}")
+            return True, {
+                "side": side,
+                "quantity": filled_qty,
+                "price": avg_price
+            }, filled_qty
+        
+        # Partial fill: order still open but has some fills
+        if status == 'open' and filled_qty > 0:
+            logger.info(f"[ORDER-STATUS-PARTIAL] ⏳ {order_id} PARTIAL: {filled_qty} filled, {remaining} remaining @ ${avg_price:.5f}")
+            return False, {
+                "side": side,
+                "quantity": filled_qty,
+                "price": avg_price
+            }, filled_qty
+        
+        # No fills yet
+        logger.debug(f"[ORDER-STATUS-PARTIAL] {order_id} not filled (status={status}, filled={filled_qty})")
+        return False, None, None
+        
+    except Exception as e:
+        logger.error(f"[ORDER-STATUS-PARTIAL] Kraken query failed for {order_id}: {e}")
+        return False, None, None
 
 
 def _check_live_order_status(exchange, order_id: str, symbol: str) -> tuple[bool, Optional[Dict[str, Any]]]:

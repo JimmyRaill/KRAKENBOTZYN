@@ -28,6 +28,12 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
           - **Phase 2B-1**: Position tracker integration - bracket entries now tracked in `position_tracker.py` with real SL/TP prices (not recalculated mental levels)
           - **Phase 2B-2**: OCO monitor cleans up position_tracker when TP/SL orders fill - dual tracking synchronized (pending_child_orders in SQLite AND open_positions.json for dashboard)
           - Fill data extraction improved to handle nested `fill_data` structure from `bracket_order_manager.py`
+          - **Phase 2B PARTIAL FILL HOTFIX (Nov 2025)**: Fixed critical bug where partial fills created multiple SL orders and missing TP:
+            - Schema: Added `filled_qty`, `total_qty`, `bracket_initialized` to pending_child_orders table
+            - Cumulative fill tracking: Uses Kraken's cumulative `filled` value (not incremental) with 99% threshold
+            - One-time TP placement: `bracket_initialized=1` flag prevents duplicate TP orders
+            - Multi-SL handling: OCO monitor now cancels ALL SL orders (not just one) when TP fills
+            - Diagnostic logging: Warning when multiple SLs detected (expected with partial fills)
         - `BRACKET`: Alias for LIMIT_BRACKET mode
     -   **OCO Monitor (`oco_monitor.py`)**: Synthetic OCO (One-Cancels-Other) for LIMIT_BRACKET mode - when TP fills, cancels SL and cleans up position_tracker; when SL fills, cancels TP and cleans up position_tracker. Runs in reconciliation cycle.
     -   Handles settlement polling with exponential backoff for accurate fill data.

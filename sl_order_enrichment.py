@@ -22,12 +22,18 @@ def find_sl_order_id_from_entry(entry_order_id: str, symbol: str) -> Optional[st
     a standalone order with parenttxid pointing to the entry. This function
     queries Kraken to find that child order.
     
+    PHASE 2B PARTIAL FILL HOTFIX:
+    - Kraken creates ONE SL per partial fill (e.g., 4 partials = 4 SLs)
+    - This function now detects and warns about multiple SLs
+    - Returns the FIRST SL found (oldest - smallest qty)
+    - Multiple SLs are expected with partial fills and logged for diagnostics
+    
     Args:
         entry_order_id: Entry order ID (parent order)
         symbol: Trading pair (e.g., "1INCH/USD")
         
     Returns:
-        SL order ID if found, None otherwise
+        SL order ID if found (first one if multiple), None otherwise
         
     Example:
         sl_id = find_sl_order_id_from_entry("OVACX2-GOESD-IOA2ZO", "1INCH/USD")
@@ -41,6 +47,9 @@ def find_sl_order_id_from_entry(entry_order_id: str, symbol: str) -> Optional[st
         
         logger.debug(f"[SL-ENRICHMENT] Searching {len(open_orders)} open orders for SL child of {entry_order_id}")
         
+        # PHASE 2B: Collect ALL matching SL orders (partial fills create multiple)
+        matching_sls = []
+        
         for order in open_orders:
             order_info = order.get('info', {})
             
@@ -50,8 +59,36 @@ def find_sl_order_id_from_entry(entry_order_id: str, symbol: str) -> Optional[st
             
             if order_type == 'stop-loss' and parent_txid == entry_order_id:
                 sl_order_id = order.get('id', '')
-                logger.success(f"[SL-ENRICHMENT] ✅ Found SL order: {sl_order_id} (parent: {entry_order_id})")
-                return sl_order_id
+                sl_qty = float(order.get('amount', 0) or order.get('remaining', 0) or 0)
+                matching_sls.append({
+                    "order_id": sl_order_id,
+                    "quantity": sl_qty,
+                    "stop_price": float(order.get('stopPrice', 0) or 0)
+                })
+        
+        # PHASE 2B: Warn about multiple SLs (partial fill symptom)
+        if len(matching_sls) > 1:
+            total_sl_qty = sum(sl['quantity'] for sl in matching_sls)
+            sl_ids = [sl['order_id'] for sl in matching_sls]
+            logger.warning(
+                f"[SL-ENRICHMENT] ⚠️ MULTIPLE SLs DETECTED for {symbol} entry {entry_order_id}: "
+                f"{len(matching_sls)} SL orders (partial fill symptom) | "
+                f"SL IDs: {sl_ids} | Total SL qty: {total_sl_qty:.8f}"
+            )
+            logger.warning(
+                f"[SL-ENRICHMENT] This is expected with partial fills. "
+                f"OCO monitor will cancel all SLs when TP fills."
+            )
+            
+            # Return the first SL (Kraken creates them in order of fill)
+            first_sl = matching_sls[0]['order_id']
+            logger.info(f"[SL-ENRICHMENT] Using first SL: {first_sl}")
+            return first_sl
+        
+        if matching_sls:
+            sl_order_id = matching_sls[0]['order_id']
+            logger.success(f"[SL-ENRICHMENT] ✅ Found SL order: {sl_order_id} (parent: {entry_order_id})")
+            return sl_order_id
         
         # Not found in open orders, might be too soon after fill
         logger.warning(f"[SL-ENRICHMENT] ⚠️ SL order not found yet for entry {entry_order_id}")

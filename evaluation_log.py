@@ -612,20 +612,27 @@ def get_entry_fill_state(entry_order_id: str) -> Optional[Dict[str, Any]]:
 
 def update_entry_fill_progress(
     entry_order_id: str,
-    new_fill_qty: float,
+    kraken_filled_qty: float,
     fill_threshold_pct: float = 0.99
 ) -> Dict[str, Any]:
     """
-    Update cumulative fill progress for an entry order and check if bracket should be placed.
+    Update fill progress for an entry order using Kraken's cumulative filled quantity.
     
     PHASE 2B PARTIAL FILL HOTFIX:
-    - Atomically updates filled_qty += new_fill_qty
+    - Sets filled_qty to Kraken's cumulative value (NOT additive - Kraken's 'filled' is already cumulative)
     - Returns updated state including whether threshold is reached
     - DOES NOT place TP/SL - caller is responsible for that
     
+    CRITICAL: Kraken's API returns the TOTAL filled quantity, not incremental.
+    Example: If order fills in 3 partials (100, 50, 25), Kraken reports:
+    - After 1st: filled=100
+    - After 2nd: filled=150  
+    - After 3rd: filled=175
+    This function expects the Kraken filled value directly (e.g., 175, not 25).
+    
     Args:
         entry_order_id: Entry order ID
-        new_fill_qty: New fill quantity to ADD to cumulative total
+        kraken_filled_qty: Kraken's cumulative filled quantity (from fetch_order)
         fill_threshold_pct: Percentage of total_qty to consider "fully filled" (default 99%)
         
     Returns:
@@ -670,44 +677,51 @@ def update_entry_fill_progress(
             return result
         
         total_qty = float(row[0] or 0)
-        current_filled = float(row[1] or 0)
+        prev_filled = float(row[1] or 0)
         bracket_initialized = int(row[2] or 0)
         
         # Check if bracket was already initialized
         if bracket_initialized == 1:
             logger.info(f"[FILL-PROGRESS] Entry {entry_order_id} already has bracket_initialized=1 - skipping fill update")
             result["success"] = True
-            result["cumulative_filled"] = current_filled
+            result["cumulative_filled"] = prev_filled
             result["total_qty"] = total_qty
-            result["fill_pct"] = (current_filled / total_qty * 100) if total_qty > 0 else 0
+            result["fill_pct"] = (prev_filled / total_qty * 100) if total_qty > 0 else 0
             result["threshold_reached"] = True
             result["bracket_initialized"] = 1
             result["already_initialized"] = True
             conn.close()
             return result
         
-        # Update cumulative fill
-        new_cumulative = current_filled + new_fill_qty
+        # Use Kraken's cumulative filled value directly (not additive)
+        new_cumulative = kraken_filled_qty
         fill_pct = (new_cumulative / total_qty * 100) if total_qty > 0 else 0
         threshold_reached = new_cumulative >= (total_qty * fill_threshold_pct)
         
-        # Update the database
-        cursor.execute("""
-            UPDATE pending_child_orders
-            SET filled_qty = ?,
-                last_checked_utc = ?
-            WHERE order_id = ?
-              AND order_type = 'entry_pending_tp'
-        """, (new_cumulative, datetime.utcnow().isoformat(), entry_order_id))
+        # Only update if there's new fill progress
+        if new_cumulative > prev_filled:
+            cursor.execute("""
+                UPDATE pending_child_orders
+                SET filled_qty = ?,
+                    last_checked_utc = ?
+                WHERE order_id = ?
+                  AND order_type = 'entry_pending_tp'
+            """, (new_cumulative, datetime.utcnow().isoformat(), entry_order_id))
+            
+            conn.commit()
+            
+            logger.info(
+                f"[FILL-PROGRESS] Entry {entry_order_id}: "
+                f"filled {prev_filled:.8f} -> {new_cumulative:.8f} / {total_qty:.8f} "
+                f"({fill_pct:.1f}%) | threshold_reached={threshold_reached}"
+            )
+        else:
+            logger.debug(
+                f"[FILL-PROGRESS] Entry {entry_order_id}: no new fills "
+                f"(prev={prev_filled:.8f}, kraken={new_cumulative:.8f})"
+            )
         
-        conn.commit()
         conn.close()
-        
-        logger.info(
-            f"[FILL-PROGRESS] Entry {entry_order_id}: "
-            f"filled {current_filled:.8f} + {new_fill_qty:.8f} = {new_cumulative:.8f} / {total_qty:.8f} "
-            f"({fill_pct:.1f}%) | threshold_reached={threshold_reached}"
-        )
         
         result["success"] = True
         result["cumulative_filled"] = new_cumulative

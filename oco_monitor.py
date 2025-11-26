@@ -90,6 +90,9 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
                         logger.debug(f"[OCO-MONITOR-{trading_mode}] SL ID not yet available for {symbol} (entry: {entry_id})")
                         continue  # Skip this bracket for now, will retry next cycle
                 
+                # PHASE 2B: Find ALL SL orders for this entry (partial fills create multiple)
+                all_sl_ids = _find_all_sl_orders_for_entry(exchange, entry_id, symbol)
+                
                 # Fetch open orders to see which are still active
                 open_orders = exchange.fetch_open_orders(symbol)
                 open_order_ids = {order['id'] for order in open_orders}
@@ -97,43 +100,53 @@ def check_and_cancel_opposite_orders(trading_mode: str = "LIVE") -> Dict[str, in
                 tp_still_open = tp_id in open_order_ids
                 sl_still_open = sl_id in open_order_ids
                 
-                # Case 1: TP filled, SL still open → Cancel SL
+                # Case 1: TP filled, SL still open → Cancel ALL SLs (partial fills create multiple)
                 if not tp_still_open and sl_still_open:
-                    logger.info(f"[OCO-MONITOR-{trading_mode}] {symbol}: TP filled ({tp_id}), cancelling SL ({sl_id})")
+                    # PHASE 2B: Cancel ALL SL orders for this entry (partial fills create multiple)
+                    sls_to_cancel = all_sl_ids if all_sl_ids else [sl_id]
                     
-                    try:
-                        exchange.cancel_order(sl_id, symbol)
-                        logger.success(f"[OCO-MONITOR-{trading_mode}] ✅ Cancelled SL: {sl_id}")
-                        stats["sl_cancelled"] += 1
-                        
-                        # Log cancellation to executed_orders
-                        _log_oco_cancellation(
-                            symbol=symbol,
-                            cancelled_order_id=sl_id,
-                            cancelled_type="SL",
-                            reason=f"TP filled: {tp_id}",
-                            trading_mode=trading_mode
-                        )
-                        
-                        # Mark bracket as complete
-                        _mark_bracket_complete(entry_id, "tp_filled", db)
-                        
-                        # PHASE 2B-2: Clean up position_tracker (non-blocking - bracket already marked complete above)
+                    logger.info(
+                        f"[OCO-MONITOR-{trading_mode}] {symbol}: TP filled ({tp_id}), "
+                        f"cancelling {len(sls_to_cancel)} SL(s): {sls_to_cancel}"
+                    )
+                    
+                    cancelled_count = 0
+                    for sl_to_cancel in sls_to_cancel:
                         try:
-                            removed = remove_position(symbol)
-                            if removed:
-                                logger.info(f"[OCO-MONITOR-{trading_mode}] ✅ Position closed (TP): {symbol}")
-                            else:
-                                logger.debug(f"[OCO-MONITOR-{trading_mode}] Position not in tracker: {symbol}")
-                        except FileNotFoundError as fnf_err:
-                            # Lock file may not exist yet - non-fatal, position_tracker will create on next add
-                            logger.warning(f"[OCO-MONITOR-{trading_mode}] Lock file not found, skipping cleanup: {fnf_err}")
-                        except Exception as pos_err:
-                            logger.warning(f"[OCO-MONITOR-{trading_mode}] Failed to remove position {symbol}: {pos_err}")
-                        
-                    except Exception as e:
-                        logger.error(f"[OCO-MONITOR-{trading_mode}] Failed to cancel SL {sl_id}: {e}")
-                        stats["errors"] += 1
+                            exchange.cancel_order(sl_to_cancel, symbol)
+                            logger.success(f"[OCO-MONITOR-{trading_mode}] ✅ Cancelled SL: {sl_to_cancel}")
+                            cancelled_count += 1
+                            
+                            # Log each cancellation to executed_orders
+                            _log_oco_cancellation(
+                                symbol=symbol,
+                                cancelled_order_id=sl_to_cancel,
+                                cancelled_type="SL",
+                                reason=f"TP filled: {tp_id}",
+                                trading_mode=trading_mode
+                            )
+                            
+                        except Exception as e:
+                            # Order may already be cancelled/executed - not fatal
+                            logger.warning(f"[OCO-MONITOR-{trading_mode}] Could not cancel SL {sl_to_cancel}: {e}")
+                    
+                    stats["sl_cancelled"] += cancelled_count
+                    
+                    # Mark bracket as complete
+                    _mark_bracket_complete(entry_id, "tp_filled", db)
+                    
+                    # PHASE 2B-2: Clean up position_tracker (non-blocking - bracket already marked complete above)
+                    try:
+                        removed = remove_position(symbol)
+                        if removed:
+                            logger.info(f"[OCO-MONITOR-{trading_mode}] ✅ Position closed (TP): {symbol}")
+                        else:
+                            logger.debug(f"[OCO-MONITOR-{trading_mode}] Position not in tracker: {symbol}")
+                    except FileNotFoundError as fnf_err:
+                        # Lock file may not exist yet - non-fatal, position_tracker will create on next add
+                        logger.warning(f"[OCO-MONITOR-{trading_mode}] Lock file not found, skipping cleanup: {fnf_err}")
+                    except Exception as pos_err:
+                        logger.warning(f"[OCO-MONITOR-{trading_mode}] Failed to remove position {symbol}: {pos_err}")
                 
                 # Case 2: SL filled, TP still open → Cancel TP
                 elif not sl_still_open and tp_still_open:
@@ -261,6 +274,48 @@ def _log_oco_cancellation(
         
     except Exception as e:
         logger.error(f"[OCO-LOG] Failed to log cancellation: {e}")
+
+
+def _find_all_sl_orders_for_entry(exchange, entry_order_id: str, symbol: str) -> List[str]:
+    """
+    PHASE 2B PARTIAL FILL HOTFIX:
+    Find ALL SL orders for a given entry order.
+    
+    When entries fill in multiple partials, Kraken creates one SL per partial.
+    This function returns all matching SL order IDs so we can cancel them all.
+    
+    Args:
+        exchange: CCXT exchange instance
+        entry_order_id: Entry order ID (parent of SL orders)
+        symbol: Trading pair
+        
+    Returns:
+        List of all SL order IDs for this entry (empty if none found)
+    """
+    try:
+        open_orders = exchange.fetch_open_orders(symbol)
+        matching_sls = []
+        
+        for order in open_orders:
+            order_info = order.get('info', {})
+            order_type = order.get('type', '').lower()
+            parent_txid = order_info.get('parenttxid', '')
+            
+            if order_type == 'stop-loss' and parent_txid == entry_order_id:
+                sl_order_id = order.get('id', '')
+                if sl_order_id:
+                    matching_sls.append(sl_order_id)
+        
+        if len(matching_sls) > 1:
+            logger.info(
+                f"[OCO-MULTI-SL] Found {len(matching_sls)} SL orders for entry {entry_order_id}: {matching_sls}"
+            )
+        
+        return matching_sls
+        
+    except Exception as e:
+        logger.error(f"[OCO-MULTI-SL] Error finding SL orders for {entry_order_id}: {e}")
+        return []
 
 
 def _mark_bracket_complete(entry_order_id: str, exit_reason: str, db) -> None:
