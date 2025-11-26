@@ -267,6 +267,14 @@ def init_evaluation_log_db():
     if 'created_at' not in pending_columns:
         cursor.execute("ALTER TABLE pending_child_orders ADD COLUMN created_at INTEGER DEFAULT 0")
     
+    # PHASE 2B PARTIAL FILL HOTFIX: Track cumulative fills and bracket initialization
+    if 'total_qty' not in pending_columns:
+        cursor.execute("ALTER TABLE pending_child_orders ADD COLUMN total_qty REAL DEFAULT 0")
+    if 'filled_qty' not in pending_columns:
+        cursor.execute("ALTER TABLE pending_child_orders ADD COLUMN filled_qty REAL DEFAULT 0")
+    if 'bracket_initialized' not in pending_columns:
+        cursor.execute("ALTER TABLE pending_child_orders ADD COLUMN bracket_initialized INTEGER DEFAULT 0")
+    
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_pending_orders_status 
         ON pending_child_orders(status, trading_mode)
@@ -425,11 +433,16 @@ def register_pending_entry(
     Uses order_type='entry_pending_tp' to track entries awaiting TP placement.
     The reconciliation service will monitor this entry and place the TP when it fills.
     
+    PHASE 2B PARTIAL FILL HOTFIX:
+    - Stores total_qty for the full order size
+    - Initializes filled_qty=0 and bracket_initialized=0
+    - TP+SL will only be placed ONCE when cumulative fills reach threshold
+    
     Args:
         symbol: Trading pair
         entry_order_id: The entry order ID from exchange
         entry_side: "buy" or "sell"
-        entry_quantity: Entry order size
+        entry_quantity: Entry order size (TOTAL quantity)
         entry_price: Entry limit price
         tp_price: Take-profit price to place after fill
         sl_price: Stop-loss price (for reference/logging)
@@ -442,24 +455,28 @@ def register_pending_entry(
         timestamp_utc = datetime.utcnow().isoformat()
         
         # Use order_type='entry_pending_tp' to distinguish from TP/SL child orders
-        # parent_order_id is empty since this IS the parent
+        # parent_order_id stores TP/SL/entry_price for later reference
         # limit_price stores the TP price for later placement
-        # status explicitly set to 'pending' (though default would apply)
+        # PHASE 2B: Initialize partial fill tracking fields
         cursor.execute("""
             INSERT OR REPLACE INTO pending_child_orders (
                 timestamp_created_utc, symbol, order_id, order_type,
-                parent_order_id, side, quantity, limit_price, trading_mode, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                parent_order_id, side, quantity, limit_price, trading_mode, status,
+                total_qty, filled_qty, bracket_initialized
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp_utc, symbol, entry_order_id, "entry_pending_tp",
             f"tp={tp_price},sl={sl_price},entry_price={entry_price}",  # Store TP/SL in parent_order_id field
-            entry_side, entry_quantity, tp_price, trading_mode, 'pending'
+            entry_side, entry_quantity, tp_price, trading_mode, 'pending',
+            entry_quantity,  # total_qty = full order size
+            0.0,             # filled_qty = 0 (no fills yet)
+            0                # bracket_initialized = 0 (TP not placed yet)
         ))
         
         conn.commit()
         conn.close()
         
-        logger.info(f"[PENDING-ENTRY] Registered {symbol} entry={entry_order_id} awaiting fill to place TP @ ${tp_price:.5f}")
+        logger.info(f"[PENDING-ENTRY] Registered {symbol} entry={entry_order_id} awaiting fill to place TP @ ${tp_price:.5f} (total_qty={entry_quantity:.8f})")
         
     except Exception as e:
         logger.error(f"[PENDING-ENTRY] Failed to register: {e}")
@@ -544,6 +561,229 @@ def mark_pending_order_filled(order_id: str, tp_order_id: Optional[str] = None, 
         
     except Exception as e:
         logger.error(f"[PENDING-ORDER] Failed to mark filled: {e}")
+
+
+def get_entry_fill_state(entry_order_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get the current fill state for an entry order.
+    
+    PHASE 2B PARTIAL FILL HOTFIX:
+    Returns the entry record with total_qty, filled_qty, bracket_initialized
+    for determining if TP+SL should be placed.
+    
+    Args:
+        entry_order_id: Entry order ID to look up
+        
+    Returns:
+        Dict with entry state or None if not found:
+        {
+            "order_id": str,
+            "symbol": str,
+            "total_qty": float,
+            "filled_qty": float,
+            "bracket_initialized": int (0 or 1),
+            "tp_order_id": str or None,
+            "sl_order_id": str or None,
+            "limit_price": float (TP price),
+            ...
+        }
+    """
+    try:
+        conn = _get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT * FROM pending_child_orders
+            WHERE order_id = ?
+              AND order_type = 'entry_pending_tp'
+        """, (entry_order_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return dict(row)
+        return None
+        
+    except Exception as e:
+        logger.error(f"[ENTRY-STATE] Failed to get entry state for {entry_order_id}: {e}")
+        return None
+
+
+def update_entry_fill_progress(
+    entry_order_id: str,
+    new_fill_qty: float,
+    fill_threshold_pct: float = 0.99
+) -> Dict[str, Any]:
+    """
+    Update cumulative fill progress for an entry order and check if bracket should be placed.
+    
+    PHASE 2B PARTIAL FILL HOTFIX:
+    - Atomically updates filled_qty += new_fill_qty
+    - Returns updated state including whether threshold is reached
+    - DOES NOT place TP/SL - caller is responsible for that
+    
+    Args:
+        entry_order_id: Entry order ID
+        new_fill_qty: New fill quantity to ADD to cumulative total
+        fill_threshold_pct: Percentage of total_qty to consider "fully filled" (default 99%)
+        
+    Returns:
+        Dict with updated state:
+        {
+            "success": bool,
+            "cumulative_filled": float,
+            "total_qty": float,
+            "fill_pct": float,
+            "threshold_reached": bool,
+            "bracket_initialized": int,
+            "already_initialized": bool (True if bracket was already placed)
+        }
+    """
+    result = {
+        "success": False,
+        "cumulative_filled": 0.0,
+        "total_qty": 0.0,
+        "fill_pct": 0.0,
+        "threshold_reached": False,
+        "bracket_initialized": 0,
+        "already_initialized": False
+    }
+    
+    try:
+        conn = _get_connection()
+        cursor = conn.cursor()
+        
+        # Get current state
+        cursor.execute("""
+            SELECT total_qty, filled_qty, bracket_initialized
+            FROM pending_child_orders
+            WHERE order_id = ?
+              AND order_type = 'entry_pending_tp'
+        """, (entry_order_id,))
+        
+        row = cursor.fetchone()
+        
+        if not row:
+            logger.warning(f"[FILL-PROGRESS] Entry {entry_order_id} not found in pending_child_orders")
+            conn.close()
+            return result
+        
+        total_qty = float(row[0] or 0)
+        current_filled = float(row[1] or 0)
+        bracket_initialized = int(row[2] or 0)
+        
+        # Check if bracket was already initialized
+        if bracket_initialized == 1:
+            logger.info(f"[FILL-PROGRESS] Entry {entry_order_id} already has bracket_initialized=1 - skipping fill update")
+            result["success"] = True
+            result["cumulative_filled"] = current_filled
+            result["total_qty"] = total_qty
+            result["fill_pct"] = (current_filled / total_qty * 100) if total_qty > 0 else 0
+            result["threshold_reached"] = True
+            result["bracket_initialized"] = 1
+            result["already_initialized"] = True
+            conn.close()
+            return result
+        
+        # Update cumulative fill
+        new_cumulative = current_filled + new_fill_qty
+        fill_pct = (new_cumulative / total_qty * 100) if total_qty > 0 else 0
+        threshold_reached = new_cumulative >= (total_qty * fill_threshold_pct)
+        
+        # Update the database
+        cursor.execute("""
+            UPDATE pending_child_orders
+            SET filled_qty = ?,
+                last_checked_utc = ?
+            WHERE order_id = ?
+              AND order_type = 'entry_pending_tp'
+        """, (new_cumulative, datetime.utcnow().isoformat(), entry_order_id))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(
+            f"[FILL-PROGRESS] Entry {entry_order_id}: "
+            f"filled {current_filled:.8f} + {new_fill_qty:.8f} = {new_cumulative:.8f} / {total_qty:.8f} "
+            f"({fill_pct:.1f}%) | threshold_reached={threshold_reached}"
+        )
+        
+        result["success"] = True
+        result["cumulative_filled"] = new_cumulative
+        result["total_qty"] = total_qty
+        result["fill_pct"] = fill_pct
+        result["threshold_reached"] = threshold_reached
+        result["bracket_initialized"] = 0
+        result["already_initialized"] = False
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"[FILL-PROGRESS] Failed to update fill progress for {entry_order_id}: {e}")
+        return result
+
+
+def mark_bracket_initialized(entry_order_id: str, tp_order_id: Optional[str] = None, sl_order_id: Optional[str] = None) -> bool:
+    """
+    Mark an entry as having its bracket (TP+SL) initialized.
+    
+    PHASE 2B PARTIAL FILL HOTFIX:
+    Sets bracket_initialized=1 to prevent duplicate TP/SL placement.
+    This is a ONE-WAY operation - once set, bracket will never be placed again.
+    
+    Args:
+        entry_order_id: Entry order ID
+        tp_order_id: Optional TP order ID to store
+        sl_order_id: Optional SL order ID to store
+        
+    Returns:
+        True if marked successfully, False otherwise
+    """
+    try:
+        conn = _get_connection()
+        cursor = conn.cursor()
+        
+        # Build UPDATE query
+        update_fields = [
+            "bracket_initialized = 1",
+            "status = 'filled'",
+            "last_checked_utc = ?"
+        ]
+        params = [datetime.utcnow().isoformat()]
+        
+        if tp_order_id:
+            update_fields.append("tp_order_id = ?")
+            params.append(tp_order_id)
+        
+        if sl_order_id:
+            update_fields.append("sl_order_id = ?")
+            params.append(sl_order_id)
+        
+        params.append(entry_order_id)
+        
+        query = f"""
+            UPDATE pending_child_orders
+            SET {', '.join(update_fields)}
+            WHERE order_id = ?
+              AND order_type = 'entry_pending_tp'
+        """
+        
+        cursor.execute(query, params)
+        rows_affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        if rows_affected > 0:
+            logger.success(f"[BRACKET-INIT] ✅ Marked {entry_order_id} bracket_initialized=1 (TP: {tp_order_id}, SL: {sl_order_id})")
+            return True
+        else:
+            logger.warning(f"[BRACKET-INIT] No rows updated for {entry_order_id}")
+            return False
+        
+    except Exception as e:
+        logger.error(f"[BRACKET-INIT] Failed to mark bracket initialized for {entry_order_id}: {e}")
+        return False
 
 
 def update_reconciliation_stats(fills_logged: int = 0):
