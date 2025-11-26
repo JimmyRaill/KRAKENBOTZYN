@@ -1,0 +1,299 @@
+You are working on the existing KrakenTradingBot project in Replit.
+
+This is a CRITICAL HOTFIX for the LIMIT_BRACKET execution path.
+
+Observed live behavior (from Kraken app screenshot):
+- One LIMIT_BRACKET buy filled (single parent entry).
+- Zyn created MULTIPLE stop-loss orders (4 SLs, different sizes, same price).
+- NO take-profit order was created for that entry.
+
+This clearly indicates a **partial-fill handling bug**:
+- The bot is treating each partial fill as a separate “entry” and attaching a new SL per partial.
+- TP placement is only wired to fire on a “full fill” event that is not detected correctly.
+
+PHASE NAME: PHASE_2B_PARTIAL_FILL_HOTFIX
+
+GOAL:
+1. Ensure that for each entry_order_id:
+   - There is at most ONE TP order and ONE SL order.
+   - Partial fills accumulate into a single “filled_qty” state.
+   - TP+SL are only placed ONCE, when the entry is fully filled.
+2. Prevent creation of multiple SLs for the same parent.
+3. Ensure TP placement reliably occurs once entry is fully filled.
+4. Keep the change as small, explicit, and backward compatible as possible.
+
+At the end of this prompt, you MUST:
+- Re-read all modified files,
+- Double-check the logic for partial fills vs full fills,
+- Run at least a syntax check,
+- Confirm that:
+  - MARKET_ONLY behavior is unchanged,
+  - Existing LIMIT_BRACKET logic now guarantees exactly one TP and one SL per entry,
+- Provide a clear summary of the fix and how it behaves on partial fills.
+
+==================================================
+ STEP 0 — READ THESE FILES FIRST (NO EDITS YET)
+==================================================
+
+Before editing ANYTHING, open and read:
+
+- bracket_order_manager.py
+- settlement_detector.py
+- sl_order_enrichment.py
+- evaluation_log.py
+- oco_monitor.py
+- position_tracker.py
+- kraken_native_api.py  (READ-ONLY, for order placement helpers)
+
+You must understand:
+- Where entry fills are detected,
+- Where TP/SL orders are placed,
+- How pending_child_orders is updated,
+- How fills are represented (partial vs full),
+- How position_tracker is updated for LIMIT_BRACKET entries.
+
+Do NOT guess. Base everything on the actual code.
+
+==================================================
+ STEP 1 — DIAGNOSE CURRENT PARTIAL-FILL BEHAVIOR
+==================================================
+
+Your first task: locate the code path that creates MULTIPLE SL orders.
+
+1. In settlement_detector.py and/or bracket_order_manager.py:
+
+   - Identify the logic that reacts to **partial fills** of entry orders.
+   - Specifically, find any place where:
+     - On each fill/trade event, an SL is created or updated.
+
+2. Confirm:
+   - Is there a loop that processes each fill and calls a function like place_stop_loss or attach_conditional_close?
+   - Is there any check like “has this entry already had a bracket attached?” before adding an SL/TP?
+
+3. In evaluation_log.py and/or the DB schema:
+
+   - Look at pending_child_orders:
+     - Which fields identify the parent entry order (entry_order_id, parent_order_id, etc.)?
+     - How are tp_order_id and sl_order_id stored?
+   - Confirm whether there is any “bracket_initialized” flag or equivalent in the current design.
+
+Summarize to yourself (no code yet):
+- Where SLs get created,
+- Why they might be created more than once for the same parent.
+
+==================================================
+ STEP 2 — DESIGN THE CORRECT BEHAVIOR FOR PARTIAL FILLS
+==================================================
+
+We want the following invariant:
+
+For each entry_order_id:
+- We may see many partial fills.
+- But:
+  - We only place 0 or 1 TP order.
+  - We only place 0 or 1 SL order.
+- TP+SL are placed once, when we know the entry is effectively fully filled.
+
+For this hotfix:
+- We are NOT implementing scaled-in positions or multiple legs.
+- One entry → one bracket pair (TP + SL).
+
+Implementation outline:
+
+- Track, for each entry_order_id:
+  - total_qty,
+  - cumulative_filled_qty,
+  - bracket_initialized (bool).
+
+- On each fill event:
+  - Update cumulative_filled_qty.
+  - If bracket_initialized is False AND cumulative_filled_qty >= total_qty (or meets a threshold like 99–100%):
+    - Place ONE TP and ONE SL.
+    - Save their IDs.
+    - Set bracket_initialized=True.
+  - If bracket_initialized is True:
+    - Do NOT place additional TP/SL.
+
+You will implement this using whatever existing data structures the project already uses, rather than inventing new ones unnecessarily.
+
+==================================================
+ STEP 3 — ADD/USE STATE FOR ENTRY FILL PROGRESS
+==================================================
+
+In evaluation_log.py (or wherever pending_child_orders is managed):
+
+1. If a field already exists to store:
+   - total_qty,
+   - filled_qty,
+   - or a textual encoded version in parent_order_id,
+   reuse it.
+
+2. If NEEDED, minimally extend pending_child_orders to track:
+
+   - filled_qty (REAL or FLOAT), default 0
+   - bracket_initialized (INTEGER 0/1), default 0
+
+   Only add these fields if the schema clearly lacks a way to track fill progress and bracket initialization.
+
+3. Add helper functions and/or queries to:
+
+   - Get the current record for a given entry_order_id.
+   - Update filled_qty and bracket_initialized atomically.
+
+Keep this minimal and backward compatible.
+
+==================================================
+ STEP 4 — FIX THE ENTRY FILL HANDLER TO AVOID MULTIPLE SLs
+==================================================
+
+In settlement_detector.py (or whichever module handles fills and triggers bracket logic):
+
+1. Locate the function that is called when an entry order is filled or partially filled.
+
+2. Refactor the logic so that it:
+
+   a) Reads the existing pending_child_orders record for this entry_order_id (if one exists).
+
+   b) Updates cumulative_filled_qty:
+
+      filled_qty = existing_filled_qty + new_fill_qty
+
+   c) Writes back filled_qty to the DB/state.
+
+   d) Checks bracket_initialized:
+
+      - If bracket_initialized is 1 → return (no new SL/TP created).
+      - If bracket_initialized is 0:
+        - If filled_qty < total_qty * threshold:
+          - Do NOT place TP/SL.
+          - Just log that the order is partially filled and wait for more.
+        - If filled_qty >= total_qty * threshold:
+          - Now call the existing “setup bracket” function (the one that currently places TP/SL).
+          - Store TP and SL order IDs in pending_child_orders.
+          - Set bracket_initialized = 1.
+          - Log that full bracket is now active.
+
+3. Remove or bypass any code that creates SLs per partial fill.
+
+   - If there is logic like:
+     “On each fill event → call place_stop_loss”,
+     you MUST guard this with bracket_initialized and the cumulative fill logic, so it fires at most once per entry_order_id.
+
+4. Ensure that the total size used for TP/SL is based on the actual filled size (filled_qty), not the raw initial quantity if the order is partially filled and never completes. For the hotfix, it is acceptable to consider “effectively full” at e.g. 99% of total_qty so we don’t get stuck.
+
+==================================================
+ STEP 5 — ENSURE TP PLACEMENT FIRES RELIABLY
+==================================================
+
+While implementing the above, verify TP placement behavior:
+
+1. Confirm that the same call which places the SL also places the TP (or that both are triggered in the same “full fill” path).
+
+2. Confirm that this shared path is only entered when:
+
+   - bracket_initialized was 0, and
+   - the fill check says the order is effectively full.
+
+3. If TP placement was previously wired to some other event (e.g., a separate “entry closed” event), consolidate it so that:
+
+   - The “full fill” path is the single, reliable trigger for setting up both TP and SL.
+
+4. Ensure TP order type is still LIMIT and SL is still STOP-MARKET (as designed earlier).
+
+==================================================
+ STEP 6 — DEFENSIVE CHECK: AVOID MULTIPLE CHILD SL/TP PER PARENT
+==================================================
+
+To protect against any remaining corner cases:
+
+In bracket_order_manager.py or settlement_detector.py (where brackets are created):
+
+1. Before placing new TP/SL for a given entry_order_id:
+
+   - Query pending_child_orders for existing active TP/SL for that entry_order_id.
+
+   - If a TP or SL already exists and is still open:
+     - Log a warning like:
+
+       [BRACKET-HOTFIX] Existing child orders for parent ENTRY_ID found; skipping duplicate bracket placement.
+
+     - Return without creating new ones.
+
+2. This ensures that even if the fill logic fires twice due to some race condition, duplicates are not created.
+
+==================================================
+ STEP 7 — OPTIONAL FORWARD-LOOKING CLEANUP (SAFE)
+==================================================
+
+We do NOT need to clean up existing duplicate SL orders via code in this hotfix (the user can manually cancel those old ones), but we DO need to ensure all **future** behavior is correct.
+
+If you want to add an extra safety net in oco_monitor.py:
+
+- You may add a non-destructive check that logs if:
+  - More than one SL is seen for the same entry_order_id at the same price,
+  - AND no TP exists.
+
+This check should only log; it should not attempt to auto-heal in this hotfix.
+
+==================================================
+ STEP 8 — SELF-REVIEW & TESTS
+==================================================
+
+Before finishing, you MUST:
+
+1. Re-read all modified files:
+
+   - settlement_detector.py
+   - bracket_order_manager.py
+   - evaluation_log.py (if modified)
+   - oco_monitor.py (if modified)
+   - position_tracker.py (if modified)
+
+2. Verify:
+
+   - No syntax errors (run python -m py_compile on changed modules).
+   - All imports resolve.
+   - The new fields (if any) in pending_child_orders are used consistently.
+   - The updated fill logic guarantees:
+     - At most one TP and one SL per entry_order_id.
+     - TP+SL are only created when the entry is effectively fully filled.
+   - MARKET_ONLY paths are completely untouched.
+
+3. Think through these scenarios:
+
+   a) Single full fill (no partials):
+      - filled_qty == total_qty on first event,
+      - bracket_initialized flips from 0 → 1,
+      - ONE TP and ONE SL are created.
+
+   b) Multiple partial fills:
+      - Each event updates filled_qty,
+      - No SL/TP created until threshold reached,
+      - Once threshold reached → one-time bracket creation, bracket_initialized → 1,
+      - Further fills DO NOT create additional TP/SL.
+
+   c) Existing state with partial fills but no TP/SL yet:
+      - Next fill event should push it over threshold and create one TP+SL.
+
+4. Confirm in your final response:
+
+   - Exactly which functions and files you modified.
+   - How partial fills are now handled.
+   - How you prevent multiple SLs for one entry.
+   - How you ensure TP is reliably placed.
+
+==================================================
+ STEP 9 — SUMMARY OUTPUT (REQUIRED)
+==================================================
+
+At the end of your answer, output a concise summary that includes:
+
+- Files edited.
+- Any schema changes to pending_child_orders (if made).
+- The name of the function that now handles cumulative fill tracking.
+- The conditions under which TP/SL are created.
+- A clear statement:
+
+  - “For each entry_order_id, at most ONE TP and ONE SL are now created, after cumulative fills reach the effective full-fill threshold. Partial fills no longer create multiple SLs.”
+
+End of hotfix request (PHASE_2B_PARTIAL_FILL_HOTFIX).
