@@ -3,7 +3,7 @@ modules = ["python-3.11", "postgresql-16"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["libxcrypt"]
+packages = ["libxcrypt", "sqlite"]
 
 [unitTest]
 language = "python3"
@@ -57,6 +57,10 @@ externalPort = 6000
 [[ports]]
 localPort = 42873
 externalPort = 8000
+
+[[ports]]
+localPort = 45813
+externalPort = 8008
 
 [[ports]]
 localPort = 45871
