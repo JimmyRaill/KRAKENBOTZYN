@@ -185,26 +185,39 @@ class StrategyOrchestrator:
         
         return signal
     
+    def _normalize_symbol(self, sym: str) -> str:
+        """Normalize symbol to base asset (e.g., 'BTC/USD' -> 'BTC', 'ETH' -> 'ETH')"""
+        sym = sym.upper().strip()
+        for suffix in ['/USD', '/USDT', '/EUR', '/GBP']:
+            if sym.endswith(suffix):
+                sym = sym[:-len(suffix)]
+                break
+        return sym
+    
     def _apply_symbol_filter(self, symbol: str, price: float) -> Optional[TradeSignal]:
         """
         Apply symbol whitelist/blacklist filter.
+        
+        Supports both full pairs (BTC/USD) and base symbols (BTC) in whitelist/blacklist.
         
         Returns:
             None if symbol passes filter (continue evaluation)
             TradeSignal with action='hold' if symbol is blocked
         """
-        base_symbol = symbol.replace('/USD', '').replace('/USDT', '').upper()
+        base_symbol = self._normalize_symbol(symbol)
         
         if self.config.symbol_whitelist:
-            if base_symbol not in self.config.symbol_whitelist:
+            normalized_whitelist = [self._normalize_symbol(s) for s in self.config.symbol_whitelist]
+            if base_symbol not in normalized_whitelist:
                 self._decision_stats['blocked_by_symbol_whitelist'] += 1
-                reason = f"SYMBOL_WHITELIST: {base_symbol} not in {self.config.symbol_whitelist}"
-                logger.debug(f"[SYMBOL-FILTER] {symbol} BLOCKED: {reason}")
+                self._decision_stats['hold_signals'] += 1
+                reason = f"SYMBOL_WHITELIST_BLOCK: {base_symbol} not in {normalized_whitelist}"
+                logger.info(f"[SYMBOL-FILTER] {symbol} BLOCKED: {reason}")
                 
                 from exchange_manager import get_mode_str
                 log_evaluation(
                     symbol=symbol,
-                    decision="SYMBOL_FILTER_BLOCKED",
+                    decision="SYMBOL_WHITELIST_BLOCK",
                     reason=reason,
                     trading_mode=get_mode_str(),
                     price=price,
@@ -221,15 +234,17 @@ class StrategyOrchestrator:
                 )
         
         if self.config.symbol_blacklist:
-            if base_symbol in self.config.symbol_blacklist:
+            normalized_blacklist = [self._normalize_symbol(s) for s in self.config.symbol_blacklist]
+            if base_symbol in normalized_blacklist:
                 self._decision_stats['blocked_by_symbol_blacklist'] += 1
-                reason = f"SYMBOL_BLACKLIST: {base_symbol} in blacklist"
-                logger.debug(f"[SYMBOL-FILTER] {symbol} BLOCKED: {reason}")
+                self._decision_stats['hold_signals'] += 1
+                reason = f"SYMBOL_BLACKLIST_BLOCK: {base_symbol} in blacklist"
+                logger.info(f"[SYMBOL-FILTER] {symbol} BLOCKED: {reason}")
                 
                 from exchange_manager import get_mode_str
                 log_evaluation(
                     symbol=symbol,
-                    decision="SYMBOL_FILTER_BLOCKED",
+                    decision="SYMBOL_BLACKLIST_BLOCK",
                     reason=reason,
                     trading_mode=get_mode_str(),
                     price=price,
@@ -279,13 +294,14 @@ class StrategyOrchestrator:
         atr_pct = (atr / price * 100) if price > 0 else 0
         if atr_pct < self.config.regime_min_atr_pct:
             self._decision_stats['blocked_by_regime_low_atr'] += 1
-            reason = f"REGIME_LOW_ATR: {atr_pct:.3f}% < min {self.config.regime_min_atr_pct}%"
+            self._decision_stats['hold_signals'] += 1
+            reason = f"REGIME_LOW_ATR_BLOCK: ATR={atr_pct:.3f}% < min {self.config.regime_min_atr_pct}%"
             logger.info(f"[REGIME-FILTER] {symbol} BLOCKED: {reason}")
             
             from exchange_manager import get_mode_str
             log_evaluation(
                 symbol=symbol,
-                decision="REGIME_FILTER_BLOCKED",
+                decision="REGIME_LOW_ATR_BLOCK",
                 reason=reason,
                 trading_mode=get_mode_str(),
                 price=price,
@@ -303,13 +319,14 @@ class StrategyOrchestrator:
         
         if volume_usd_24h is not None and volume_usd_24h < self.config.regime_min_volume_usd:
             self._decision_stats['blocked_by_regime_low_volume'] += 1
-            reason = f"REGIME_LOW_VOLUME: ${volume_usd_24h:,.0f} < min ${self.config.regime_min_volume_usd:,.0f}"
+            self._decision_stats['hold_signals'] += 1
+            reason = f"REGIME_LOW_VOLUME_BLOCK: ${volume_usd_24h:,.0f} < min ${self.config.regime_min_volume_usd:,.0f}"
             logger.info(f"[REGIME-FILTER] {symbol} BLOCKED: {reason}")
             
             from exchange_manager import get_mode_str
             log_evaluation(
                 symbol=symbol,
-                decision="REGIME_FILTER_BLOCKED",
+                decision="REGIME_LOW_VOLUME_BLOCK",
                 reason=reason,
                 trading_mode=get_mode_str(),
                 price=price,
@@ -327,13 +344,14 @@ class StrategyOrchestrator:
         
         if self.config.regime_trend_required and adx < 20:
             self._decision_stats['blocked_by_regime_no_trend'] += 1
-            reason = f"REGIME_NO_TREND: ADX={adx:.1f} < 20 (no clear trend)"
+            self._decision_stats['hold_signals'] += 1
+            reason = f"REGIME_NO_TREND_BLOCK: ADX={adx:.1f} < 20 (no clear trend)"
             logger.info(f"[REGIME-FILTER] {symbol} BLOCKED: {reason}")
             
             from exchange_manager import get_mode_str
             log_evaluation(
                 symbol=symbol,
-                decision="REGIME_FILTER_BLOCKED",
+                decision="REGIME_NO_TREND_BLOCK",
                 reason=reason,
                 trading_mode=get_mode_str(),
                 price=price,
