@@ -1,0 +1,273 @@
+You are working on the existing KrakenTradingBot (Zyn) in Replit.
+
+This is a BUILD PHASE, not just a plan.
+
+CONTEXT:
+You already did a full PLAN/AUDIT for me and found several issues:
+- OCO monitor query depends on status='filled' but mark_bracket_initialized() only sets bracket_initialized, not status.
+- Volume regime filter may not receive volume_usd_24h from autopilot.
+- Decision statistics counters (hold_signals vs blocked_* filters) are inconsistent and may double-count.
+- Lockfile handling in position_tracker / OCO monitor is slightly fragile.
+
+GOAL OF PHASE 3C:
+Implement the following fixes, in order, with minimal, targeted edits:
+
+1) Fix OCO monitor → bracket_initialized / status mismatch (CRITICAL).
+2) Ensure volume_usd_24h is correctly passed into the regime filter (HIGH).
+3) Clean up decision stats counters so they are consistent and not double-counted (MODERATE).
+4) Harden position_tracker lockfile handling (LOW but quick).
+5) Make the status field consistent when a bracket entry is fully filled (ties into #1).
+
+IMPORTANT:
+- Make small, surgical changes.
+- Do NOT refactor or rewrite large sections.
+- After editing, re-read all touched files, run syntax checks, and verify imports.
+- Behavior with all filters DISABLED must remain unchanged except for cleaner stats/logging.
+
+==================================================
+TASK 1 — OCO MONITOR / STATUS / BRACKET_INITIALIZED FIX (CRITICAL)
+==================================================
+
+From your audit:
+
+- oco_monitor.py currently queries pending_child_orders with something like:
+  WHERE status = 'filled'
+    AND order_type = 'entry_pending_tp'
+- mark_bracket_initialized() sets bracket_initialized=1 but does NOT update status to 'filled'.
+
+This creates a risk where:
+- Brackets that are logically "fully filled and bracket active" might not be picked up by the OCO monitor.
+
+IMPLEMENTATION:
+
+1. In evaluation_log.py (or wherever mark_bracket_initialized is defined):
+
+   - Locate mark_bracket_initialized(entry_order_id) or equivalent.
+   - Update it so that when a bracket is initialized (full fill detected):
+
+     - It sets:
+       - bracket_initialized = 1
+       - status = 'filled' (or the same status value oco_monitor expects).
+
+   - Ensure this update is atomic for that entry row.
+
+2. In oco_monitor.py:
+
+   - Verify the query that fetches brackets to monitor still makes sense with this change.
+   - The simplest happy path is:
+     - Keep the existing query that filters on status='filled' AND order_type='entry_pending_tp',
+     - Rely on mark_bracket_initialized to set that status.
+
+3. Double-check:
+
+   - That no other code relies on status having a different meaning.
+   - That any existing code path that sets status='filled' for entries is consistent with this logic.
+
+GOAL:
+- For each entry that is effectively fully filled and has a bracket attached:
+  - pending_child_orders row should have:
+    - status='filled'
+    - bracket_initialized=1
+  - And oco_monitor should reliably detect and monitor it.
+
+==================================================
+TASK 2 — ENSURE VOLUME PASSTHROUGH FOR REGIME FILTER (HIGH)
+==================================================
+
+From your audit:
+
+- Regime filter uses volume_usd_24h.
+- There is a risk that autopilot.py is NOT passing volume_usd_24h into generate_signal(), so volume checks never actually block anything.
+
+IMPLEMENTATION:
+
+1. In autopilot.py:
+
+   - Locate where generate_signal(...) is called on StrategyOrchestrator / orchestrator instance.
+   - Inspect the arguments: symbol, timeframe, price, indicators, etc.
+   - Identify whether volume or volume_usd_24h is:
+     - Available from market data, AND
+     - Actually passed into generate_signal().
+
+2. In strategy_orchestrator.py:
+
+   - Check the signature of generate_signal (or equivalent main decision function).
+   - Confirm how volume_usd_24h is expected and used in the regime filter helper (e.g., _apply_regime_filter).
+
+3. If autopilot is NOT passing volume_usd_24h but has access to volume:
+
+   - Wire it through:
+     - Extract the 24h volume (or equivalent) and convert to volume_usd_24h using price if needed.
+     - Pass that into generate_signal() so the regime filter can use it.
+
+4. If autopilot truly does not have volume data at that point:
+
+   - Add a TODO-style log and gracefully skip the volume filter when volume_usd_24h is None, but:
+     - Make sure the code path and logging clearly indicate that volume filter is effectively disabled due to missing data.
+
+GOAL:
+- When REGIME_FILTER_ENABLED=1 and REGIME_MIN_VOLUME_USD is set:
+  - Symbols with very low volume should be blocked with a clear REGIME_LOW_VOLUME reason.
+- When volume is not available:
+  - The system should log that volume-based regime filtering is skipped, not silently misbehave.
+
+==================================================
+TASK 3 — DECISION STATS / HOLD SIGNAL DOUBLE-COUNT FIX (MODERATE)
+==================================================
+
+From your audit:
+
+- _decision_stats has:
+  - blocked_by_symbol_whitelist,
+  - blocked_by_symbol_blacklist,
+  - blocked_by_regime_low_atr,
+  - blocked_by_regime_low_volume,
+  - blocked_by_regime_no_trend,
+  - blocked_by_fee_gate,
+  - hold_signals, etc.
+- Early filters sometimes increment hold_signals directly.
+- generate_signal() also increments hold_signals when final action is 'hold'.
+- Result: some blocked decisions (especially fee gate) get double-counted in hold_signals.
+
+TARGET BEHAVIOR:
+
+- blocked_* counters:
+  - Count *why* a trade was blocked.
+- hold_signals:
+  - Count how many FINAL decisions ended up as HOLD, regardless of which filter caused it.
+- Each decision should add +1 to:
+  - Exactly one or more blocked_* (depending on filters),
+  - AND at most +1 to hold_signals if final action is HOLD.
+
+IMPLEMENTATION:
+
+1. In strategy_orchestrator.py:
+
+   - Find all places where _decision_stats['hold_signals'] is incremented.
+   - Normalize behavior so that:
+     - hold_signals is only incremented in ONE place:
+       - After all filters and logic, when you know the final signal.action is 'hold'.
+
+2. In all filter helpers (_apply_symbol_filter, _apply_regime_filter, _apply_fee_gate, etc.):
+
+   - They should:
+     - Update their own blocked_* counter(s),
+     - Attach a reason to the decision (e.g., SYMBOL_WHITELIST, REGIME_LOW_VOL, FEE_GATE),
+     - NOT increment hold_signals themselves.
+
+3. Confirm you maintain the following invariants:
+
+   - If a decision is HOLD because of a symbol filter:
+     - blocked_by_symbol_* increments,
+     - hold_signals increments exactly once (final).
+   - If a decision is HOLD because of regime:
+     - blocked_by_regime_* increments,
+     - hold_signals increments exactly once.
+   - If fee gate blocks:
+     - blocked_by_fee_gate increments,
+     - hold_signals increments exactly once.
+
+4. Make sure log_decision_stats() still reports meaningful totals and that total_evaluated equals TRADE + HOLD with consistent breakdown.
+
+GOAL:
+- Stats are logically consistent and non-ambiguous.
+- No double-counting of hold_signals.
+
+==================================================
+TASK 4 — POSITION_TRACKER LOCKFILE HARDENING (LOW)
+==================================================
+
+From your audit:
+
+- position_tracker creates the lockfile at module load.
+- OCO monitor has a try/except FileNotFoundError to avoid crashes when the lockfile is missing.
+- This is mostly safe but noisy and slightly fragile.
+
+IMPLEMENTATION:
+
+1. In position_tracker.py:
+
+   - Add a small, explicit helper that ensures the lockfile exists before operations that acquire it.
+   - For example:
+     - ensure_lockfile_exists() that:
+       - Checks for existence,
+       - Creates it if missing.
+
+2. Use this helper in critical paths such as:
+   - get_positions(),
+   - add_position(),
+   - remove_position().
+
+3. In oco_monitor.py:
+
+   - Where FileNotFoundError is caught during position cleanup:
+     - Keep the exception handling (do NOT crash),
+     - But ensure the log message is clear and not overly spammy.
+
+GOAL:
+- Massively reduce the chance of weird race conditions around the lockfile.
+- Keep OCO monitor stable even in edge cases.
+
+==================================================
+TASK 5 — STATUS CONSISTENCY WHEN BRACKET INITIALIZES (TIES TO TASK 1)
+==================================================
+
+This is mostly covered in TASK 1 but make it explicit:
+
+1. Wherever a bracket is considered “active and fully filled” (entry fully filled and TP/SL placed):
+
+   - status field in pending_child_orders should be meaningful:
+     - e.g., 'filled' or 'active_bracket' (follow existing naming convention).
+   - bracket_initialized should be 1.
+
+2. Ensure that reconciliation_service, oco_monitor, and any other component that queries by status do so consistently.
+
+GOAL:
+- No half-baked states like:
+  - bracket_initialized=1 but status still 'new' or 'open',
+  - which would confuse monitoring queries.
+
+==================================================
+VALIDATION & SELF-REVIEW (MANDATORY)
+==================================================
+
+After making the changes:
+
+1. Re-read all modified files:
+   - evaluation_log.py
+   - oco_monitor.py
+   - reconciliation_service.py (if touched)
+   - strategy_orchestrator.py
+   - autopilot.py
+   - position_tracker.py
+
+2. Run:
+   - python -m py_compile on all changed modules.
+   - Any existing quick sanity command you’ve used before (e.g., import tests, dry-run main loop).
+
+3. Think through these flows:
+
+   a) Bracket full fill:
+      - pending_child_orders: status='filled', bracket_initialized=1.
+      - OCO monitor sees it, tracks TP/SL, cleans up correctly.
+
+   b) Regime volume filter:
+      - When volume is clearly low, REGIME_LOW_VOLUME should block the trade (when filter enabled).
+      - When volume data is missing, logs should say so and skip volume check gracefully.
+
+   c) Fee gate:
+      - With FEE_GATE_ENABLED=0, no trades are blocked by fees.
+      - With FEE_GATE_ENABLED=1, trades with edge < required edge are blocked, with correct stats/logs.
+
+   d) Decision stats:
+      - For a series of holds and trades:
+        - total_evaluated = TRADE_EXECUTED + hold_signals.
+        - blocked_* sums match the number of holds that came from filters.
+
+4. In your final response, provide:
+
+   - A concise summary of each change (per task),
+   - Confirmation that syntax checks passed,
+   - Any diagnostics or logs you recommend I look at next (e.g., specific [DECISION_STATS] or [OCO] log lines to watch).
+
+End of BUILD request (PHASE 3C – Critical Consistency Fixes).

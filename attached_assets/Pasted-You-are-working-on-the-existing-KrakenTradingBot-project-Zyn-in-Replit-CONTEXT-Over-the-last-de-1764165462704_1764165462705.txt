@@ -1,0 +1,394 @@
+You are working on the existing KrakenTradingBot project (Zyn) in Replit.
+
+CONTEXT:
+Over the last development sessions, we:
+- Switched to LIMIT_BRACKET execution with maker-friendly entries,
+- Implemented bracket TP/SL logic with OCO-style behavior,
+- Fixed a critical partial-fill bug that created multiple SLs and missing TPs,
+- Added a fee-aware trade gate,
+- Added regime filters (volatility / volume / trend),
+- Added symbol whitelist/blacklist filters,
+- Added decision statistics for trade blocking reasons.
+
+Now I want a full **architecture + behavior audit** to make sure **everything we built is actually working as intended**.
+
+IMPORTANT:
+- This is a **PLAN / REVIEW ONLY** request.
+- DO NOT MODIFY ANY CODE in this phase.
+- You may run read-only diagnostics (e.g., print logs, run Python checks, dry-run evaluation functions), but **DO NOT place real orders or change core behavior**.
+- Your job is to:
+  - Inspect the code and logs,
+  - Test behavior in safe ways,
+  - Identify bugs / inconsistencies / edge-case risks,
+  - Propose precise, minimal fixes (as a next-phase BUILD plan).
+
+At the end, you MUST:
+- Summarize what’s working, what’s broken, and what’s risky,
+- Provide a prioritized, step-by-step BUILD plan to fix anything you found.
+
+==================================================
+SECTION 0 — FILE MAP & CURRENT CONFIG OVERVIEW
+==================================================
+
+First, list the key files and responsibilities (no edits yet):
+
+- execution_manager.py
+- bracket_order_manager.py
+- settlement_detector.py
+- reconciliation_service.py
+- oco_monitor.py
+- position_tracker.py
+- evaluation_log.py
+- fee_model.py
+- strategy_orchestrator.py
+- trading_config.py
+- risk_manager.py
+- autopilot.py
+- sl_order_enrichment.py
+- Any DB / schema file that defines tables like pending_child_orders, executed_orders.
+
+TASKS:
+1. For each file, briefly summarize its role in:
+   - Execution (entries/exits),
+   - Bracket management,
+   - Filters (fee, regime, symbol),
+   - Logging / statistics.
+2. Read trading_config.py and replit.md to understand:
+   - EXECUTION_MODE,
+   - USE_BRACKETS (if present),
+   - env flags for:
+     - FEE_GATE_ENABLED / FEE_SAFETY_MULTIPLIER,
+     - REGIME_FILTER_ENABLED / REGIME_* settings,
+     - SYMBOL_WHITELIST / SYMBOL_BLACKLIST,
+     - DECISION_STATS_ENABLED.
+
+DO NOT change anything here. Just build a clear mental map and report it.
+
+==================================================
+SECTION 1 — LIMIT_BRACKET EXECUTION & MAKER ENTRIES
+==================================================
+
+GOAL: Confirm that LIMIT_BRACKET mode is wired correctly and using maker-friendly logic.
+
+1. Inspect:
+   - execution_manager.py
+   - bracket_order_manager.py
+   - trading_config.py
+   - autopilot.py
+
+FOCUS:
+- How EXECUTION_MODE is read and routed:
+  - Where execute_entry_with_mode / execute_limit_bracket_entry is called.
+- The maker-pricing logic:
+  - How limit entry price is computed (offset below market for buys, above for sells).
+  - Config flags: limit_offset_pct, limit_timeout_seconds, limit_max_retries, limit_fallback_to_market.
+
+CHECKS:
+- Confirm that in LIMIT_BRACKET mode:
+  - Entries are limit-maker style, not taker-style at market,
+  - Timeouts and retries are applied correctly,
+  - MARKET_ONLY behavior is unaffected.
+
+OUTPUT:
+- Explain how a BUY signal flows from strategy → execute_entry_with_mode → limit entry placement.
+- Note any suspicious logic, e.g., anything that might accidentally place taker orders or skip retries.
+
+==================================================
+SECTION 2 — PARTIAL FILLS, TP/SL CREATION & HOTFIX
+==================================================
+
+This was the critical bug: multiple SLs + missing TP on partial fills.
+
+FILES:
+- evaluation_log.py (pending_child_orders & executed_orders schema),
+- reconciliation_service.py,
+- bracket_order_manager.py,
+- settlement_detector.py,
+- oco_monitor.py,
+- sl_order_enrichment.py.
+
+GOAL:
+- Verify that the **partial-fill hotfix** is correctly implemented and logically sound.
+
+CHECKS:
+1. Schema:
+   - Confirm pending_child_orders has:
+     - total_qty,
+     - filled_qty,
+     - bracket_initialized (or equivalent),
+     - tp_order_id,
+     - sl_order_id,
+     - and any encoded TP/SL/entry prices.
+   - Confirm executed_orders has status and trade_reason columns (from your own schema hotfix).
+
+2. Fill tracking:
+   - Find the function(s) that:
+     - Read Kraken’s order status & filled amounts,
+     - Update filled_qty in pending_child_orders,
+     - Decide when to consider an entry “effectively fully filled”.
+
+   - Confirm that:
+     - filled_qty is set from Kraken’s **cumulative** filled value (not double-counted),
+     - bracket_initialized prevents multiple TP/SL placements,
+     - The threshold for full-fill is clear (e.g., ≥ 99% of total_qty).
+
+3. TP/SL placement:
+   - Trace the path where TP and SL are placed once full-fill is detected.
+   - Confirm order types:
+     - TP = LIMIT,
+     - SL = STOP-MARKET (via close conditions or explicit order placement).
+   - Confirm only ONE logical bracket pair is created per entry_order_id.
+
+4. Multi-SL handling:
+   - In oco_monitor.py and sl_order_enrichment.py:
+     - Confirm logic to detect multiple SLs tied to the same parent entry.
+     - Confirm TP-filled path cancels ALL related SLs.
+     - Confirm SL-filled path cancels TP and cleans up properly.
+
+5. Position cleanup:
+   - Verify that when a bracket closes (TP or SL), position_tracker and open_positions.json are updated to reflect closure.
+   - Confirm no stale open positions remain after exit.
+
+OUTPUT:
+- Describe, step-by-step, what happens when:
+  - An entry fills in 4 partial chunks.
+  - When TP hits.
+  - When SL hits.
+- Call out any place where:
+  - Multiple TP/SL could still be created,
+  - Cleanup might fail,
+  - Races / lock issues might occur.
+
+DO NOT change the code yet. Just identify and explain.
+
+==================================================
+SECTION 3 — OCO MONITOR & STATE CONSISTENCY
+==================================================
+
+FILES:
+- oco_monitor.py,
+- position_tracker.py,
+- evaluation_log.py.
+
+GOAL:
+- Ensure state is consistent between:
+  - Kraken,
+  - pending_child_orders,
+  - open_positions.json.
+
+CHECKS:
+1. How oco_monitor:
+   - Finds TP and SL orders for a given entry/bracket,
+   - Determines if TP is filled vs SL is filled,
+   - Cancels the opposite leg,
+   - Cleans DB + JSON position state.
+
+2. Locking and lockfile behavior:
+   - Confirm position_tracker lockfile handling is robust:
+     - Lock file created as needed,
+     - Exceptions handled without crashing the monitor.
+
+3. Edge cases:
+   - What happens if Kraken shows:
+     - TP filled and SL canceled,
+     - SL filled and TP canceled,
+     - Both appear filled (weird API timing),
+     - Missing child order (not found).
+
+OUTPUT:
+- Describe, in detail, how oco_monitor resolves each of those cases.
+- Highlight any gaps where local state might get out-of-sync with Kraken.
+
+==================================================
+SECTION 4 — FEE GATE (PHASE 3A)
+==================================================
+
+FILES:
+- fee_model.py,
+- strategy_orchestrator.py,
+- trading_config.py,
+- evaluation_log.py (for logging decisions, if used).
+
+GOAL:
+- Confirm the fee-aware gate is correctly wired and **safe when disabled**.
+
+CHECKS:
+1. Config:
+   - How FEE_GATE_ENABLED and FEE_SAFETY_MULTIPLIER are loaded in trading_config.
+   - Default values when env vars are absent.
+
+2. Fee model:
+   - Implementation of compute_required_edge_pct (or similar):
+     - For MARKET_ONLY: approximated round-trip fee.
+     - For LIMIT_BRACKET: maker entry + maker TP vs maker + taker SL, multiplied by safety factor.
+
+3. Strategy integration:
+   - Where _apply_fee_gate is called in strategy_orchestrator.
+   - How edge_pct is computed (TP vs entry).
+   - Logic when:
+     - FEE_GATE_ENABLED=False (logging only),
+     - FEE_GATE_ENABLED=True (NO_TRADE when edge < required_edge).
+
+4. Logging:
+   - Identify how decision logs record:
+     - edge_pct,
+     - required_edge_pct,
+     - decision (TRADE vs NO_TRADE),
+     - fee gate status.
+
+OUTPUT:
+- Confirm that with FEE_GATE_ENABLED=False, NO trades are blocked and only logs are produced.
+- Identify any potential bugs in edge scaling (e.g. mixing 0.01 vs 1.0 for 1%).
+
+==================================================
+SECTION 5 — REGIME FILTER & SYMBOL FILTER (PHASE 3B)
+==================================================
+
+FILES:
+- trading_config.py,
+- strategy_orchestrator.py,
+- evaluation_log.py (if used),
+- Any helper functions for ADX / ATR / volume in strategy.
+
+GOAL:
+- Confirm symbol + regime filters are correctly implemented and ordering is correct.
+
+CHECKS:
+1. Symbol filter:
+   - How SYMBOL_WHITELIST and SYMBOL_BLACKLIST are parsed:
+     - Comma-separated strings,
+     - Supporting both “BTC” and “BTC/USD” formats.
+   - Helper: _apply_symbol_filters or equivalent:
+     - Behavior with:
+       - Empty whitelist/blacklist,
+       - Only whitelist,
+       - Only blacklist,
+       - Both set.
+   - Confirm that symbol filter runs early in the decision pipeline and marks NO_TRADE cleanly.
+
+2. Regime filter:
+   - How REGIME_FILTER_ENABLED, REGIME_MIN_ATR_PCT, REGIME_MIN_VOLUME_USD, REGIME_TREND_REQUIRED are loaded from config.
+   - Helper: _apply_regime_filter or equivalent:
+     - How ATR % is computed and compared.
+     - How volume (in USD) is estimated and compared.
+     - How trend / ADX > 20 is checked (or equivalent trend measure).
+   - Confirm that when regime filter is disabled, it does nothing.
+   - Confirm that when enabled, it returns NO_TRADE with clear reason tags like:
+     - REGIME_LOW_VOL, REGIME_LOW_VOLUME, REGIME_NO_TREND.
+
+3. Filter order:
+   - Verify that the pipeline is:
+     - Symbol filter → Regime filter → Fee gate → Risk limits → Execution.
+   - Confirm that each filter attaches a clear reason when it blocks a trade.
+
+OUTPUT:
+- Provide a truth table-style explanation:
+  - For different combinations of settings (filters on/off, symbol in/out of list, good/bad regime),
+  - What the expected decision should be.
+
+==================================================
+SECTION 6 — DECISION STATISTICS & EVALUATION LOGS
+==================================================
+
+FILES:
+- strategy_orchestrator.py,
+- evaluation_log.py.
+
+GOAL:
+- Confirm statistics counters & decision logging are coherent.
+
+CHECKS:
+1. Decision stats structure:
+   - Inspect how self._decision_stats (or equivalent) is defined and updated:
+     - TOTAL_SIGNALS,
+     - TRADE_EXECUTED,
+     - BLOCKED_SYMBOL_FILTER,
+     - BLOCKED_REGIME_FILTER,
+     - BLOCKED_FEE_GATE,
+     - BLOCKED_OTHER.
+
+2. Logging:
+   - How stats are emitted:
+     - Every N evaluations (e.g., 50),
+     - Or when explicitly requested via get_decision_stats().
+   - Look for log lines like:
+     - [DECISION_STATS] total=... executed=... symbol_block=... regime_block=... fee_block=... other_block=...
+
+3. Evaluation logging:
+   - How log_evaluation is called:
+     - Confirm the function signature matches.
+     - Ensure reasons (FEE_GATE, REGIME_*, SYMBOL_*) are attached in a structured way.
+   - Confirm no mismatch between evaluation_log schema and arguments.
+
+OUTPUT:
+- Summarize how a single signal flows through:
+  - Filters,
+  - Decision reason tagging,
+  - Stats counters,
+  - Evaluation logging.
+
+==================================================
+SECTION 7 — SAFE TESTING PLAN (NO LIVE MONEY CHANGES)
+==================================================
+
+Now, design a test plan. Still **NO code modifications**. Just a concrete checklist I can use next.
+
+1. Propose a “sandbox test” procedure to validate:
+   - LIMIT_BRACKET entries (including partial fills),
+   - TP/SL creation,
+   - OCO cleanup,
+   - Fee gate decisions,
+   - Regime filter behavior,
+   - Symbol filter behavior,
+   - Stats logging.
+
+2. For each test:
+   - Describe:
+     - Required config/env settings,
+     - Expected behavior (what logs / DB changes should occur),
+     - What would indicate a bug.
+
+3. Explicitly separate:
+   - Tests that can be run with NO real trading (unit-style / dry-run),
+   - Tests that require a **very small real trade** to confirm full integration.
+
+You may suggest specific log lines/commands to run (e.g., python snippets, prints, queries), but do NOT execute real trades by yourself.
+
+==================================================
+SECTION 8 — PRIORITIZED BUILD PLAN (FUTURE PHASE)
+==================================================
+
+Finally, based on everything you found:
+
+1. List all issues, from most severe to least:
+   - Critical correctness bugs (could lose money / desync state),
+   - Missing edge cases / error handling,
+   - UX/logging improvements.
+
+2. For each issue, propose:
+   - A short, precise description,
+   - The files involved,
+   - A minimal, safe fix approach.
+
+3. Then output a **separate, concise BUILD plan** as if for a future “Phase X” prompt:
+   - Bullet list of concrete changes,
+   - In the order they should be implemented,
+   - With clear boundaries (e.g., “only touch these files/functions”).
+
+==================================================
+MANDATORY SELF-REVIEW BEFORE RESPONDING
+==================================================
+
+Before you respond with your PLAN:
+
+- Re-read your own analysis,
+- Make sure:
+  - You did NOT propose any hidden code changes in this PLAN request,
+  - Your understanding of the flow from signal → filter → execution → bracket → OCO → cleanup is internally consistent,
+  - Your test plan is realistic and doesn’t rely on magic or missing functions.
+
+THEN respond with:
+- A structured report following the sections above,
+- Plus the prioritized BUILD plan for the next phase.
+
+End of PLAN-only audit request.
