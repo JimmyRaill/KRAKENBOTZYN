@@ -1,0 +1,235 @@
+You are working on the existing KrakenTradingBot (Zyn) project in Replit.
+
+GOAL: PHASE 4B — RUNTIME BEHAVIOR & DIAGNOSTIC OBSERVATION (NO CODE OR CONFIG CHANGES)
+
+We have:
+- Completed the architecture audit
+- Completed Phase 4A housekeeping (DB cleanup, POL fix, chat port fix)
+- Zyn is currently running in LIVE mode with:
+  - EXECUTION_MODE=LIMIT_BRACKET
+  - All gates ON
+  - Low risk
+
+Now we want you to perform a **runtime behavior analysis**, NOT a refactor.
+
+This is a **PLAN/REVIEW ONLY** phase:
+- DO NOT modify any Python code.
+- DO NOT change any environment variables, secrets, or thresholds.
+- DO NOT touch risk, filters, execution mode, or symbol lists.
+- You MAY:
+  - Read logs
+  - Query SQLite
+  - Print/inspect decision_stats
+  - Restart workflows ONLY if needed to read fresh logs (no logic changes)
+
+Your job is to produce a **behavior-focused report** on how Zyn is acting in real markets, as of RIGHT NOW.
+
+==================================================
+SECTION 1 — RUNTIME SNAPSHOT
+==================================================
+
+TASKS:
+
+1. Read the current runtime config from trading_config.get_config() and confirm:
+   - execution_mode
+   - fee_gate_enabled and safety multiplier
+   - regime_filter_enabled and thresholds (ATR, volume, trend/ADX)
+   - symbol whitelist / blacklist
+   - risk per trade and max position USD
+   - decision stats enabled or not
+
+2. Inspect the latest autopilot log file(s) and reconciliation/OCO logs:
+   - Determine:
+     - How long Zyn has been running since the last restart (approx, based on timestamps)
+     - How many evaluation cycles have occurred (roughly)
+     - Whether any trades have been taken since LIMIT_BRACKET mode + gates were turned on
+
+OUTPUT:
+- “Runtime Snapshot” section with:
+  - Effective config (short summary)
+  - Approx runtime duration
+  - Whether any trades have occurred in this window
+
+If there have been *no* trades since LIMIT_BRACKET + gates were activated, explicitly say: “No bracket trades in this runtime window.”
+
+==================================================
+SECTION 2 — DECISION STATS & FILTER BEHAVIOR
+==================================================
+
+TASKS:
+
+1. Access the in-memory or persistent decision stats structure (e.g. _decision_stats in strategy_orchestrator OR logs where decision stats are printed every 50 evaluations).
+
+2. Collect:
+   - Total evaluations
+   - blocked_by_symbol_whitelist
+   - blocked_by_regime_low_atr
+   - blocked_by_regime_low_volume
+   - blocked_by_regime_no_trend
+   - blocked_by_fee_gate
+   - passed_all_filters
+   - hold_signals
+
+3. From logs and/or evaluation_log DB:
+   - Extract a representative sample (e.g. last 50–100 evaluations) and show:
+     - Which symbols were evaluated
+     - For each, which filter stopped it (symbol, regime, fee) OR whether it passed all gates
+   - Include at least a few concrete examples with reasons, e.g.:
+     - “BTC/USD blocked by REGIME_LOW_ATR (ATR 0.24% < 0.30%)”
+     - “SOL/USD blocked by REGIME_NO_TREND (ADX 18.5 < 20)”
+     - “ETH/USD passed filters but strategy demanded bigger pullback, so HOLD”
+
+OUTPUT:
+- “Decision Stats Summary”:
+  - The numeric counters
+- “Filter Behavior Examples”:
+  - 5–10 concrete log examples with symbol + reason
+
+If fee gate is not being reached at all (because earlier filters always block), explicitly say so.
+
+==================================================
+SECTION 3 — TRADE LIFECYCLE EXAMPLES (IF ANY)
+==================================================
+
+If **no trades** have occurred since LIMIT_BRACKET mode + strict gates were enabled:
+
+- Say: “No live trades in this period — skip Section 3” and move on.
+
+If **one or more trades** HAVE occurred, then:
+
+1. Query the executed_orders and pending_child_orders tables to find:
+   - Trades with entry_time in the last N hours (e.g. last 24 hours)
+   - Their corresponding TP/SL info
+
+2. For EACH recent trade (up to 3 examples max):
+
+   Reconstruct the full lifecycle:
+
+   - Entry:
+     - Symbol, side (long), entry price, calculated maker limit price
+     - Risk per trade and position size
+     - Whether entry was partial-filled or full-filled
+
+   - Fill & TP/SL Setup:
+     - Did it fill in multiple chunks? (partial fills)
+     - When did bracket_initialized flip to 1?
+     - When were TP and SL orders placed?
+     - Confirm TP and SL IDs recorded in pending_child_orders
+
+   - OCO Behavior:
+     - Which hit first (TP or SL)?
+     - Did OCO monitor cancel the opposite leg correctly?
+     - Were ALL SLs cancelled (in multi-SL partial-fill cases)?
+     - Was the position removed from open_positions.json?
+
+   - Exit & Result:
+     - Exit price
+     - P&L in USD and % (rough, based on executed_orders)
+     - Any fee-related impact visible (if logged)
+
+3. Check logs for each selected trade:
+   - Copy the relevant log snippets around:
+     - entry
+     - TP/SL creation
+     - OCO action
+     - final cleanup
+
+OUTPUT:
+- “Trade Lifecycle Examples” with:
+  - 1–3 fully reconstructed trades
+  - Step-by-step bullet summary for each
+  - Key log lines quoted or paraphrased
+
+==================================================
+SECTION 4 — FEE GATE BEHAVIOR
+==================================================
+
+TASKS:
+
+Even if no trades have happened, we still want to know how the fee gate is behaving logically.
+
+1. Search logs or evaluation_log entries for fee-gate-related messages:
+   - e.g. tags or reasons like FEE_GATE_FAIL, MIN_EDGE_NOT_MET, etc.
+
+2. Determine:
+   - Is the fee gate actually being *reached* by any signals, or are earlier filters (symbol/regime/strategy) always blocking first?
+   - For any cases where the fee gate DID run, were the decisions reasonable?
+
+3. Provide 3–5 example decisions showing:
+   - Entry price, TP price
+   - Computed expected edge
+   - Required edge (from compute_required_edge_pct for LIMIT_BRACKET)
+   - Whether the fee gate allowed or blocked the signal
+
+If you cannot find any fee-gate hits because no signal ever reached that stage, say so clearly.
+
+OUTPUT:
+- “Fee Gate Behavior” section:
+  - Does it activate?
+  - Example cases (or explicit note that it has not triggered yet)
+
+==================================================
+SECTION 5 — WARNINGS, ANOMALIES, AND NOISE (CURRENT RUNTIME)
+==================================================
+
+TASKS:
+
+1. Scan the latest logs (autopilot, reconciliation, OCO, chat) for:
+   - Tracebacks / exceptions
+   - Warnings
+   - Any repeated “weird” patterns
+
+2. Specifically confirm that these **previous** issues are still resolved:
+   - No OCO or SL-enrichment warnings for ARKM/AAVE/ALGO (stale paper-mode entries you already deleted)
+   - No MATIC/USD OHLC errors (POL/USD should be in universe, and blocked by whitelist)
+   - No port 5000 “[Errno 98] address already in use” errors for the chat workflow
+
+3. If there are any new warnings:
+   - Describe them in plain language
+   - Classify as:
+     - Harmless noise
+     - Misconfig / data mismatch
+     - Potential bug
+
+OUTPUT:
+- “Warnings & Anomalies” section:
+  - List of any current warnings
+  - Confirmation that known old ones are gone
+  - Statement if no new serious issues are found
+
+==================================================
+SECTION 6 — RUNTIME VERDICT & SUGGESTED FOCUS AREAS
+==================================================
+
+Based on everything above, produce a short, honest verdict on Zyn’s behavior in CURRENT market conditions, answering:
+
+1. Is he:
+   - Correctly avoiding bad trades in low-volatility / low-trend conditions?
+   - Over-filtered to the point of possibly never trading in normal markets?
+   - Behaving in line with the architecture design (symbol → regime → fee → trade)?
+
+2. For future improvement phases (which will be handled LATER), list **focus areas** ONLY as bullets (PLAN ONLY, no changes now), such as:
+   - “Entry precision tuning” (e.g. dynamic limit offsets, better pullback detection)
+   - “Adaptive filters” (loosening/tightening ATR/ADX requirements based on conditions)
+   - “Whitelist expansion under safe criteria”
+   - “More granular fee/edge modeling”
+
+OUTPUT:
+- “Runtime Verdict & Focus Areas” section, clearly written so Jimmy can paste it into another assistant for Phase 5 upgrade planning.
+
+==================================================
+FINAL INSTRUCTIONS
+==================================================
+
+- DO NOT change any code or config during this Phase 4B analysis.
+- DO NOT “fix” anything, even if you see something you don’t like — just report it.
+- Your final answer in this chat must follow the sections and headings EXACTLY:
+
+1. RUNTIME SNAPSHOT  
+2. DECISION STATS & FILTER BEHAVIOR  
+3. TRADE LIFECYCLE EXAMPLES (or “No trades in this period”)  
+4. FEE GATE BEHAVIOR  
+5. WARNINGS & ANOMALIES  
+6. RUNTIME VERDICT & FOCUS AREAS
+
+End of Phase 4B observation/diagnostic request.
