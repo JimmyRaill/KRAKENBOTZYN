@@ -1,0 +1,321 @@
+You are working on the existing KrakenTradingBot project in Replit.
+
+This is PHASE 3B of a long-term, incremental upgrade.
+Zyn is being upgraded over MANY sessions, so all changes must be:
+- Small and controlled,
+- Backwards compatible,
+- Easy to extend later,
+- Clearly logged and easy to debug.
+
+PHASE 3B GOALS (3 FEATURES IN ONE PHASE):
+1. Add a **regime filter** that can block trades in bad conditions (chop / low vol / low volume).
+2. Add a **symbol whitelist/blacklist system** controlled via config.
+3. Add **decision statistics logging**, tracking how many trades were blocked by:
+   - Fee gate,
+   - Regime filter,
+   - Symbol filter,
+   - Other reasons (if applicable).
+All of this must be controlled by config flags and default to SAFE behavior (no blocking) unless explicitly enabled.
+
+At the end of this prompt, you MUST:
+- Re-read every file you edited,
+- Double-check logic, imports, and signatures,
+- Confirm there are no syntax errors,
+- Confirm that with all new filters disabled, behavior is identical to current behavior,
+- Provide a clear summary of changes so future phases can build on it.
+
+==================================================
+        STEP 0 — READ THESE FILES FIRST
+==================================================
+
+Before editing anything, OPEN and READ these files:
+
+- trading_config.py
+- strategy_orchestrator.py
+- evaluation_log.py
+- fee_model.py        (READ-ONLY; already used in Phase 3A)
+- autopilot.py        (READ-ONLY)
+- risk_manager.py     (READ-ONLY, for context)
+
+You must base your work on the ACTUAL code.
+Do NOT guess function signatures.
+Do NOT invent fields if matching ones already exist.
+Do NOT rewrite large sections.
+
+==================================================
+ STEP 1 — CONFIG: REGIME FILTER + SYMBOL FILTER + STATS
+==================================================
+
+In trading_config.py, add new configuration parameters:
+
+1) Regime filter:
+
+- regime_filter_enabled: bool
+  - Default: False
+  - Env var: REGIME_FILTER_ENABLED ("0" / "1").
+- regime_min_atr_pct: float
+  - Default: e.g. 0.3 (meaning ATR must be at least 0.3% of price).
+  - Env var: REGIME_MIN_ATR_PCT (string, default "0.3").
+- regime_min_volume_usd: float
+  - Default: e.g. 10000.0
+  - Env var: REGIME_MIN_VOLUME_USD.
+- regime_trend_required: bool
+  - Default: False
+  - Env var: REGIME_TREND_REQUIRED ("0" / "1").
+
+Adapt names to the existing config style, but keep them obvious and consistent.
+
+2) Symbol filters:
+
+- symbol_whitelist: list[str]
+  - Source: ENV var SYMBOL_WHITELIST as a comma-separated list (e.g. "BTC/USD,ETH/USD").
+  - Default: empty list = no whitelist restriction.
+- symbol_blacklist: list[str]
+  - Source: ENV var SYMBOL_BLACKLIST as a comma-separated list.
+  - Default: empty list.
+
+You can store these as raw strings in config and parse them into lists where needed, or parse them in from_env(), depending on the current style.
+
+3) Decision stats toggle:
+
+- decision_stats_enabled: bool
+  - Default: True (we want stats, low risk).
+  - Env var: DECISION_STATS_ENABLED ("0" / "1").
+
+Make sure these new config fields do not break existing code paths.
+
+==================================================
+ STEP 2 — SYMBOL WHITELIST / BLACKLIST FILTER
+==================================================
+
+In strategy_orchestrator.py (or the most central strategy decision component):
+
+1. Add a small helper method in the StrategyOrchestrator class, e.g.:
+
+   def _apply_symbol_filters(self, symbol: str) -> tuple[bool, str | None]:
+       """
+       Returns (allowed, reason).
+       - allowed = False if symbol is blocked by whitelist/blacklist.
+       - reason = a short string tag explaining why (e.g. "SYMBOL_WHITELIST", "SYMBOL_BLACKLIST").
+       """
+
+   Behavior:
+
+   - If both whitelist and blacklist are empty: return (True, None).
+   - If whitelist is non-empty:
+     - If symbol not in whitelist → return (False, "SYMBOL_WHITELIST").
+   - If symbol in blacklist → return (False, "SYMBOL_BLACKLIST").
+   - Otherwise → return (True, None).
+
+   Match symbol naming with how symbols are represented elsewhere (e.g. "XRP/USD" etc.).
+
+2. Integrate this into the main decision flow (e.g. generate_signal or equivalent):
+
+   - Before computing edge or calling the fee gate, call _apply_symbol_filters(symbol).
+   - If allowed is False:
+     - Mark the decision as NO_TRADE.
+     - Attach the reason tag for classification.
+     - Make sure no order is sent for that symbol.
+
+3. Ensure that when both whitelist and blacklist are empty, behavior is identical to the current behavior (no additional blocking).
+
+==================================================
+ STEP 3 — REGIME FILTER (VOLATILITY / VOLUME / TREND)
+==================================================
+
+We want a minimal, robust regime filter that can be refined later.
+
+In strategy_orchestrator.py:
+
+1. Add a helper method to StrategyOrchestrator, e.g.:
+
+   def _apply_regime_filter(self, symbol, timeframe, indicators, config) -> tuple[bool, str | None]:
+       """
+       Returns (allowed, reason_tag).
+       - allowed = False if regime is bad (low vol, low volume, no trend).
+       - reason_tag = e.g. "REGIME_LOW_VOL", "REGIME_LOW_VOLUME", "REGIME_NO_TREND".
+       """
+
+   Inputs:
+   - symbol: string.
+   - timeframe: string or enum (use whatever the code uses).
+   - indicators: whatever structure the strategy already uses to pass ATR, volume, trend metrics.
+   - config: TradingConfig (to access regime_* fields).
+
+2. Implementation guidelines (adapt to actual data available):
+
+   - If regime_filter_enabled is False:
+     - Return (True, None) immediately.
+
+   - Volatility filter:
+     - Use an existing ATR or volatility measure already computed in the strategy (e.g. atr_pct or atr / price).
+     - If available:
+       - If atr_pct < regime_min_atr_pct → NO_TRADE with reason "REGIME_LOW_VOL".
+
+   - Volume filter:
+     - Use an existing volume metric if available (e.g. volume in base or quote).
+     - If volume * price (or equivalent estimate) < regime_min_volume_usd:
+       - NO_TRADE with reason "REGIME_LOW_VOLUME".
+
+   - Trend filter (if regime_trend_required is True):
+     - Use an existing trend indicator (e.g. moving average alignment, ADX, or slope of price).
+     - If the project already has a “trend regime” flag, reuse it.
+     - If the symbol is in a clearly sideways / no-trend regime according to those indicators:
+       - NO_TRADE with reason "REGIME_NO_TREND".
+
+3. Keep the logic:
+   - Simple,
+   - Using ONLY already-available indicators in the strategy context.
+   - If certain data (e.g. volume in USD) is not available, default to skipping that check instead of breaking.
+
+4. Integrate _apply_regime_filter into the main decision flow:
+
+   - Call it after symbol filters but before fee gate.
+   - If allowed is False:
+     - Mark decision as NO_TRADE with the given reason_tag.
+     - Do NOT send to execution_manager.
+
+==================================================
+ STEP 4 — DECISION STATISTICS TRACKING
+==================================================
+
+We want to track how many trades are blocked by which category.
+
+In strategy_orchestrator.py:
+
+1. Add a small internal stats structure to the StrategyOrchestrator instance, for example:
+
+   self._decision_stats = {
+       "TOTAL_SIGNALS": 0,
+       "TRADE_EXECUTED": 0,
+       "BLOCKED_SYMBOL_FILTER": 0,
+       "BLOCKED_REGIME_FILTER": 0,
+       "BLOCKED_FEE_GATE": 0,
+       "BLOCKED_OTHER": 0,
+   }
+
+   Adjust keys and storage style to match the project’s conventions.
+
+2. Each time a signal is processed (even if it becomes NO_TRADE):
+
+   - Increment TOTAL_SIGNALS.
+   - If the trade ultimately leads to an actual entry:
+     - Increment TRADE_EXECUTED.
+   - If blocked by symbol filter:
+     - Increment BLOCKED_SYMBOL_FILTER.
+   - If blocked by regime filter:
+     - Increment BLOCKED_REGIME_FILTER.
+   - If blocked by fee gate:
+     - Increment BLOCKED_FEE_GATE.
+   - If blocked by something else (e.g. risk, limits):
+     - Increment BLOCKED_OTHER.
+
+3. If decision_stats_enabled=False:
+   - The stats should not affect decisions.
+   - You can still maintain the counters, but at minimum, do not log or persist anything extra.
+
+4. Periodic / on-demand logging:
+   - Add a function like:
+
+     def log_decision_stats(self):
+         # log all counters in a single structured line
+
+   - Call this function:
+     - Either periodically (e.g. once per run cycle), or
+     - At the end of a full evaluation pass.
+   - Example log:
+
+     [DECISION_STATS] total=120 executed=30 symbol_block=20 regime_block=35 fee_block=25 other_block=10
+
+   Adapt to the project’s logging style.
+
+==================================================
+ STEP 5 — DECISION-LEVEL LOGGING (REASONS)
+==================================================
+
+In strategy_orchestrator.py (or wherever decisions are logged):
+
+1. Ensure that for each decision, you log at least:
+
+   - symbol,
+   - timeframe (if available),
+   - final decision: EXECUTE or NO_TRADE,
+   - reason if NO_TRADE:
+     - SYMBOL_WHITELIST / SYMBOL_BLACKLIST,
+     - REGIME_LOW_VOL / REGIME_LOW_VOLUME / REGIME_NO_TREND,
+     - FEE_GATE (edge < required),
+     - or other reason if applicable,
+   - execution_mode (MARKET_ONLY vs LIMIT_BRACKET),
+   - fee_gate_enabled flag.
+
+2. Reuse any existing log_evaluation / evaluation_log integration to store decision information if compatible.
+   - Do NOT break existing log_evaluation usage.
+   - If needed, add optional fields or tags to the log entry for reasons.
+
+3. Keep logs informative but not spammy.
+
+==================================================
+ STEP 6 — MANDATORY SELF-REVIEW & SANITY CHECK
+==================================================
+
+Before you finish, you MUST:
+
+1. Re-read ALL files you changed:
+   - trading_config.py
+   - strategy_orchestrator.py
+   - evaluation_log.py (if modified)
+
+2. Verify:
+   - No syntax errors,
+   - All imports resolve,
+   - All helpers you call exist and have matching signatures,
+   - Symbol filter logic behaves correctly for:
+     - empty whitelist/blacklist,
+     - only whitelist,
+     - only blacklist,
+     - both set.
+
+3. Think through the decision flow with all filters DISABLED:
+
+   - regime_filter_enabled=False
+   - FEE_GATE_ENABLED=0
+   - symbol_whitelist and symbol_blacklist empty
+   - decision_stats_enabled=True or False
+
+   In that configuration:
+   - Behavior must be identical to current behavior (pre-Phase 3B) except for extra logs/stats.
+   - No trades should be blocked purely because of the new code.
+
+4. Then think through with everything ENABLED:
+
+   - If symbol not in whitelist or in blacklist → NO_TRADE (SYMBOL filter).
+   - If regime is bad → NO_TRADE (REGIME filter).
+   - If edge < required_edge and fee gate ON → NO_TRADE (FEE_GATE).
+   - Stats counters reflect these blockages as expected.
+
+5. Confirm explicitly (in your final response) that:
+   - With filters disabled, behavior is unchanged.
+   - With filters enabled, trades are blocked ONLY for the configured reasons.
+   - MARKET_ONLY vs LIMIT_BRACKET distinctions are respected where needed.
+
+==================================================
+ STEP 7 — SUMMARY OUTPUT (REQUIRED FOR FUTURE PHASES)
+==================================================
+
+At the end of your answer, output a concise summary including:
+
+- Which files you edited.
+- What new config variables you added (names + meanings).
+- What helpers you added/modified in strategy_orchestrator.py.
+- How symbol whitelist/blacklist works.
+- How the regime filter works and which indicators/fields it relies on.
+- What the decision_stats counters track and an example log line.
+- How to enable/disable:
+  - Regime filter (REGIME_FILTER_ENABLED),
+  - Symbol filtering (via SYMBOL_WHITELIST/SYMBOL_BLACKLIST),
+  - Decision stats (DECISION_STATS_ENABLED),
+  - Fee gate (FEE_GATE_ENABLED, already from Phase 3A).
+
+This summary is critical so we can tune thresholds and behavior in later phases.
+
+End of build request (PHASE 3B).
