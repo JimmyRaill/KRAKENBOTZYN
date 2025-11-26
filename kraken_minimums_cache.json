@@ -1,5 +1,5 @@
 {
-  "timestamp": "2025-11-26T03:12:08.159848",
+  "timestamp": "2025-11-26T04:06:26.689519",
   "minimums": {
     "DOGE/USD": {
       "amount": 13.0,
@@ -7,6 +7,10 @@
     },
     "UNI/USD": {
       "amount": 0.3,
+      "cost": 0.5
+    },
+    "OP/USD": {
+      "amount": 1.5,
       "cost": 0.5
     }
   }
