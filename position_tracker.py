@@ -39,6 +39,22 @@ if not LOCK_FILE.exists():
     logger.debug(f"[POSITION-TRACKER] Created lock file: {LOCK_FILE}")
 
 
+def _ensure_lockfile_exists() -> None:
+    """
+    Ensure the lock file exists before any lock operation.
+    
+    PHASE 3C: Hardened lockfile handling to prevent race conditions.
+    Called before any operation that acquires a lock to ensure the file
+    exists even if it was deleted between module load and operation.
+    """
+    if not LOCK_FILE.exists():
+        try:
+            LOCK_FILE.touch()
+            logger.debug(f"[POSITION-TRACKER] Re-created lock file: {LOCK_FILE}")
+        except Exception as e:
+            logger.warning(f"[POSITION-TRACKER] Could not create lock file: {e}")
+
+
 class Position:
     """Represents an open position with mental SL/TP levels"""
     def __init__(
@@ -141,6 +157,7 @@ def _load_positions() -> Dict[str, Position]:
     """
     Load all open positions with shared lock (multiple readers OK).
     """
+    _ensure_lockfile_exists()  # PHASE 3C: Ensure lockfile before operation
     # Acquire shared lock on dedicated lock file
     with open(LOCK_FILE, 'a+') as lock_handle:
         portalocker.lock(lock_handle, portalocker.LOCK_SH)
@@ -187,6 +204,7 @@ def _save_positions(positions: Dict[str, Position]):
     """
     Save all positions with exclusive lock (blocks all readers and writers).
     """
+    _ensure_lockfile_exists()  # PHASE 3C: Ensure lockfile before operation
     # Acquire exclusive lock on dedicated lock file
     with open(LOCK_FILE, 'a+') as lock_handle:
         portalocker.lock(lock_handle, portalocker.LOCK_EX)
@@ -256,6 +274,7 @@ def add_position(
     
     # CRITICAL: Hold exclusive lock across entire read-modify-write cycle
     # This prevents race conditions between autopilot and command handlers
+    _ensure_lockfile_exists()  # PHASE 3C: Ensure lockfile before operation
     with open(LOCK_FILE, 'a+') as lock_handle:
         portalocker.lock(lock_handle, portalocker.LOCK_EX)
         
@@ -321,6 +340,7 @@ def remove_position(symbol: str) -> bool:
         Exception: If file operations fail
     """
     # CRITICAL: Hold exclusive lock across entire read-modify-write cycle
+    _ensure_lockfile_exists()  # PHASE 3C: Ensure lockfile before operation
     with open(LOCK_FILE, 'a+') as lock_handle:
         portalocker.lock(lock_handle, portalocker.LOCK_EX)
         

@@ -210,7 +210,6 @@ class StrategyOrchestrator:
             normalized_whitelist = [self._normalize_symbol(s) for s in self.config.symbol_whitelist]
             if base_symbol not in normalized_whitelist:
                 self._decision_stats['blocked_by_symbol_whitelist'] += 1
-                self._decision_stats['hold_signals'] += 1
                 reason = f"SYMBOL_WHITELIST_BLOCK: {base_symbol} not in {normalized_whitelist}"
                 logger.info(f"[SYMBOL-FILTER] {symbol} BLOCKED: {reason}")
                 
@@ -237,7 +236,6 @@ class StrategyOrchestrator:
             normalized_blacklist = [self._normalize_symbol(s) for s in self.config.symbol_blacklist]
             if base_symbol in normalized_blacklist:
                 self._decision_stats['blocked_by_symbol_blacklist'] += 1
-                self._decision_stats['hold_signals'] += 1
                 reason = f"SYMBOL_BLACKLIST_BLOCK: {base_symbol} in blacklist"
                 logger.info(f"[SYMBOL-FILTER] {symbol} BLOCKED: {reason}")
                 
@@ -294,7 +292,6 @@ class StrategyOrchestrator:
         atr_pct = (atr / price * 100) if price > 0 else 0
         if atr_pct < self.config.regime_min_atr_pct:
             self._decision_stats['blocked_by_regime_low_atr'] += 1
-            self._decision_stats['hold_signals'] += 1
             reason = f"REGIME_LOW_ATR_BLOCK: ATR={atr_pct:.3f}% < min {self.config.regime_min_atr_pct}%"
             logger.info(f"[REGIME-FILTER] {symbol} BLOCKED: {reason}")
             
@@ -319,7 +316,6 @@ class StrategyOrchestrator:
         
         if volume_usd_24h is not None and volume_usd_24h < self.config.regime_min_volume_usd:
             self._decision_stats['blocked_by_regime_low_volume'] += 1
-            self._decision_stats['hold_signals'] += 1
             reason = f"REGIME_LOW_VOLUME_BLOCK: ${volume_usd_24h:,.0f} < min ${self.config.regime_min_volume_usd:,.0f}"
             logger.info(f"[REGIME-FILTER] {symbol} BLOCKED: {reason}")
             
@@ -344,7 +340,6 @@ class StrategyOrchestrator:
         
         if self.config.regime_trend_required and adx < 20:
             self._decision_stats['blocked_by_regime_no_trend'] += 1
-            self._decision_stats['hold_signals'] += 1
             reason = f"REGIME_NO_TREND_BLOCK: ADX={adx:.1f} < 20 (no clear trend)"
             logger.info(f"[REGIME-FILTER] {symbol} BLOCKED: {reason}")
             

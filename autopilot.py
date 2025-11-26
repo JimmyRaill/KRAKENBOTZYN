@@ -836,6 +836,15 @@ def loop_once(ex, symbols: List[str]) -> None:
             current_volume = volumes[-1] if volumes else 0
             volume_percentile = calculate_volume_percentile(current_volume, volumes[-20:]) if len(volumes) >= 20 else None
             
+            # Calculate 24h volume in USD for regime filter
+            # Fetch ticker to get quoteVolume (already in USD)
+            volume_usd_24h = None
+            try:
+                ticker = ex.fetch_ticker(sym)
+                volume_usd_24h = ticker.get('quoteVolume', 0) or 0
+            except Exception as vol_err:
+                pass  # Volume data not critical - regime filter handles None gracefully
+            
             # Validate minimum required indicators
             if not current_sma20 or not atr:
                 print(f"[SKIP] {sym} - Missing critical indicators (SMA20={current_sma20}, ATR={atr})")
@@ -863,7 +872,8 @@ def loop_once(ex, symbols: List[str]) -> None:
                 trade_signal = orchestrator.generate_signal(
                     symbol=sym,
                     ohlcv_5m=ohlcv,
-                    indicators_5m=indicators_5m
+                    indicators_5m=indicators_5m,
+                    volume_usd_24h=volume_usd_24h
                 )
                 
                 # Extract action and reasoning from trade signal
