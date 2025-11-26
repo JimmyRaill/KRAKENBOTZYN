@@ -1,0 +1,166 @@
+You are working on the existing KrakenTradingBot (Zyn) project in Replit.
+
+GOAL: PHASE 4A — HOUSEKEEPING ONLY (NO STRATEGY/RISK/LOGIC CHANGES)
+
+We have just completed a full health audit of Zyn. The architecture and logic are solid and safe. Now we want you to perform **only the small housekeeping tasks** that clean up noise without changing Zyn’s trading behavior.
+
+This is a **TARGETED MAINTENANCE PHASE**, NOT a feature or strategy change.
+
+You MAY:
+- Run SQL against the existing SQLite DB.
+- Restart workflows (autopilot, chat) if needed.
+- Make tiny, surgical code edits ONLY where explicitly specified below.
+
+You MUST NOT:
+- Change any risk parameters.
+- Change any filters or gates (regime, fee, symbol).
+- Change any strategy logic.
+- Change execution mode (must remain LIMIT_BRACKET).
+- Change any SL/TP/bracket logic.
+
+==================================================
+TASK 1 — CLEAN STALE PAPER-MODE DB ENTRIES
+==================================================
+
+From the audit, we know there are ~4 stale entries from older paper-mode tests in the `pending_child_orders` table — symbols ARKM/USD, AAVE/USD, ALGO/USD — causing repeated OCO/SL-enrichment warnings.
+
+1. Open and inspect the SQLite database used by `evaluation_log.py`.
+   - Confirm the structure and locate the `pending_child_orders` table.
+
+2. Run a SELECT query to see the exact stale rows:
+   - Something like:
+     - SELECT * FROM pending_child_orders WHERE symbol IN ('ARKM/USD','AAVE/USD','ALGO/USD');
+
+3. If these entries:
+   - Have no meaningful link to current live trading (they should be from old paper mode / test runs),
+   - Are not active live brackets,
+
+   THEN delete them with a targeted DELETE, e.g.:
+   - DELETE FROM pending_child_orders WHERE symbol IN ('ARKM/USD','AAVE/USD','ALGO/USD');
+
+4. Re-run a SELECT to confirm the rows are gone.
+
+5. Do NOT delete any other rows unless they are clearly the same paper-mode junk. This is a surgical cleanup.
+
+You MUST report back:
+- How many rows you found per symbol.
+- How many rows were deleted.
+- The exact SQL you ended up using.
+
+==================================================
+TASK 2 — FIX CHAT WORKFLOW PORT CONFLICT
+==================================================
+
+The audit showed:
+- Chat interface error: `[Errno 98] address already in use` on port 5000,
+- Meaning an old process is still holding the port.
+
+Your job:
+
+1. Identify the chat workflow / process in this Replit project that listens on the port (likely 5000 or whatever is configured).
+2. Cleanly restart that workflow:
+   - Stop any existing instance that’s bound to the port.
+   - Restart the chat workflow / process.
+3. Verify:
+   - The process starts without `[Errno 98] address already in use`.
+   - It binds successfully to the intended port.
+   - There are no new runtime errors.
+
+You MUST NOT:
+- Change the port number.
+- Change any core chat logic or endpoints.
+
+You MUST report back:
+- What you restarted.
+- How you confirmed the port conflict is gone.
+
+==================================================
+TASK 3 — UPDATE ASSET SCANNER FOR MATIC → POL
+==================================================
+
+The audit logs showed:
+- OHLC fetch error: `MATIC/USD` is not a valid Kraken symbol anymore (renamed to `POL/USD`).
+
+We want the asset scanner to stop trying to trade/fetch MATIC/USD and use the correct symbol, but **without expanding the trading universe beyond what we already use**.
+
+Your job:
+
+1. Find where the universe of symbols is defined or iterated:
+   - It may be in a config file, symbol list module, or asset scanner code.
+   - Search for "MATIC" and "MATIC/USD".
+
+2. Confirm:
+   - How that symbol is being used (scanning only vs eligible for trading).
+   - That this change will NOT accidentally add a new symbol to the whitelist or trading universe beyond what we are already using.
+
+3. Update the symbol(s) as needed so that:
+   - Any place trying to fetch or scan `MATIC/USD` is changed to the correct Kraken symbol (`POL/USD` or the current equivalent according to the Kraken API used in this project).
+   - Keep the behavior consistent with current design (if it was “just scan, not trade”, keep it that way).
+
+4. After update:
+   - Restart the autopilot workflow if necessary.
+   - Confirm in the logs that:
+     - The MATIC/USD OHLC error no longer appears.
+     - No new OHLC errors appear for POL/USD or any other symbol.
+
+You MUST report back:
+- Which file(s) you modified.
+- The before/after of the symbol definition or usage.
+- Confirmation that MATIC-related errors are gone.
+
+==================================================
+TASK 4 — VERIFY NO NEW WARNINGS AND OVERALL HEALTH
+==================================================
+
+After completing Tasks 1–3:
+
+1. Restart any workflows you touched (autopilot, chat, reconciliation, etc.) to ensure they’re running with a clean state.
+
+2. Let the system run long enough to:
+   - Do at least one full evaluation cycle over the symbol universe.
+   - Do at least one reconciliation/OCO cycle.
+
+3. Check logs for:
+
+   - That the previous noisy patterns are resolved:
+     - No more OCO/SL-enrichment warnings tied to ARKM/AAVE/ALGO paper-mode entries.
+     - No more MATIC/USD OHLC errors.
+     - No more port 5000 `[Errno 98]` on chat startup.
+
+   - That normal behavior remains intact:
+     - Symbol whitelist blocks non-BTC/ETH/SOL symbols.
+     - Regime filter still blocks low-ATR or low-trend markets as before.
+     - Fee gate and risk limits behave unchanged.
+     - No crashes, no new tracebacks.
+
+4. DO NOT adjust thresholds, configs, or strategies even if you think they’re “too strict”. This phase is about cleaning noise, not changing behavior.
+
+==================================================
+TASK 5 — FINAL SUMMARY BACK TO JIMMY
+==================================================
+
+At the end, provide a clear summary Jimmy can copy/paste elsewhere, with this structure:
+
+1. **DB Cleanup Results**
+   - How many rows were removed from pending_child_orders and for which symbols.
+   - Confirmation that no active/live entries were touched.
+
+2. **Chat Workflow Status**
+   - What was restarted.
+   - Whether the port conflict is fully resolved.
+
+3. **Asset Scanner Update**
+   - Which file(s) were changed.
+   - Exactly how MATIC → POL (or equivalent) was updated.
+   - Confirmation that the MATIC/USD OHLC error no longer appears.
+
+4. **Post-Cleanup Health Check**
+   - Whether any of the previous warnings are still present.
+   - Whether any new warnings/errors appeared.
+   - Confirmation that execution mode, risk settings, filters, and gates are unchanged and still working as before.
+
+Remember:
+- This is **Phase 4A maintenance**, not a refactor or feature phase.
+- The priority is to remove noise and keep Zyn’s behavior identical, just cleaner.
+
+End of Phase 4A request.

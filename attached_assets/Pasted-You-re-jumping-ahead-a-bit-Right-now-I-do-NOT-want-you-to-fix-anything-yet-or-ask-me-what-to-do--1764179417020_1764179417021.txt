@@ -1,0 +1,76 @@
+You’re jumping ahead a bit 🙂
+
+Right now I do NOT want you to fix anything yet or ask me what to do next.
+
+I want you to FINISH the full health audit I asked for earlier.
+
+Treat this as a continuation of that PLAN/REVIEW request:
+
+- DO NOT modify any code.
+- DO NOT change any configs or env vars.
+- You may RESTART the chat workflow if you need to clear the port conflict just to read logs, but do not change logic.
+
+You already confirmed:
+- Autopilot is running with all gates on and behaving logically.
+- Markets are quiet so no trades are being taken.
+- There are some stale paper-mode DB entries causing harmless OCO noise.
+- Chat interface has a port conflict.
+
+Now I need you to COMPLETE the full written audit report in the exact structure I requested before, so I can paste it into another assistant for a second review.
+
+Please ignore the “what do you want to do next” part and instead produce a thorough REPORT ONLY.
+
+Your final response in this chat must be structured EXACTLY like this (mandatory):
+
+1. **ARCHITECTURE SUMMARY**  
+   - Bullet points per module explaining roles and interactions (autopilot, execution_manager, bracket_order_manager, reconciliation_service, oco_monitor, position_tracker, evaluation_log, fee_model, strategy_orchestrator, trading_config, risk_manager, sl_order_enrichment, etc.).  
+   - Mention any obviously unused or legacy logic.
+
+2. **CURRENT CONFIG SNAPSHOT**  
+   - Effective runtime values for:
+     - EXECUTION_MODE  
+     - Whether brackets are used  
+     - Risk per trade, max position USD, max daily loss  
+     - FEE_GATE_ENABLED + safety multiplier  
+     - REGIME_FILTER_ENABLED + ATR %, volume, trend/ADX thresholds  
+     - SYMBOL_WHITELIST / SYMBOL_BLACKLIST  
+     - Decision stats enabled/disabled
+
+3. **BRACKET / OCO PIPELINE STATUS**  
+   - Step-by-step description of how a LIMIT_BRACKET LONG trade flows:
+     - Signal → entry decision → maker limit placement → partial fills → TP/SL creation → OCO monitoring → cleanup.  
+   - Confirm pending_child_orders + executed_orders schema usage and open_positions.json behavior.  
+   - List any issues or edge cases you see.
+
+4. **FILTERS & DECISION STATS BEHAVIOR**  
+   - Describe the full decision flow: symbol filter → regime filter → fee gate → risk → final action.  
+   - Summarize what recent logs show about:
+     - How often each filter blocks,  
+     - Whether fee gate is actually active,  
+     - Whether decision stats counters are being updated consistently.
+
+5. **DORMANT / LEGACY / EXPERIMENTAL AREAS**  
+   - List futures, paper mode, old strategies, or other unused features.  
+   - For each, note:
+     - Whether it’s harmless to leave,  
+     - Whether it could cause confusion or conflicts if accidentally enabled later.
+
+6. **RECENT LOGS HEALTH REPORT**  
+   - List:
+     - Critical errors (if any),  
+     - Non-critical but important warnings (like the stale paper-mode OCO noise),  
+     - Repeated noise we can probably ignore.  
+   - Explain each in plain language.
+
+7. **OVERALL VERDICT & RISK LIST**  
+   - Give a clear overall verdict on Zyn’s current health (e.g., “structurally sound but strict and conservative”).  
+   - Then list risks as:
+     - CRITICAL – must fix before increasing risk,  
+     - IMPORTANT – should fix soon but safe at tiny risk,  
+     - NICE-TO-HAVE – cleanup and polish.
+
+IMPORTANT:
+- This is STILL a PLAN/REVIEW phase. Do NOT implement fixes yet.
+- I only want the detailed written report, in that exact 1–7 structure, so I can paste it into another assistant for a deeper second review.
+
+Please now produce that full report as your next message.

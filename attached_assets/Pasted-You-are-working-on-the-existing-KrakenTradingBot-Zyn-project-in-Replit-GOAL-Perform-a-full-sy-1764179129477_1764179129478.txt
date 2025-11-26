@@ -1,0 +1,310 @@
+You are working on the existing KrakenTradingBot (Zyn) project in Replit.
+
+GOAL:
+Perform a **full-system health audit** of Zyn **as he exists right now** — after all recent changes (LIMIT_BRACKET, partial-fill hotfixes, fee gate, regime filter, symbol/decision stats, lockfile hardening, etc).
+
+This is a **PLAN / REVIEW ONLY** request:
+- DO NOT modify any Python code.
+- DO NOT change any environment variables or secrets.
+- DO NOT place any real orders.
+You MAY:
+- Read any file you need.
+- Run safe, read-only diagnostics or dry-run commands (imports, config printing, DB schema inspection, log inspection).
+- Query SQLite.
+- Restart workflows *only if necessary* to read fresh logs (but do not change behavior).
+
+Your job:
+1. Scan Zyn’s architecture, code, configs, database, and logs as they exist RIGHT NOW.
+2. Verify that each system is behaving as designed.
+3. Identify any remaining risks, inconsistencies, or “half-implemented” features that could bite us later.
+4. Produce a **clear, structured written report** that Jimmy can copy-paste back to another assistant for a second deep-dive.
+
+==================================================
+SECTION 0 — WHAT YOU MUST COVER (SCOPE)
+==================================================
+
+You must explicitly review and comment on ALL of the following:
+
+1. **Execution & Modes**
+   - MARKET_ONLY vs LIMIT_BRACKET paths
+   - Where execute_entry_with_mode() routes
+   - How bracket vs non-bracket flows are separated
+
+2. **Bracket System**
+   - Limit-maker entry logic
+   - TP/SL placement
+   - Partial-fill handling
+   - OCO behavior and cleanup
+
+3. **Tracking & State**
+   - open_positions.json + position_tracker
+   - pending_child_orders, executed_orders, and any other relevant DB tables
+   - Lockfile usage and potential race conditions
+
+4. **Filters & Gates**
+   - Symbol whitelist/blacklist
+   - Regime filter (ATR%, volume, trend/ADX)
+   - Fee gate (edge vs fees)
+   - Risk limits (per-trade and daily)
+
+5. **Logging & Stats**
+   - Evaluation logging (per decision)
+   - Decision statistics (_decision_stats)
+   - Any diagnostic / warning logs (OCO, MULTI-SL, errors, etc.)
+
+6. **Configuration & Environment**
+   - What config is actually active right now (from env + defaults)
+   - Any contradictions between replit.md, trading_config.py, and reality
+
+7. **Unused / Half-Implemented / Dangerous Areas**
+   - Anything that is partially wired (e.g., futures, paper mode, experimental strategies) that could:
+     - Interfere with current live trading, OR
+     - Be accidentally enabled in the future and cause confusion or risk
+
+==================================================
+SECTION 1 — CODE & ARCHITECTURE REVIEW (NO CHANGES)
+==================================================
+
+TASKS:
+
+1. Read and map the roles of these modules (at minimum):
+   - autopilot.py
+   - execution_manager.py
+   - bracket_order_manager.py
+   - reconciliation_service.py
+   - settlement_detector.py
+   - oco_monitor.py
+   - position_tracker.py
+   - evaluation_log.py
+   - fee_model.py
+   - strategy_orchestrator.py
+   - trading_config.py
+   - risk_manager.py
+   - sl_order_enrichment.py
+   - Any other module that obviously participates in trade lifecycle
+
+2. For each module, briefly describe:
+   - Its main responsibilities,
+   - How it interacts with the others (inputs/outputs),
+   - Whether its current logic appears consistent with the current design (LIMIT_BRACKET + gates).
+
+3. Explicitly call out:
+   - Any “old” logic that is still present but no longer used,
+   - Any TODOs / comments hinting at incomplete work,
+   - Any disabled features (like paper mode, futures, etc.) that we should be aware of.
+
+OUTPUT:
+- A concise but complete architecture overview, grouped by module, that Jimmy can read and understand.
+
+==================================================
+SECTION 2 — CURRENT CONFIG & MODES (REAL RUNTIME STATE)
+==================================================
+
+TASKS:
+
+1. Inspect:
+   - trading_config.py
+   - from_env() or equivalent
+   - replit.md and any config docs
+   - Environment variables / secrets currently set (READ ONLY)
+
+2. Determine and report:
+   - Current EXECUTION_MODE
+   - Whether brackets are in use
+   - Active risk constraints:
+     - Risk per trade (percentage or USD)
+     - Max position USD
+     - Max daily loss (USD or %)
+   - Current filter/gate settings:
+     - FEE_GATE_ENABLED, safety multiplier
+     - REGIME_FILTER_ENABLED, ATR %, volume USD, trend/ADX threshold
+     - SYMBOL_WHITELIST / SYMBOL_BLACKLIST
+     - Decision stats enabled/disabled
+
+3. Confirm that what is **actually loaded at runtime** matches what the logs say (check autopilot startup logs).
+
+OUTPUT:
+- A clear “Current Configuration Snapshot” section listing the effective runtime values of all important settings.
+
+==================================================
+SECTION 3 — BRACKET / PARTIAL-FILL / OCO PIPELINE
+==================================================
+
+TASKS:
+
+1. **Theoretical flow (code-level):**
+   - For a LONG trade in LIMIT_BRACKET mode, document the full lifecycle:
+     - Signal generation → entry decision → limit order placement
+     - How maker price is computed
+     - How partial fills update filled_qty and bracket_initialized
+     - When and how TP and SL are created
+     - How OCO monitor decides TP vs SL outcomes
+     - How positions and DB rows are cleaned
+
+2. **State tracking:**
+   - Confirm:
+     - pending_child_orders columns and their roles (total_qty, filled_qty, status, bracket_initialized, tp/sl IDs, price, etc.)
+     - executed_orders schema (status, trade_reason, etc.)
+     - open_positions.json layout and how it’s updated
+
+3. **Sanity check with reality:**
+   - Inspect recent logs for:
+     - Any [OCO] warnings
+     - Any [MULTI-SL] diagnostics
+     - Any “insufficient funds” or desync errors
+   - Check DB tables for:
+     - Stale rows that should have been cleaned
+     - Any obviously “stuck” state that contradicts Kraken side behavior (if logged)
+
+OUTPUT:
+- A step-by-step description of the bracket lifecycle as implemented,
+- Plus a short “Findings” sub-section listing any inconsistencies, risks, or suspicious patterns.
+
+==================================================
+SECTION 4 — FILTERS, GATES & DECISION FLOW
+==================================================
+
+TASKS:
+
+1. Map the full decision pipeline in strategy_orchestrator (or equivalent):
+   - Symbol filter → Regime filter → Fee gate → Risk rules → Final signal (trade vs hold)
+
+2. Verify, from code + logs:
+   - SYMBOL WHITELIST / BLACKLIST behavior:
+     - Are non-whitelisted symbols correctly blocked with clear reasons?
+   - REGIME FILTER behavior:
+     - Does it actually use ATR %, volume USD, and trend/ADX?
+     - Are regime reasons logged clearly (LOW_ATR, LOW_VOLUME, NO_TREND)?
+   - FEE GATE behavior:
+     - How expected edge is computed (TP vs entry vs fees).
+     - That when FEE_GATE_ENABLED=0 it only logs but does not block.
+     - That when enabled, it correctly marks NO_TRADE with fee-gate reason.
+   - RISK behavior:
+     - Max position USD and per-trade risk actually constrain the order size.
+     - Max daily loss logic is wired (if implemented).
+
+3. Decision stats:
+   - Inspect _decision_stats:
+     - What counters exist (total_evaluated, blocked_by_*, hold_signals, etc.)
+   - Verify:
+     - Counters are incremented consistently and only once per decision where appropriate.
+     - Recent logs (e.g. every 50 evals) show a sane breakdown (not obviously broken).
+
+OUTPUT:
+- A clear “Decision Flow Diagram” in text form,
+- Plus an evaluation of whether the filters/gates are behaving logically in real logs.
+
+==================================================
+SECTION 5 — UNUSED / HALF-IMPLEMENTED / RISKY FEATURES
+==================================================
+
+TASKS:
+
+1. Identify:
+   - Any futures-related code, paper trading mode, unused strategies, or experimental features in the codebase that are:
+     - Not fully wired,
+     - Not currently used,
+     - Or could be accidentally enabled by flipping a config.
+
+2. For each, answer:
+   - Is it safe to leave as-is?
+   - Could it cause confusion (e.g., two different ways to do the same thing)?
+   - Could it be accidentally activated and conflict with the current live setup?
+
+3. If any such areas exist, propose:
+   - Whether they should be “mentally marked as legacy/disabled”,
+   - Or whether they require a future clean-up pass (PLAN ONLY, no removal now).
+
+OUTPUT:
+- A list of “Dormant / Legacy / Experimental” components with notes on their risk level.
+
+==================================================
+SECTION 6 — LOG & ERROR REVIEW (RECENT RUNTIME)
+==================================================
+
+TASKS:
+
+1. Examine the **recent logs** for:
+   - autopilot
+   - OCO monitor / reconciliation
+   - Any other critical worker
+
+2. Specifically search for:
+   - Tracebacks / exceptions
+   - “insufficient funds” messages
+   - Warnings about missing lockfiles or desync
+   - Multi-SL diagnostic warnings
+   - Any repeats of known past issues (like stale positions, DB mismatches, etc.)
+
+3. For each recurring warning or error:
+   - Explain what it means in plain language,
+   - Whether it is still happening now,
+   - Whether it’s harmless noise, a symptom of misconfig, or a true bug/risk.
+
+OUTPUT:
+- A short “Recent Logs Health Report” listing:
+   - Critical issues,
+   - Non-critical but important warnings,
+   - Noise we can safely ignore for now.
+
+==================================================
+SECTION 7 — OVERALL HEALTH ASSESSMENT & RISK LIST
+==================================================
+
+TASKS:
+
+1. Based on ALL of the above sections, produce:
+   - A **High-Level Health Verdict** (e.g., “Structurally sound, strict but safe”, or “Risky in X areas”).
+   - A **Prioritized Risk List**, with items labeled as:
+     - CRITICAL – must fix before scaling risk
+     - IMPORTANT – should fix, but not blocking tiny-risk running
+     - NICE-TO-HAVE – cleanup & polish
+
+2. For each risk, specify:
+   - Module(s) involved,
+   - What can go wrong,
+   - Whether it’s mostly:
+     - Strategy quality,
+     - Execution reliability,
+     - Data/metrics quality,
+     - Or user confusion.
+
+OUTPUT:
+- A short “Verdict & Risk List” section Jimmy can use as a roadmap.
+
+==================================================
+SECTION 8 — HOW TO REPORT BACK TO JIMMY (MANDATORY FORMAT)
+==================================================
+
+You MUST present your final answer in a format that is easy for Jimmy to copy back into another assistant for a second analysis.
+
+So, in your final response in this chat, structure your answer EXACTLY like this:
+
+1. **ARCHITECTURE SUMMARY**  
+   - Bullet points per module.
+
+2. **CURRENT CONFIG SNAPSHOT**  
+   - Key values for execution mode, risk, filters, gates, symbols.
+
+3. **BRACKET / OCO PIPELINE STATUS**  
+   - How it works + any issues.
+
+4. **FILTERS & DECISION STATS BEHAVIOR**  
+   - How decisions flow + what recent logs show.
+
+5. **DORMANT / LEGACY / EXPERIMENTAL AREAS**  
+   - List + risk notes.
+
+6. **RECENT LOGS HEALTH REPORT**  
+   - Critical issues, warnings, noise.
+
+7. **OVERALL VERDICT & RISK LIST**  
+   - CRITICAL / IMPORTANT / NICE-TO-HAVE items.
+
+Make sure your language is direct and understandable (no vague AI-speak), and assume this report will be reviewed by another system for a second opinion.
+
+REMINDER:
+- This is PLAN/REVIEW ONLY. Do not change code or behavior in this phase.
+- Be as precise and honest as possible about what is solid and what is still shaky.
+
+End of audit request.
