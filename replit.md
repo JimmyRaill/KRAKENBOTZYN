@@ -62,6 +62,10 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
           - Decision stats tracking: Logs filter block counts every 50 evaluations (`get_decision_stats()`, `log_decision_stats()`)
           - Filter order: Symbol → Regime → Fee Gate → Strategy logic
           - All filters disabled by default for unchanged behavior
+          - **PHASE 3C (Nov 2025)**: Consistency fixes from architecture audit:
+            - Volume passthrough: autopilot now fetches 24h quoteVolume via ticker and passes to regime filter
+            - Decision stats fix: Removed duplicate hold_signals increments from filter helpers (single increment in generate_signal only)
+            - Lockfile hardening: Added `_ensure_lockfile_exists()` helper to position_tracker for race condition prevention
     -   **Paper Trading (`paper_trading.py`)**: Complete simulation system with realistic fills, slippage, fees, and P&L calculation.
     -   **Exchange Manager (`exchange_manager.py`)**: Singleton wrapper for `ccxt` instances, ensuring consistent data fetching.
     -   **Risk Manager (`risk_manager.py`)**: Calculates per-trade and portfolio-wide risk.
