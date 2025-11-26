@@ -56,7 +56,12 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
     -   **Autopilot (`autopilot.py`)**: Autonomous trading loop executing a 5-minute closed-candle strategy, monitoring mental SL/TP levels and integrating risk gatekeepers.
     -   **Trading Config (`trading_config.py`)**: Centralized configuration for indicators, market filters, risk parameters, and execution mode, supporting environment variable overrides.
     -   **Signal Engine (`signal_engine.py`)**: Multi-signal decision engine using technical filters (RSI, SMA, volume, volatility, chop, ATR).
-    -   **Strategy Orchestrator (`strategy_orchestrator.py`)**: Regime-aware strategy selection with IMPROVED pullback detection (Nov 2025) - requires 0.75 ATR retrace from swing high, price at/below SMA20, RSI < 65 for entries. **PHASE 3A**: Fee gate filter integrated - all actionable signals pass through `_apply_fee_gate()` which computes expected edge vs required edge (fees + safety multiplier) and logs decisions to evaluation_log. Set `FEE_GATE_ENABLED=1` to block low-edge trades.
+    -   **Strategy Orchestrator (`strategy_orchestrator.py`)**: Regime-aware strategy selection with IMPROVED pullback detection (Nov 2025) - requires 0.75 ATR retrace from swing high, price at/below SMA20, RSI < 65 for entries. **PHASE 3A**: Fee gate filter integrated - all actionable signals pass through `_apply_fee_gate()` which computes expected edge vs required edge (fees + safety multiplier) and logs decisions to evaluation_log. Set `FEE_GATE_ENABLED=1` to block low-edge trades. **PHASE 3B (Nov 2025)**: Pre-trade filtering pipeline with decision statistics:
+          - Symbol filter: `SYMBOL_WHITELIST` (comma-separated, e.g., "BTC,ETH") restricts trading to listed symbols; `SYMBOL_BLACKLIST` blocks specific symbols
+          - Regime filter (set `REGIME_FILTER_ENABLED=1`): `REGIME_MIN_ATR_PCT` (default 0.3%), `REGIME_MIN_VOLUME_USD` (default $10k), `REGIME_TREND_REQUIRED` (requires ADX>20)
+          - Decision stats tracking: Logs filter block counts every 50 evaluations (`get_decision_stats()`, `log_decision_stats()`)
+          - Filter order: Symbol → Regime → Fee Gate → Strategy logic
+          - All filters disabled by default for unchanged behavior
     -   **Paper Trading (`paper_trading.py`)**: Complete simulation system with realistic fills, slippage, fees, and P&L calculation.
     -   **Exchange Manager (`exchange_manager.py`)**: Singleton wrapper for `ccxt` instances, ensuring consistent data fetching.
     -   **Risk Manager (`risk_manager.py`)**: Calculates per-trade and portfolio-wide risk.
