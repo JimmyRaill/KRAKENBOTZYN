@@ -1,0 +1,293 @@
+You are working on the existing KrakenTradingBot (Zyn) project in Replit.
+
+This is a **PLAN / CONFIG / TESTING** request — NOT a code-change request.
+
+CONTEXT (WHAT HAPPENED SO FAR)
+- LIMIT_BRACKET execution with maker-friendly limit entries is implemented and working.
+- Bracket TP/SL with synthetic OCO behavior is implemented.
+- The partial-fill bug (multiple SLs, missing TP) has been hotfixed.
+- Fee-aware gate (fee vs edge) is implemented.
+- Regime filter (ATR%, volume in USD, trend/ADX) is implemented.
+- Symbol whitelist/blacklist is implemented.
+- Decision statistics and logging are implemented.
+- Phase 3C fixed:
+  - Volume passthrough for regime filter,
+  - Decision stats double-counting bugs,
+  - Lockfile hardness for position tracking,
+  - Confirmed OCO status/bracket_initialized consistency.
+
+NOW I want you to:
+- Design the exact config and environment setup for “ALL GATES ON, LOW RISK”.
+- Design a concrete test/validation plan that I can follow (and that you can partially execute via diagnostics, dry-runs, or log inspection).
+- Make sure everything we built works together as expected **before** I scale risk up.
+
+IMPORTANT:
+- This is a PLAN-ONLY phase.
+- DO NOT edit code or configs directly in this prompt.
+- You MAY:
+  - Read files,
+  - Inspect configs,
+  - Suggest env var values,
+  - Propose commands / scripts / log-greps I can run,
+  - Outline the step-by-step procedure for me to follow.
+- If something is unclear (like exact env var names), read trading_config.py and replit.md to resolve it rather than guessing.
+
+==================================================
+SECTION 1 — DISCOVER ACTUAL CONFIG NAMES & DEFAULTS
+==================================================
+
+TASKS:
+1. Read:
+   - trading_config.py
+   - replit.md
+   - Any env-loading helpers (e.g., from_env(), config loader, etc.)
+
+2. For each of these conceptual settings, tell me the **exact variable names** used in the project:
+   - Execution mode (LIMIT_BRACKET vs MARKET_ONLY).
+   - “Use brackets” flag (if separate).
+   - Risk per trade (percentage of equity or similar).
+   - Max daily loss (if defined).
+   - Fee gate enabled + safety multiplier.
+   - Regime filter enabled.
+   - ATR% threshold.
+   - Volume USD threshold.
+   - Trend/ADX requirement flag or settings.
+   - Symbol whitelist / blacklist.
+   - Decision stats enabled.
+
+3. For each, specify:
+   - The Python config name in TradingConfig (or equivalent).
+   - The environment variable name(s) that override it (e.g., EXECUTION_MODE, RISK_PER_TRADE_PCT, etc.).
+   - The current default value if env vars are not set.
+
+OUTPUT FOR THIS SECTION:
+- A clear list like:
+  - EXECUTION_MODE → config.execution_mode (default=“MARKET_ONLY”)
+  - ENV: EXECUTION_MODE, values: “MARKET_ONLY”, “LIMIT_BRACKET”
+  - etc.
+
+No edits; just documentation.
+
+==================================================
+SECTION 2 — DESIGN “ALL GATES ON, LOW RISK” CONFIG
+==================================================
+
+GOAL:
+- I want a **recommended env config** that:
+  - Uses LIMIT_BRACKET with brackets.
+  - Turns ON:
+    - Fee gate,
+    - Regime filter,
+    - Symbol whitelist (narrow set of pairs),
+    - Decision stats.
+  - Keeps risk VERY LOW for safety while we validate.
+
+TASKS:
+1. Based on the actual variable names and defaults you just discovered, propose a single, concrete **env snippet** I can put into my environment.
+
+2. Use these conceptual targets (adjust to exact names/units used in the codebase):
+
+   EXECUTION:
+   - EXECUTION_MODE: LIMIT_BRACKET
+   - USE_BRACKETS: 1 (if present)
+
+   RISK (VERY LOW):
+   - Risk per trade: around 0.10% of equity (or lowest safe allowed by config).
+   - Max daily loss: around 1–2% of equity if such a setting exists.
+
+   FEE GATE:
+   - FEE_GATE_ENABLED: 1
+   - FEE_SAFETY_MULTIPLIER: about 1.2 (not too aggressive, not super strict).
+
+   REGIME FILTER:
+   - REGIME_FILTER_ENABLED: 1
+   - REGIME_MIN_ATR_PCT: around 0.3 (block super-flat markets).
+   - REGIME_MIN_VOLUME_USD: around 20000 (block illiquid garbage).
+   - REGIME_TREND_REQUIRED: 1 (require ADX/trend > 20 or equivalent).
+
+   SYMBOL FILTER:
+   - SYMBOL_WHITELIST: something like OP/USD,BTC/USD (or whatever matches actual symbol naming in this bot).
+   - SYMBOL_BLACKLIST: empty for now.
+
+   STATS:
+   - DECISION_STATS_ENABLED: 1
+
+3. Make sure your proposed env block:
+   - Uses the **exact** env var names the code expects.
+   - Matches the expected formats (comma-separated lists, floats vs percents, etc.).
+   - Does NOT silently conflict with other config flags (e.g., USE_BRACKETS vs EXECUTION_MODE).
+
+OUTPUT FOR THIS SECTION:
+- A single env block (in a fenced code example) with all recommended settings populated with actual variable names and plausible values.
+
+Again: DO NOT apply it automatically. Just propose it.
+
+==================================================
+SECTION 3 — STARTUP & LOG VERIFICATION PLAN
+==================================================
+
+GOAL:
+- I want a **checklist** for verifying that Zyn boots correctly with this config and that all gates are wired.
+
+TASKS:
+1. Design a startup procedure:
+   - Exactly what I should do in Replit to:
+     - Set env vars,
+     - Restart the autopilot workflow / main bot process,
+     - Ensure the new config is loaded.
+
+2. Tell me what log lines to look for at startup, such as:
+   - [EXECUTION] Mode: LIMIT_BRACKET
+   - [CONFIG] or [INIT] lines showing:
+     - execution_mode,
+     - fee_gate_enabled,
+     - regime_filter_enabled,
+     - symbol whitelist/blacklist,
+     - decision stats enabled.
+
+3. If possible, suggest a simple Python command or script I can run in Replit’s shell to:
+   - Import the config,
+   - Print the resolved TradingConfig (with all env overrides applied),
+   - So we can confirm the runtime config matches the proposed env block.
+
+OUTPUT:
+- A numbered checklist of what I should do and what I should see in logs.
+- Any helper command(s) to sanity check the loaded config.
+
+==================================================
+SECTION 4 — FIRST LIVE TRADE VALIDATION PLAN
+==================================================
+
+GOAL:
+- I want a **very focused live validation** of ONE or a few small trades, with all gates on and risk low.
+
+You cannot actually watch my Kraken app, but you can:
+- Define what SHOULD happen end-to-end,
+- Define what I should manually check in the Kraken UI,
+- Define what logs I should look for in Replit.
+
+TASKS:
+1. Describe, step-by-step, what should happen when Zyn takes a LONG trade in LIMIT_BRACKET mode, with the current architecture:
+
+   - Signal generated for a whitelisted symbol that passes:
+     - Symbol filter,
+     - Regime filter,
+     - Fee gate,
+     - Risk gates.
+
+   - Entry logic:
+     - Limit entry placed at maker-friendly price (e.g., 0.2% below market).
+     - Kraken may fill this in partials.
+
+   - Partial fills:
+     - How pending_child_orders.total_qty / filled_qty / bracket_initialized behave.
+     - When TP/SL are placed (full fill threshold).
+
+   - Post-fill state:
+     - What TP + SL orders should exist (Kraken side).
+     - What pending_child_orders and open_positions.json should contain.
+
+   - Exit:
+     - When TP hits:
+       - TP fills,
+       - OCO monitor cancels all SLs,
+       - position_tracker removes the position,
+       - DB row marked complete.
+
+     - When SL hits:
+       - SL fills,
+       - OCO monitor cancels TP,
+       - position_tracker removes the position.
+
+2. Tell me EXACTLY what to check in the Kraken UI for the **first completed bracket trade**, including:
+   - Number and type of orders before fill (entry, SL, TP),
+   - What remains after TP or SL is hit (ideally nothing open for that symbol),
+   - Any multiple SLs created by Kraken and how they should all be gone once TP or SL is processed.
+
+3. Tell me what to look for in Replit logs around that trade:
+   - Bracket / OCO logs (e.g., [BRACKET], [OCO], [BRACKET-HOTFIX], etc.).
+   - Position cleanup logs.
+   - Any warnings I should treat as red flags.
+
+OUTPUT:
+- A clear checklist titled “FIRST LIVE TRADE VALIDATION” with:
+  - Kraken-side checks,
+  - Log-side checks,
+  - Conditions under which I should immediately stop Zyn and report back.
+
+==================================================
+SECTION 5 — DECISION STATS & FILTER BEHAVIOR VALIDATION
+==================================================
+
+GOAL:
+- I want to understand how often trades are being blocked by:
+  - Symbol filters,
+  - Regime filters,
+  - Fee gate,
+  - Other reasons.
+
+TASKS:
+1. Explain how to read the decision stats:
+   - Which counters exist in _decision_stats.
+   - What each one means (total_evaluated, hold_signals, blocked_by_*, passed_all_filters, etc.).
+
+2. Design a small “observation window”:
+   - For example, after 50–200 evaluations:
+     - What log line(s) will show stats summary (e.g., [DECISION_STATS] ...).
+   - Suggest a way to trigger a print of decision stats manually (if a function is available like get_decision_stats()).
+
+3. Given the “ALL GATES ON” config, describe what I should expect:
+   - e.g., Only a small percentage of signals become trades.
+   - Symbol filter: most rejections if whitelist is tight.
+   - Regime filter: extra rejections in low-vol or low-volume conditions.
+   - Fee gate: rejections for marginal edge trades.
+   - hold_signals should match total decisions that didn’t become trades, without double-count artifacts.
+
+4. Describe what would indicate misconfiguration or a bug, such as:
+   - blocked_by_* counters never increasing when filters are enabled.
+   - All decisions ending up as HOLD with no clear breakdown.
+   - Fee gate blocked count being huge + no trades even when market is active.
+
+OUTPUT:
+- A guide for interpreting stats and how to tell whether filters and gates are behaving reasonably.
+
+==================================================
+SECTION 6 — RISK-SCALING RECOMMENDATION (FUTURE)
+==================================================
+
+TASKS:
+1. Based on the system’s design, propose a **simple rule** for when it would be safe for me to:
+   - Increase risk per trade,
+   - Possibly widen symbol whitelist.
+
+2. Conditions might include:
+   - X number of completed bracket trades with no structural bugs (no missing TP, no orphan SLs, no state desync).
+   - Decision stats showing a reasonable, stable ratio of:
+     - total_evaluated,
+     - trades executed,
+     - filter-blocked decisions.
+
+3. Provide this as guidance only, NOT immediate changes.
+
+OUTPUT:
+- A short bulleted list like:
+  - “Once you have at least N clean trades and stats look like X, it’s reasonable to consider increasing risk from 0.10% to 0.25%, then 0.5%, etc.”
+
+==================================================
+FINAL REQUIREMENT — SELF-REVIEW
+==================================================
+
+Before answering:
+
+- Double-check that you did NOT modify any project code or config in this PLAN phase.
+- Make sure:
+  - All variable names and env examples actually match the codebase.
+  - The recommended env block is syntactically correct and realistic.
+  - The startup/log and validation checklists are consistent with how this project actually logs and runs.
+
+Then respond with a structured report following the sections above, including:
+- The exact env block I should use,
+- The checklists for startup, the first live trade, and decision stats observation,
+- Guidance for when to safely scale risk later.
+
+End of PLAN request.

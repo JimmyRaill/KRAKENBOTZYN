@@ -59,10 +59,6 @@ localPort = 42873
 externalPort = 8000
 
 [[ports]]
-localPort = 43097
-externalPort = 8008
-
-[[ports]]
 localPort = 45871
 externalPort = 3001
 
@@ -82,6 +78,10 @@ author = "agent"
 task = "workflow.run"
 args = "chat"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "autopilot"
+
 [[workflows.workflow]]
 name = "chat"
 author = "agent"
@@ -94,7 +94,31 @@ waitForPort = 5000
 [workflows.workflow.metadata]
 outputType = "webview"
 
+[[workflows.workflow]]
+name = "autopilot"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python autopilot.py"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
 [userenv]
 
 [userenv.shared]
 EXECUTION_MODE = "LIMIT_BRACKET"
+RISK_PER_TRADE = "0.001"
+LIMIT_OFFSET_PCT = "0.002"
+LIMIT_TIMEOUT_SECONDS = "120"
+LIMIT_MAX_RETRIES = "3"
+LIMIT_FALLBACK_TO_MARKET = "0"
+FEE_GATE_ENABLED = "1"
+FEE_SAFETY_MULTIPLIER = "1.2"
+REGIME_FILTER_ENABLED = "1"
+REGIME_MIN_ATR_PCT = "0.3"
+REGIME_MIN_VOLUME_USD = "20000"
+REGIME_TREND_REQUIRED = "1"
+SYMBOL_WHITELIST = "BTC/USD,ETH/USD,SOL/USD"
+DECISION_STATS_ENABLED = "1"
