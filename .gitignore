@@ -169,3 +169,6 @@ paper_ledger.json
 diagnostic.json
 /tmp/
 *.lock
+
+# Zin Data Vault - structured logging for analysis (do not commit)
+data/

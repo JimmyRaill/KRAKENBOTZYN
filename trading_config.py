@@ -392,3 +392,32 @@ def reload_config() -> TradingConfig:
     _config = TradingConfig.from_env()
     print(f"[CONFIG] Reloaded: {_config}")
     return _config
+
+
+ZIN_VERSION = os.getenv("ZIN_VERSION", "ZIN_V1_DATA_2025-12")
+
+
+def get_zin_version() -> str:
+    """Get the current Zin version string for data logging."""
+    return ZIN_VERSION
+
+
+def get_config_for_logging() -> dict:
+    """Get a dict of key config values suitable for logging to data vault."""
+    cfg = get_config()
+    return {
+        "symbols": cfg.symbols,
+        "paper_mode": cfg.paper_mode,
+        "execution_mode": cfg.execution_mode,
+        "risk_per_trade_pct": cfg.risk.risk_per_trade_pct,
+        "max_active_risk_pct": cfg.risk.max_active_risk_pct,
+        "max_position_usd": cfg.risk.max_position_usd,
+        "max_trades_per_day": cfg.risk.max_trades_per_day,
+        "max_daily_loss_usd": cfg.risk.max_daily_loss_usd,
+        "min_rr": cfg.risk.min_risk_reward_ratio,
+        "enable_shorts": cfg.risk.enable_shorts,
+        "atr_stop_multiplier": cfg.indicators.atr_stop_multiplier,
+        "atr_tp_multiplier": cfg.indicators.atr_take_profit_multiplier,
+        "adx_threshold": cfg.regime.adx_threshold,
+        "aggressive_mode": cfg.regime.aggressive_mode
+    }
