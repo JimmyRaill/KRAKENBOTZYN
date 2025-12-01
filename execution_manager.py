@@ -39,6 +39,61 @@ except ImportError:
     EVAL_LOG_ENABLED = False
     logger.warning("[EXEC-MGR] Evaluation log not available - orders will not be logged to executed_orders")
 
+# Data Vault logging (structured JSON logs for analysis)
+DATA_VAULT_ENABLED = False
+data_vault_log_trade = None
+try:
+    from data_logger import log_trade as data_vault_log_trade
+    from trading_config import get_zin_version
+    DATA_VAULT_ENABLED = True
+except ImportError:
+    pass
+
+
+def _log_trade_to_vault(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    exit_price: Optional[float],
+    size: float,
+    pnl_abs: float = 0.0,
+    pnl_pct: float = 0.0,
+    reason: str = "",
+    source: str = "autopilot",
+    order_id: str = "",
+    fee: float = 0.0
+) -> None:
+    """Log trade to Data Vault for analysis and self-learning."""
+    if not DATA_VAULT_ENABLED or not data_vault_log_trade:
+        return
+    
+    try:
+        mode = get_mode_str()
+        
+        trade_record = {
+            "timestamp_open": datetime.now(timezone.utc).isoformat(),
+            "timestamp_close": datetime.now(timezone.utc).isoformat() if exit_price else None,
+            "zin_version": get_zin_version(),
+            "mode": mode,
+            "symbol": symbol,
+            "direction": direction,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "size": size,
+            "pnl_abs": pnl_abs,
+            "pnl_pct": pnl_pct,
+            "fee": fee,
+            "reason_code": reason,
+            "source": source,
+            "order_id": order_id,
+            "regime": {}
+        }
+        
+        data_vault_log_trade(trade_record)
+        
+    except Exception as e:
+        logger.debug(f"[DATA-VAULT] Trade logging error (non-fatal): {e}")
+
 
 class ExecutionResult:
     """Result of market order execution"""
@@ -264,6 +319,21 @@ def execute_market_entry(
             except Exception as telem_err:
                 logger.error(f"[MARKET-ENTRY] Failed to log to telemetry: {telem_err}")
         
+        # Log to Data Vault
+        _log_trade_to_vault(
+            symbol=symbol,
+            direction="long",
+            entry_price=fill_price,
+            exit_price=None,
+            size=filled_qty,
+            pnl_abs=0.0,
+            pnl_pct=0.0,
+            reason=reason or "ENTRY",
+            source=source,
+            order_id=order_id,
+            fee=fee
+        )
+        
         return ExecutionResult(
             success=True,
             order_id=order_id,
@@ -477,6 +547,21 @@ def execute_market_exit(
                 logger.debug(f"[MARKET-EXIT] Logged to telemetry_db with source={source}")
             except Exception as telem_err:
                 logger.error(f"[MARKET-EXIT] Failed to log to telemetry: {telem_err}")
+        
+        # Log to Data Vault (exit trade with P&L if available)
+        _log_trade_to_vault(
+            symbol=symbol,
+            direction="long",
+            entry_price=0.0,
+            exit_price=fill_price,
+            size=filled_qty,
+            pnl_abs=0.0,
+            pnl_pct=0.0,
+            reason=reason or "EXIT",
+            source=source,
+            order_id=order_id,
+            fee=fee
+        )
         
         # Remove position from mental SL/TP tracker
         try:

@@ -275,11 +275,8 @@ def notify_error(error_type: str, error_message: str, symbol: str = None):
 
 
 def notify_daily_summary():
-    """Send daily performance summary via Discord."""
+    """Send daily performance summary via Discord and log to Data Vault."""
     config = get_notification_config()
-    
-    if not config.get("notify_daily_summary"):
-        return
     
     last_sent = config.get("last_daily_sent")
     now = datetime.now()
@@ -293,14 +290,36 @@ def notify_daily_summary():
     if now.hour < target_hour:
         return
     
+    equity = 0
+    change_usd = 0
+    
     try:
         state_path = Path(__file__).parent / "state.json"
-        if not state_path.exists():
-            return
+        if state_path.exists():
+            state = json.loads(state_path.read_text())
+            equity = state.get("equity_now_usd", 0)
+            change_usd = state.get("equity_change_usd", 0)
         
-        state = json.loads(state_path.read_text())
-        equity = state.get("equity_now_usd", 0)
-        change_usd = state.get("equity_change_usd", 0)
+        try:
+            from data_logger import log_daily_summary, compute_daily_stats
+            from trading_config import get_zin_version
+            from exchange_manager import get_mode_str
+            
+            stats = compute_daily_stats()
+            stats["zin_version"] = get_zin_version()
+            stats["mode"] = get_mode_str()
+            stats["equity_usd"] = equity
+            stats["equity_change_usd"] = change_usd
+            
+            log_daily_summary(stats)
+            print(f"[DATA-VAULT] Daily summary logged to data vault")
+        except Exception as vault_err:
+            print(f"[DATA-VAULT] Daily summary logging error (non-fatal): {vault_err}")
+        
+        if not config.get("notify_daily_summary"):
+            config["last_daily_sent"] = now.isoformat()
+            save_notification_config(config)
+            return
         
         is_positive = change_usd >= 0
         color = 0x00ff00 if is_positive else 0xff0000

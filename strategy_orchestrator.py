@@ -21,13 +21,22 @@ Strategies per regime:
 
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from regime_detector import get_regime_detector, MarketRegime
 from multi_timeframe_context import get_mtf_context, HTFContext
-from trading_config import TradingConfig
+from trading_config import TradingConfig, get_zin_version
 import candle_strategy as cs
 from loguru import logger
 from fee_model import compute_required_edge_pct
 from evaluation_log import log_evaluation
+
+DATA_VAULT_ENABLED = False
+data_vault_log_decision = None
+try:
+    from data_logger import log_decision as data_vault_log_decision, generate_decision_id
+    DATA_VAULT_ENABLED = True
+except ImportError:
+    pass
 
 
 @dataclass
@@ -432,10 +441,26 @@ class StrategyOrchestrator:
         
         symbol_block = self._apply_symbol_filter(symbol, price)
         if symbol_block:
+            self._log_decision_to_vault(
+                symbol=symbol,
+                final_signal=symbol_block,
+                indicators_5m=indicators_5m,
+                regime_result=None,
+                htf=None,
+                volume_usd_24h=volume_usd_24h
+            )
             return symbol_block
         
         regime_block = self._apply_regime_filter(symbol, price, indicators_5m, volume_usd_24h)
         if regime_block:
+            self._log_decision_to_vault(
+                symbol=symbol,
+                final_signal=regime_block,
+                indicators_5m=indicators_5m,
+                regime_result=None,
+                htf=None,
+                volume_usd_24h=volume_usd_24h
+            )
             return regime_block
         
         htf = self.mtf_context.get_context(symbol)
@@ -492,7 +517,157 @@ class StrategyOrchestrator:
         if self.config.decision_stats_enabled and self._decision_stats['total_evaluated'] % 50 == 0:
             self.log_decision_stats()
         
+        self._log_decision_to_vault(
+            symbol=symbol,
+            final_signal=final_signal,
+            indicators_5m=indicators_5m,
+            regime_result=regime_result,
+            htf=htf,
+            volume_usd_24h=volume_usd_24h
+        )
+        
         return final_signal
+    
+    def _log_decision_to_vault(
+        self,
+        symbol: str,
+        final_signal: TradeSignal,
+        indicators_5m: Dict[str, Any],
+        regime_result: Any,
+        htf: HTFContext,
+        volume_usd_24h: Optional[float] = None
+    ) -> None:
+        """Log decision to Data Vault for analysis and self-learning."""
+        if not DATA_VAULT_ENABLED or not data_vault_log_decision:
+            return
+        
+        try:
+            decision_map = {
+                'long': 'ENTER_LONG',
+                'short': 'ENTER_SHORT',
+                'hold': 'NO_TRADE'
+            }
+            decision_label = decision_map.get(final_signal.action, 'NO_TRADE')
+            
+            trend_regime = self._classify_trend_regime(regime_result)
+            volatility_regime = self._classify_volatility_regime(indicators_5m, final_signal.entry_price)
+            
+            decision_id = generate_decision_id(symbol, "5m")
+            
+            from exchange_manager import get_mode_str
+            mode = get_mode_str()
+            
+            decision_record = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "zin_version": get_zin_version(),
+                "mode": mode,
+                "symbol": symbol,
+                "timeframe": "5m",
+                "decision": decision_label,
+                "decision_id": decision_id,
+                "indicators": {
+                    "rsi": indicators_5m.get('rsi'),
+                    "sma20": indicators_5m.get('sma20'),
+                    "sma50": indicators_5m.get('sma50'),
+                    "atr": indicators_5m.get('atr'),
+                    "atr_pct": indicators_5m.get('atr_pct'),
+                    "adx": indicators_5m.get('adx'),
+                    "bb_upper": indicators_5m.get('bb_upper'),
+                    "bb_middle": indicators_5m.get('bb_middle'),
+                    "bb_lower": indicators_5m.get('bb_lower'),
+                    "volume_percentile": indicators_5m.get('volume_percentile')
+                },
+                "regime": {
+                    "detected": regime_result.regime.value if regime_result and regime_result.regime else "unknown",
+                    "confidence": regime_result.confidence if regime_result else 0.0,
+                    "trend": trend_regime,
+                    "volatility": volatility_regime
+                },
+                "htf_context": {
+                    "trend_15m": htf.trend_15m if htf else None,
+                    "trend_1h": htf.trend_1h if htf else None,
+                    "dominant_trend": htf.dominant_trend if htf else None,
+                    "htf_aligned": htf.htf_aligned if htf else False
+                },
+                "signal": {
+                    "action": final_signal.action,
+                    "confidence": final_signal.confidence,
+                    "entry_price": final_signal.entry_price,
+                    "stop_loss": final_signal.stop_loss,
+                    "take_profit": final_signal.take_profit,
+                    "reason": final_signal.reason
+                },
+                "filters": {
+                    "symbol_whitelist_ok": symbol in self.config.symbol_whitelist if self.config.symbol_whitelist else True,
+                    "regime_filter_ok": final_signal.action != 'hold' or 'REGIME' not in final_signal.reason,
+                    "fee_gate_ok": final_signal.action != 'hold' or 'FEE_GATE' not in final_signal.reason
+                },
+                "volume_usd_24h": volume_usd_24h,
+                "reason_code": self._extract_reason_code(final_signal.reason)
+            }
+            
+            if data_vault_log_decision(decision_record):
+                logger.debug(f"[DATA-VAULT] Decision logged: {symbol}")
+            else:
+                logger.warning(f"[DATA-VAULT] Decision logging failed for {symbol}")
+            
+        except Exception as e:
+            import traceback
+            logger.warning(f"[DATA-VAULT] Decision logging error (non-fatal): {e}\n{traceback.format_exc()}")
+    
+    def _classify_trend_regime(self, regime_result: Any) -> str:
+        """Classify the trend regime for logging."""
+        if not regime_result:
+            return "UNKNOWN"
+        regime = regime_result.regime
+        if regime == MarketRegime.TREND_UP:
+            return "UP_TREND"
+        elif regime == MarketRegime.TREND_DOWN:
+            return "DOWN_TREND"
+        elif regime == MarketRegime.RANGE:
+            return "SIDEWAYS"
+        elif regime == MarketRegime.BREAKOUT_EXPANSION:
+            return "BREAKOUT"
+        else:
+            return "SIDEWAYS"
+    
+    def _classify_volatility_regime(self, indicators_5m: Dict[str, Any], price: float) -> str:
+        """Classify volatility regime based on ATR percentage."""
+        atr = indicators_5m.get('atr')
+        if not atr or not price or price <= 0:
+            return "UNKNOWN"
+        
+        atr_pct = (atr / price) * 100
+        
+        if atr_pct < 0.3:
+            return "LOW_VOL"
+        elif atr_pct < 0.8:
+            return "MED_VOL"
+        else:
+            return "HIGH_VOL"
+    
+    def _extract_reason_code(self, reason: str) -> str:
+        """Extract a standardized reason code from the signal reason."""
+        reason_upper = reason.upper()
+        
+        if 'PULLBACK' in reason_upper:
+            return "TREND_PULLBACK"
+        elif 'BREAKOUT' in reason_upper:
+            return "BREAKOUT_EXPANSION"
+        elif 'MEAN_REVERT' in reason_upper or 'RANGE' in reason_upper or 'BB' in reason_upper:
+            return "MEAN_REVERSION"
+        elif 'FEE_GATE' in reason_upper:
+            return "FEE_GATE_BLOCK"
+        elif 'HTF' in reason_upper:
+            return "HTF_CONFLICT"
+        elif 'REGIME' in reason_upper or 'ATR' in reason_upper:
+            return "REGIME_FILTER_BLOCK"
+        elif 'WHITELIST' in reason_upper or 'BLACKLIST' in reason_upper:
+            return "SYMBOL_FILTER_BLOCK"
+        elif 'NO_TRADE' in reason_upper or 'HOLD' in reason_upper:
+            return "NO_SETUP"
+        else:
+            return "OTHER"
     
     def _trend_up_strategy(
         self,

@@ -29,7 +29,7 @@ from risk_manager import calculate_trade_risk, get_max_active_risk, PositionSnap
 from trading_limits import can_open_new_trade, record_trade_opened, get_daily_limits
 
 # TRADING CONFIG: Centralized config with execution mode flags
-from trading_config import get_config
+from trading_config import get_config, get_zin_version, get_config_for_logging
 
 # FEE MODEL: Real-time Kraken fee tracking for fee-aware trading
 from fee_model import get_minimum_edge_pct, get_taker_fee
@@ -69,6 +69,19 @@ except ImportError:
 
 # EVALUATION LOGGING - Full transparency layer
 from evaluation_log import log_evaluation
+
+# DATA VAULT - Centralized structured logging for analysis and self-learning
+DATA_VAULT_ENABLED = False
+data_vault_log_version = data_vault_log_decision = data_vault_log_trade = data_vault_log_anomaly = None
+try:
+    from data_logger import log_version as data_vault_log_version
+    from data_logger import log_decision as data_vault_log_decision
+    from data_logger import log_trade as data_vault_log_trade
+    from data_logger import log_anomaly_event as data_vault_log_anomaly
+    DATA_VAULT_ENABLED = True
+    print("[INIT] ✅ Data Vault logging enabled (trades, decisions, anomalies)")
+except ImportError as e:
+    print(f"[WARNING] Data Vault not available: {e}")
 
 # RECONCILIATION SERVICE - TP/SL fill monitoring
 from reconciliation_service import run_reconciliation_cycle
@@ -1871,6 +1884,21 @@ def run_forever() -> None:
             send_startup_test_ping()
         except Exception as e:
             print(f"[DISCORD-TEST] Failed to send startup ping: {e}")
+    
+    # Log version/config to Data Vault on startup
+    if DATA_VAULT_ENABLED and data_vault_log_version:
+        try:
+            cfg = get_config()
+            mode_str = "paper" if cfg.paper_mode else "live"
+            data_vault_log_version({
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "zin_version": get_zin_version(),
+                "config": get_config_for_logging(),
+                "comment": f"Autopilot startup in {mode_str.upper()} mode"
+            })
+            print(f"[DATA-VAULT] Version {get_zin_version()} logged to data vault")
+        except Exception as e:
+            print(f"[DATA-VAULT] Failed to log version: {e}")
     
     # Check for daily/weekly summaries
     if TELEMETRY_ENABLED and check_summaries:

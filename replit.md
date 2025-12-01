@@ -52,6 +52,16 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
     -   **LLM Agent (`llm_agent.py`)**: Integrates OpenAI GPT-4o for natural language command execution with anti-hallucination safeguards and real-time market data.
     -   **Trade Result Validator (`trade_result_validator.py`)**: Multi-layered anti-hallucination system to validate LLM claims against actual Kraken execution.
     -   **Evaluation Log (`evaluation_log.db`)**: SQLite database for transparent logging of trading decisions and executed orders.
+    -   **Data Vault (`data_logger.py`)**: Centralized JSONL-based logging system for long-term analysis and self-iteration. **IMPLEMENTED (Dec 2025)**:
+          - Directory structure: `/data/{trades, decisions, daily, meta, anomalies}` (gitignored)
+          - `log_trade()`: Complete trade lifecycle (entry/exit with P&L, fees, regime, decision_id reference)
+          - `log_decision()`: Every market evaluation with indicators, regime, filters, and outcome
+          - `log_daily_summary()`: Daily performance stats (trades, win rate, P&L, drawdown)
+          - `log_version()`: Version history with config snapshots for A/B testing
+          - `log_anomaly()`: Error events and unusual conditions
+          - `compute_daily_stats()`: Aggregates trades for daily summary generation
+          - Integrated with: autopilot startup, strategy_orchestrator (decision logging), execution_manager (trade logging), discord_notifications (daily summary logging)
+          - Version tracking via `ZIN_VERSION` constant in trading_config.py
 -   **Trading Components**:
     -   **Autopilot (`autopilot.py`)**: Autonomous trading loop executing a 5-minute closed-candle strategy, monitoring mental SL/TP levels and integrating risk gatekeepers.
     -   **Trading Config (`trading_config.py`)**: Centralized configuration for indicators, market filters, risk parameters, and execution mode, supporting environment variable overrides.
