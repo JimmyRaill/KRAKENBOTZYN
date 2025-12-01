@@ -1,0 +1,292 @@
+You are working on the Zintradingbot (KrakenTradingBot) project.
+
+High-level goal:
+Implement a centralized, structured data logging system so that ALL important bot data (trades, decisions, daily summaries, version/config info, anomalies, and minimal market/indicator context) is written into a single `/data` directory in a consistent, machine-readable format.
+
+We want this to:
+- analyze Zin’s behavior over weeks/months
+- support future “self-iteration” where Zin can learn from his own history
+- avoid scattered logs and fragile ad-hoc data
+
+Important constraints:
+- Do NOT break existing trading behavior (paper or live).
+- Do NOT delete or rip out existing logging/state yet. Leave it, but we will prefer the new system going forward.
+- Logging failures must never crash trading: wrap file writes in try/except.
+- No API keys, secrets, or personally identifying info should be logged.
+- Add `/data` to `.gitignore` so this data is never pushed to GitHub.
+
+--------------------------------
+1) Create a centralized /data "vault" structure
+--------------------------------
+
+Create a top-level `data/` folder (if it doesn’t exist) with this structure:
+
+- `data/`
+  - `trades/`        -> per-day trade logs (JSONL: one JSON per line)
+  - `decisions/`     -> per-evaluation decision logs (JSONL)
+  - `daily/`         -> per-day summary file (JSON)
+  - `meta/`          -> version/config history (JSONL)
+  - `anomalies/`     -> anomaly/bug events (JSONL)
+  - `snapshots/`     -> reserved for future use (minimal snapshots if needed)
+
+Requirements:
+- Ensure directories are created at runtime if missing.
+- Add `data/` to `.gitignore`.
+
+--------------------------------
+2) Implement a DataLogger module
+--------------------------------
+
+Create a new module, for example: `data_logger.py`.
+
+Implement a `DataLogger` (or similar) class with methods:
+
+- `log_trade(trade_record: dict) -> None`
+- `log_decision(decision_record: dict) -> None`
+- `log_daily_summary(summary_record: dict) -> None`
+- `log_version(version_record: dict) -> None`
+- `log_anomaly(anomaly_record: dict) -> None`
+- (Optional future) `log_snapshot(snapshot_record: dict) -> None`
+
+General behavior:
+- Use JSONL for `trades`, `decisions`, `meta/versions`, and `anomalies`.
+- Use a single JSON file for each daily summary.
+- Build paths like:
+  - `data/trades/YYYY-MM-DD_trades.jsonl`
+  - `data/decisions/YYYY-MM-DD_decisions.jsonl`
+  - `data/daily/YYYY-MM-DD_summary.json`
+  - `data/meta/versions.jsonl`
+  - `data/anomalies/anomalies.jsonl`
+- Wrap file operations in try/except, log errors to console or a fallback but NEVER crash trading due to logging failure.
+
+--------------------------------
+3) Trade logging – final outcomes
+--------------------------------
+
+Find where trades are opened and closed (e.g. in the paper trading simulator, execution manager, or trade lifecycle modules).
+
+When a trade is fully known (e.g. at close, or when PnL is calculable), construct a `trade_record` with fields like:
+
+- `timestamp_open`
+- `timestamp_close`
+- `zin_version`          // see version handling below
+- `mode`                 // "live" or "paper"
+- `symbol`
+- `direction`            // "long" or "short"
+- `entry_price`
+- `exit_price`
+- `size`
+- `pnl_abs`
+- `pnl_pct`
+- `max_favorable_excursion_pct`  // if available
+- `max_adverse_excursion_pct`    // if available
+- `reason_code`          // e.g. "TREND_FOLLOW_BREAKOUT"
+- `regime`               // a small dict, e.g. { "trend": "...", "volatility": "..." }
+- `decision_id`          // see decision logging section; optional but recommended
+
+Then call:
+
+- `DataLogger.log_trade(trade_record)`
+
+Notes:
+- It’s okay if some fields are missing initially; the logger should handle partial records gracefully.
+- Ensure this is done for BOTH paper and live paths.
+
+--------------------------------
+4) Decision logging – Zin’s "thought process"
+--------------------------------
+
+We want to log a structured “decision event” every time the bot evaluates the market, even if it decides to do nothing.
+
+Add decision logging in the main evaluation loop (e.g. in `autopilot` or wherever the strategy decides whether to ENTER/EXIT/NO_TRADE).
+
+For each evaluation, build a `decision_record` with fields like:
+
+- `timestamp`
+- `zin_version`
+- `mode`               // "live" or "paper"
+- `symbol`
+- `timeframe`          // if applicable
+- `decision`           // e.g. "NO_TRADE", "ENTER_LONG", "ENTER_SHORT", "EXIT_LONG", etc.
+
+Minimal indicator snapshot (only what is actually used for decisions, not full market dump):
+- `indicators`: a dict containing only the indicators/values used in the decision, e.g.:
+  - `rsi`
+  - `ema_fast`
+  - `ema_slow`
+  - `atr`
+  - `bb_width`
+  - etc. as relevant to the current strategy
+
+Regime snapshot:
+- `regime`: (dict)
+  - `trend`: e.g. `UP_TREND`, `DOWN_TREND`, `SIDEWAYS`
+  - `volatility`: e.g. `LOW_VOL`, `MED_VOL`, `HIGH_VOL`
+
+Risk context:
+- `risk_context`: (dict)
+  - `equity` (if available)
+  - `active_risk_pct`
+  - `max_active_risk_pct`
+  - `position_size_if_trade` (if the decision would have traded)
+
+Filters/conditions snapshot:
+- `filters`: (dict of booleans)
+  - e.g. `spread_ok`, `slippage_ok`, `max_trades_per_day_ok`, `active_risk_ok`, etc.
+
+Reason & linkage:
+- `reason_code`: e.g. "SETUP_PRESENT", "NO_SETUP", "FILTER_BLOCKED", "RISK_TOO_HIGH", etc.
+- `decision_id`: a unique string (e.g. `"{timestamp}_{symbol}_{timeframe}"`) used to link to resulting trades.
+
+Call:
+
+- `DataLogger.log_decision(decision_record)`
+
+If a decision leads directly to a trade:
+- Use the same `decision_id` inside the trade record.
+
+--------------------------------
+5) Daily summary logging
+--------------------------------
+
+Add logic to create a daily summary record at end-of-day or at a suitable point (e.g. when the bot stops, or once per day).
+
+You can either:
+- Compute these stats from the in-memory trade list / existing structures, OR
+- If easier, read back from `data/trades/YYYY-MM-DD_trades.jsonl` and compute.
+
+The `summary_record` should look like:
+
+- `date`
+- `zin_version`
+- `mode`
+- `total_trades`
+- `win_rate`
+- `total_pnl_abs`
+- `total_pnl_pct`
+- `max_drawdown_pct`
+- `biggest_win_pct`
+- `biggest_loss_pct`
+- Optional: `subjective_tag` (e.g. "TRENDY", "CHOPPY", "CRAZY", "BORING") and `notes`
+
+Write this to:
+
+- `data/daily/YYYY-MM-DD_summary.json` via `log_daily_summary`.
+
+If full stats are too heavy to compute now, you can start with a minimal version (date, version, mode, total_trades, total_pnl) and mark TODOs to enhance later.
+
+--------------------------------
+6) Version & config history
+--------------------------------
+
+Introduce a clear concept of `ZIN_VERSION`.
+
+For now, this can be:
+- a constant in a config module, e.g. `ZIN_VERSION = "ZIN_V1_DATA_2025-12-03"`, OR
+- an environment variable read at startup.
+
+On startup (or when core config is loaded), call `log_version` with something like:
+
+- `timestamp`
+- `zin_version`
+- `config`: a dict of key settings such as:
+  - risk parameters (e.g. `max_active_risk_pct`, `per_trade_risk_pct`, etc.)
+  - list of traded symbols
+  - timeframe(s)
+  - enabled strategies or entry modules
+- `comment`: a short description of what this version represents (e.g. "Initial data-logging-enabled live config").
+
+Append these to:
+
+- `data/meta/versions.jsonl`
+
+Ensure that every trade, decision, daily summary, and anomaly uses the current `zin_version`.
+
+--------------------------------
+7) Regime detection (simple, minimal)
+--------------------------------
+
+Implement (or reuse if already present) simple regime detection helpers:
+
+- Trend regime:
+  - Based on EMA slope, price relative to moving averages, or similar.
+  - Output: `UP_TREND`, `DOWN_TREND`, or `SIDEWAYS`.
+
+- Volatility regime:
+  - Based on ATR as a percentage of price, Bollinger band width, or similar.
+  - Output: `LOW_VOL`, `MED_VOL`, `HIGH_VOL`.
+
+Log these as part of:
+- `decision_record["regime"]`
+- `trade_record["regime"]` (use regime at entry time).
+
+Keep these helpers simple and put TODO comments where future improvements could go.
+
+--------------------------------
+8) Anomaly logging integration
+--------------------------------
+
+Implement a thin helper (either in `data_logger.py` or a shared util) to make anomaly logging easy, e.g.:
+
+- `log_anomaly_event(type: str, description: str, **context)`
+
+Internally, this builds an `anomaly_record` like:
+
+- `timestamp`
+- `zin_version`
+- `type`          // e.g. "UNEXPECTED_BEHAVIOR", "API_ERROR", "POSITION_MISMATCH"
+- `description`   // human-readable message
+- `context`       // dict with extras, e.g. `{"symbol": "...", "regime": {...}}`
+
+and calls `DataLogger.log_anomaly(...)` to append to:
+
+- `data/anomalies/anomalies.jsonl`
+
+Replace or supplement key print/log statements that indicate weird behavior or errors (especially around order placement, fills, risk checks) with calls to this helper.
+
+--------------------------------
+9) Backward compatibility and safety
+--------------------------------
+
+- Do NOT delete or heavily refactor existing persistence/logging yet.
+- Prefer the new `DataLogger` for any *new* structured logging.
+- Ensure:
+  - If `DataLogger` fails (permissions, disk issues, etc.), the bot continues to run.
+  - Imports are organized to avoid circular dependencies (e.g. keep `DataLogger` relatively standalone and injected where needed).
+
+--------------------------------
+10) Quick manual tests
+--------------------------------
+
+Add a simple test script or routine (can be a standalone script) that:
+
+- Instantiates a `DataLogger`.
+- Calls:
+  - `log_trade` with a fake trade.
+  - `log_decision` with a fake decision.
+  - `log_daily_summary` with a fake summary.
+  - `log_version` with a fake config.
+  - `log_anomaly` with a fake anomaly.
+
+Then manually verify:
+
+- The right files are created under `data/`.
+- Each JSONL line is valid JSON and includes the expected keys.
+- The daily summary file is valid JSON.
+
+You don’t need a full test suite; a basic manual test is fine for now.
+
+--------------------------------
+Summary of tasks:
+
+1. Create `/data` and subdirectories (`trades/`, `decisions/`, `daily/`, `meta/`, `anomalies/`, `snapshots/`) and add `data/` to `.gitignore`.
+2. Add `data_logger.py` with methods to log trades, decisions, daily summaries, versions, and anomalies using JSONL/JSON.
+3. Integrate trade logging into the lifecycle where trades open/close (both paper and live).
+4. Integrate decision logging into the evaluation loop so every evaluation (even NO_TRADE) is logged with minimal indicators, regime, risk context, filters, and a decision label.
+5. Implement daily summary logging that rolls up per-day stats into `data/daily/...`.
+6. Implement simple regime detection and attach regime info to decisions and trades.
+7. Implement anomaly logging and route key “weird behavior” events into it.
+8. Maintain backward compatibility and ensure logging cannot crash the bot.
+9. Add a small manual test to confirm everything writes correctly.
+
+Please produce a clear step-by-step plan for implementing this in this codebase, then proceed to implement it.
