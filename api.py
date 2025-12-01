@@ -11,13 +11,17 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from event_manager import event_manager
 
 app = FastAPI()
+
+# Mount static files for logo and assets
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Enable CORS for real-time updates
 app.add_middleware(
@@ -99,7 +103,7 @@ CONTROL_PANEL = """
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #1a1a2e;
             min-height: 100vh;
             padding: 20px;
             display: flex;
@@ -109,16 +113,29 @@ CONTROL_PANEL = """
         .container {
             max-width: 900px;
             width: 100%;
-            background: white;
+            background: #16213e;
             border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
             overflow: hidden;
+            border: 1px solid #0f3460;
         }
         .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #0077b6 0%, #2ecc71 100%);
             color: white;
             padding: 30px;
             text-align: center;
+            position: relative;
+        }
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(45deg);
+            width: 120px;
+            height: 120px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
         }
         .header h1 {
             font-size: 36px;
@@ -126,17 +143,24 @@ CONTROL_PANEL = """
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 10px;
+            gap: 15px;
+            position: relative;
+            z-index: 1;
         }
-        .header p { font-size: 16px; opacity: 0.9; }
+        .header h1 img {
+            width: 50px;
+            height: 50px;
+            border-radius: 10px;
+        }
+        .header p { font-size: 16px; opacity: 0.9; position: relative; z-index: 1; }
         
         .status-bar {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
             gap: 15px;
             padding: 20px;
-            background: #f7fafc;
-            border-bottom: 1px solid #e2e8f0;
+            background: #1a1a2e;
+            border-bottom: 1px solid #0f3460;
         }
         @media (max-width: 768px) {
             .status-bar {
@@ -144,23 +168,24 @@ CONTROL_PANEL = """
             }
         }
         .status-card {
-            background: white;
+            background: #16213e;
             padding: 20px;
             border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
             text-align: center;
+            border: 1px solid #0f3460;
         }
         .status-label {
             font-size: 12px;
             text-transform: uppercase;
-            color: #718096;
+            color: #64748b;
             margin-bottom: 8px;
             font-weight: 600;
         }
         .status-value {
             font-size: 24px;
             font-weight: bold;
-            color: #2d3748;
+            color: #e2e8f0;
         }
         .status-value.active { color: #10b981; }
         .status-value.inactive { color: #ef4444; }
@@ -218,8 +243,8 @@ CONTROL_PANEL = """
             display: flex;
             gap: 10px;
             justify-content: center;
-            background: #f7fafc;
-            border-bottom: 1px solid #e2e8f0;
+            background: #1a1a2e;
+            border-bottom: 1px solid #0f3460;
         }
         .btn {
             padding: 15px 30px;
@@ -234,23 +259,23 @@ CONTROL_PANEL = """
             gap: 8px;
         }
         .btn-start {
-            background: linear-gradient(135deg, #10b981, #059669);
+            background: linear-gradient(135deg, #2ecc71, #27ae60);
             color: white;
             flex: 1;
         }
-        .btn-start:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(16, 185, 129, 0.4); }
+        .btn-start:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(46, 204, 113, 0.4); }
         .btn-stop {
-            background: linear-gradient(135deg, #ef4444, #dc2626);
+            background: linear-gradient(135deg, #e74c3c, #c0392b);
             color: white;
             flex: 1;
         }
-        .btn-stop:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(239, 68, 68, 0.4); }
+        .btn-stop:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(231, 76, 60, 0.4); }
         .btn-restart {
-            background: linear-gradient(135deg, #f59e0b, #d97706);
+            background: linear-gradient(135deg, #0077b6, #00a8e8);
             color: white;
             flex: 1;
         }
-        .btn-restart:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(245, 158, 11, 0.4); }
+        .btn-restart:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0, 119, 182, 0.4); }
         .btn:disabled {
             opacity: 0.5;
             cursor: not-allowed;
@@ -259,25 +284,25 @@ CONTROL_PANEL = """
         
         .chat-container {
             padding: 20px;
-            background: white;
+            background: #16213e;
         }
         .chat-title {
             font-size: 20px;
             font-weight: 600;
-            color: #2d3748;
+            color: #e2e8f0;
             margin-bottom: 15px;
             display: flex;
             align-items: center;
             gap: 8px;
         }
         .chat-messages {
-            background: #f7fafc;
+            background: #1a1a2e;
             border-radius: 12px;
             height: 400px;
             overflow-y: auto;
             padding: 15px;
             margin-bottom: 15px;
-            border: 1px solid #e2e8f0;
+            border: 1px solid #0f3460;
         }
         .message {
             margin-bottom: 15px;
@@ -287,19 +312,19 @@ CONTROL_PANEL = """
             word-wrap: break-word;
         }
         .message.user {
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, #0077b6, #2ecc71);
             color: white;
             margin-left: auto;
             text-align: right;
         }
         .message.bot {
-            background: white;
-            color: #2d3748;
-            border: 1px solid #e2e8f0;
+            background: #0f3460;
+            color: #e2e8f0;
+            border: 1px solid #1e5f8a;
         }
         .message.system {
-            background: #fef3c7;
-            color: #92400e;
+            background: linear-gradient(135deg, #0077b6, #2ecc71);
+            color: white;
             text-align: center;
             font-size: 14px;
             margin: 10px auto;
@@ -312,14 +337,17 @@ CONTROL_PANEL = """
         .chat-input {
             flex: 1;
             padding: 12px 16px;
-            border: 2px solid #e2e8f0;
+            border: 2px solid #0f3460;
             border-radius: 10px;
             font-size: 15px;
             outline: none;
+            background: #1a1a2e;
+            color: #e2e8f0;
         }
-        .chat-input:focus { border-color: #667eea; }
+        .chat-input:focus { border-color: #2ecc71; }
+        .chat-input::placeholder { color: #64748b; }
         .btn-send {
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, #0077b6, #2ecc71);
             color: white;
             padding: 12px 24px;
             border: none;
@@ -329,17 +357,18 @@ CONTROL_PANEL = """
             cursor: pointer;
             transition: all 0.3s;
         }
-        .btn-send:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4); }
+        .btn-send:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(46, 204, 113, 0.4); }
         
         .footer {
             padding: 15px;
             text-align: center;
-            background: #f7fafc;
-            color: #718096;
+            background: #1a1a2e;
+            color: #64748b;
             font-size: 14px;
+            border-top: 1px solid #0f3460;
         }
         .footer a {
-            color: #667eea;
+            color: #2ecc71;
             text-decoration: none;
             font-weight: 600;
         }
@@ -369,7 +398,7 @@ CONTROL_PANEL = """
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #667eea;
+            background: #2ecc71;
             animation: typing-bounce 1.4s infinite ease-in-out both;
         }
         .typing-dots span:nth-child(1) {
@@ -393,7 +422,7 @@ CONTROL_PANEL = """
 <body>
     <div class="container">
         <div class="header">
-            <h1><span>🤖</span> Zin</h1>
+            <h1><img src="/static/zin_logo.jpg" alt="Zin"> Zin</h1>
             <p>Your AI-Powered Cryptocurrency Trading Assistant</p>
         </div>
         
