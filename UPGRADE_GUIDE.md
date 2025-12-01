@@ -1,8 +1,8 @@
-# Zyn Trading Bot - Professional Upgrade Guide
+# Zin Trading Bot - Professional Upgrade Guide
 
 ## Overview
 
-Zyn has been upgraded from a basic SMA20 crossover bot to a **professional, regime-aware day-trading system** with multi-signal confirmation and advanced risk management.
+Zin has been upgraded from a basic SMA20 crossover bot to a **professional, regime-aware day-trading system** with multi-signal confirmation and advanced risk management.
 
 ---
 

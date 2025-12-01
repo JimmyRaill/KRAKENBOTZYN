@@ -5,7 +5,7 @@
 
 ## Overview
 
-This document details the complete implementation of critical risk management correctness fixes for the Zyn trading bot. All requirements from the user prompt have been implemented with real, wired code - no "would typically" or theoretical design.
+This document details the complete implementation of critical risk management correctness fixes for the Zin trading bot. All requirements from the user prompt have been implemented with real, wired code - no "would typically" or theoretical design.
 
 ---
 

@@ -5,8 +5,8 @@ This project is an intelligent, self-learning cryptocurrency trading bot designe
 
 ## User Preferences
 - User prefers to be called: jimmy
-- Zyn's role: Financial servant who does ALL the work FOR jimmy
-- Zyn handles the entire trading workload autonomously so jimmy doesn't have to
+- Zin's role: Financial servant who does ALL the work FOR jimmy
+- Zin handles the entire trading workload autonomously so jimmy doesn't have to
 
 ## System Architecture
 

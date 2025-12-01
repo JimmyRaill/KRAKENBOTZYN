@@ -1,4 +1,4 @@
-# ZYN TRADING BOT - COMPREHENSIVE DEBUG ANALYSIS
+# ZIN TRADING BOT - COMPREHENSIVE DEBUG ANALYSIS
 **Date**: November 15, 2025  
 **Mode**: LIVE (KRAKEN_VALIDATE_ONLY=0)  
 **Status**: Running correctly, NO BUGS FOUND  
@@ -10,7 +10,7 @@
 
 **✅ THE BOT IS WORKING CORRECTLY.**  
 
-Zyn HAS been evaluating the market every 5 minutes for the past 12+ hours. He has NOT placed trades because market conditions have not met the strategy filters. The last 15 evaluations show:
+Zin HAS been evaluating the market every 5 minutes for the past 12+ hours. He has NOT placed trades because market conditions have not met the strategy filters. The last 15 evaluations show:
 
 - **Evaluations 1-3** (most recent): RANGE regime, but price at 59-67% of Bollinger Band (needs ≤40%) with RSI 56-60 (needs <45)
 - **Evaluations 4-15** (earlier): NO_TRADE regime due to ADX >38 (strong trending) with conflicting Higher Timeframe (HTF) signals
@@ -551,7 +551,7 @@ def force_trade_test(
 
 ## ROOT CAUSE ANALYSIS
 
-### **Why Zyn hasn't placed trades in 12+ hours**
+### **Why Zin hasn't placed trades in 12+ hours**
 
 **THE SINGLE MOST LIKELY REASON**:
 
@@ -572,7 +572,7 @@ def force_trade_test(
    - **Correct behavior**: Wait for price to reach lower band before buying dip
 
 **Analogy**:
-Zyn is like a sniper waiting for the perfect shot. The market has been:
+Zin is like a sniper waiting for the perfect shot. The market has been:
 - **First 10 hours**: Moving chaotically (HTF conflicts) → "Don't shoot, can't tell which way target is moving"
 - **Last 2 hours**: Bouncing in the middle of a range → "Target is visible but not at the sweet spot yet"
 
@@ -597,7 +597,7 @@ Zyn is like a sniper waiting for the perfect shot. The market has been:
 3. **Add**: Chat command to view evaluations
    ```
    User: "Show last 10 evaluations"
-   Zyn: "Here are the last 10 signals..."
+   Zin: "Here are the last 10 signals..."
    ```
 
 4. **Add**: Daily summary of why no trades
@@ -659,7 +659,7 @@ else:
 **How to use**:
 - Set `AGGRESSIVE_RANGE_TRADING=1` in `.env`
 - Restart autopilot
-- Zyn will take more trades (monitor for 24h)
+- Zin will take more trades (monitor for 24h)
 
 ---
 
@@ -690,7 +690,7 @@ else:
 
 2. **If Aggressive Mode triggers too many bad trades**:
    - Roll back to conservative
-   - Accept that Zyn is a "quality over quantity" trader
+   - Accept that Zin is a "quality over quantity" trader
    - Expect 5-10 trades/week vs 30+/week
 
 ---
@@ -709,7 +709,7 @@ else:
    Force trade test on ETH/USD
    ```
 
-3. Zyn will:
+3. Zin will:
    - Buy $15 of ETH at market
    - Place SL/TP brackets
    - Log every step
@@ -732,7 +732,7 @@ else:
 
 ## CONCLUSION
 
-**Zyn is working perfectly.** He's evaluating every 5 minutes, logging decisions, and waiting for high-probability setups. The market simply hasn't provided conditions that meet his conservative filters in the past 12 hours.
+**Zin is working perfectly.** He's evaluating every 5 minutes, logging decisions, and waiting for high-probability setups. The market simply hasn't provided conditions that meet his conservative filters in the past 12 hours.
 
 **Your options**:
 1. **Keep current filters** → Wait for better setups (more patient)
