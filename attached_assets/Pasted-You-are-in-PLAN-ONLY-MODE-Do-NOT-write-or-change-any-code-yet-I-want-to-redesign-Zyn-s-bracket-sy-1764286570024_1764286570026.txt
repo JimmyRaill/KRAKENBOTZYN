@@ -1,0 +1,113 @@
+You are in PLAN ONLY MODE. Do NOT write or change any code yet.
+
+I want to redesign Zyn’s bracket system on Kraken SPOT using a synthetic OCO approach that fits Kraken’s limitations and keeps my downside protected.
+
+High-level goals:
+
+- Use a SINGLE real sell order at any given time (to avoid Kraken “insufficient funds / funds locked” issues).
+- Prefer a REAL on-exchange stop-loss over a purely mental one, whenever possible.
+- Implement a robust synthetic OCO pipeline:
+  - Entry: maker BUY limit.
+  - While in trade: exactly one of [real SL sell OR real TP sell] is live.
+  - SL and TP logic coordinated by Zyn, not naive API OCO.
+- Make the behavior easy to reason about, easy to log, and hard to silently fail.
+
+Please read these files carefully BEFORE proposing anything:
+
+- autopilot.py
+- execution_manager.py
+- bracket_order_manager.py
+- reconciliation_service.py
+- oco_monitor.py
+- position_tracker.py
+- evaluation_log.py
+- sl_order_enrichment.py
+- fee_model.py
+- trading_config.py
+- safety_monitor / watchdog modules if present
+- Any Discord / notification / API glue if it exists
+
+Then produce a detailed ARCHITECTURAL PLAN ONLY (no code) that covers:
+
+1) CURRENT BEHAVIOR (AS-IS, SHORT SUMMARY)
+- Briefly summarize the current LIMIT_BRACKET pipeline:
+  - How entries are placed (maker pricing, retries, timeout).
+  - How SL is attached now.
+  - How and when TP is placed.
+  - How partial fills and bracket_initialized_flag work.
+  - How oco_monitor and reconciliation_service cooperate.
+- Explicitly reference what happened in this real example from my Kraken account:
+  - ETH/USD trade: maker limit entry filled, a SL existed, but NO TP was created.
+  - Explain, based on the code, the most likely reason why Zyn ended up with only a SL and no TP.
+  - Identify which function(s) and condition(s) are responsible for TP placement and where they can fail or silently skip.
+
+2) TARGET DESIGN: SYNTHETIC OCO PIPELINE FOR KRAKEN SPOT
+I want you to propose a TARGET DESIGN that is realistic for Kraken and safer than the current one.
+
+Design the pipeline assuming this overall direction (you can refine/adjust if you see a cleaner pattern):
+
+- Entry:
+  - Maker BUY limit (same idea as now, using current maker pricing / retries).
+- While in trade, we want this invariant:
+  - There is NEVER more than ONE active sell order for that symbol/position.
+- Preferred safety profile (you must comment on feasibility):
+  - A) Primary variant: REAL on-exchange SL + MENTAL TP
+    - After entry is filled and consolidated:
+      - Attach or keep a real SL on the book.
+      - TP is tracked mentally in Zyn.
+      - When TP is reached:
+        - Cancel SL.
+        - Immediately place a market or tight limit exit.
+  - B) Alternate variant (if A is not viable with current code or Kraken behavior):
+    - REAL TP + mental SL, but with very strong monitoring and alarms.
+- For each variant (A and B), explain:
+  - How we would avoid “double-reserving” the full position.
+  - How partial fills are handled cleanly.
+  - Failure modes (bot crash, connection loss, Kraken API outages).
+  - Which variant you recommend for me NOW given Zyn’s current architecture and my desire not to blow up my account.
+
+3) MODULE-BY-MODULE CHANGE PLAN
+Give me a structured, PHASED build plan (Phase 5.1, 5.2, 5.3…) that we can implement later. For each phase:
+
+- Phase 5.1 – “Core Synthetic OCO Wiring”
+  - Which functions in bracket_order_manager.py, reconciliation_service.py, oco_monitor.py, and execution_manager.py need conceptual changes.
+  - What data needs to be added/extended in evaluation_log.py (if any) to track “current active leg” (SL vs TP) and partial fills.
+  - How we ensure that there is never more than one active sell order per position (logic and checks).
+- Phase 5.2 – “Safety & Monitoring”
+  - How position_tracker.py and any safety monitor / watchdog should be updated to:
+    - Detect naked positions (no SL or TP when there should be one).
+    - Detect inconsistent state between pending_child_orders, open_positions.json, and real Kraken orders.
+  - How logs should look so I can easily debug:
+    - Example log lines for: entry placed, SL active, TP active, TP taken, SL hit, SL/TP swap, fallback exits.
+- Phase 5.3 – “Crash / Failure Handling Strategy”
+  - Describe how the system should behave if:
+    - Bot crashes while only SL is active.
+    - Bot crashes while only TP is active.
+    - Bot crashes while no protective order is active (and how to prevent this state as much as possible).
+  - Suggest where to hook future Discord / webhook alerts:
+    - e.g., “naked position detected”, “could not place protective order after N retries”, “Kraken API unstable”, etc.
+  - Suggest a simple heartbeat / health-check design: what data should a /health endpoint or internal heartbeat file expose so an external monitor can tell if autopilot is alive.
+
+4) COMPATIBILITY, BACKWARD SAFETY, AND TESTING PLAN
+- Explain how to keep MARKET_ONLY mode unchanged and fully isolated.
+- Describe a step-by-step TESTING STRATEGY (PLAN ONLY) for:
+  - Tiny-size live test (e.g., $1–$2).
+  - Manual scenario testing for:
+    - TP hit path.
+    - SL hit path.
+    - Partial fill with slow completion.
+    - Kraken API outage / timeout during TP or SL placement.
+- Identify any existing flags in trading_config.py that we should reuse (or add) to:
+  - Toggle between “Current bracket mode” and “New synthetic OCO mode”.
+  - Enable extra verbose logging while we test this.
+
+5) RISK DISCUSSION (HONEST)
+- I want an explicit, honest risk section:
+  - In what exact ways can synthetic OCO still fail?
+  - Under what conditions could I end up with:
+    - No SL and no TP.
+    - A position closed twice.
+    - A lingering SL or TP after exit.
+  - Which of those are acceptable trade-offs and which MUST be guarded against with strong checks and alerts.
+
+Again: DO NOT WRITE CODE YET. I only want a deep, concrete architectural and implementation plan that is tightly grounded in the existing codebase (file names, functions, and data models).
