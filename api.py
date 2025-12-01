@@ -79,7 +79,7 @@ def chat():
 
 @app.get("/", response_class=HTMLResponse)
 def control_panel():
-    """Main control panel - chat with Zyn and control the bot."""
+    """Main control panel - chat with Zin and control the bot."""
     return CONTROL_PANEL
 
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -94,7 +94,7 @@ CONTROL_PANEL = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zyn - AI Trading Bot Control Panel</title>
+    <title>Zin - AI Trading Bot Control Panel</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -393,7 +393,7 @@ CONTROL_PANEL = """
 <body>
     <div class="container">
         <div class="header">
-            <h1><span>🤖</span> Zyn</h1>
+            <h1><span>🤖</span> Zin</h1>
             <p>Your AI-Powered Cryptocurrency Trading Assistant</p>
         </div>
         
@@ -431,11 +431,11 @@ CONTROL_PANEL = """
         
         <div class="chat-container">
             <div class="chat-title">
-                💬 Chat with Zyn
+                💬 Chat with Zin
             </div>
             <div class="chat-messages" id="chatMessages">
                 <div class="message system">
-                    👋 Hey! I'm Zyn, your trading assistant. Ask me anything about your portfolio, performance, or trading strategies!
+                    👋 Hey! I'm Zin, your trading assistant. Ask me anything about your portfolio, performance, or trading strategies!
                 </div>
             </div>
             <div class="chat-input-area">
@@ -443,7 +443,7 @@ CONTROL_PANEL = """
                     type="text" 
                     class="chat-input" 
                     id="chatInput" 
-                    placeholder="Ask Zyn anything... (e.g., 'How am I doing today?')"
+                    placeholder="Ask Zin anything... (e.g., 'How am I doing today?')"
                     onkeypress="if(event.key==='Enter') sendMessage()"
                 />
                 <button class="btn-send" onclick="sendMessage()">Send</button>
@@ -638,7 +638,7 @@ CONTROL_PANEL = """
             }
         }
         
-        // Send message to Zyn
+        // Send message to Zin
         async function sendMessage() {
             const input = document.getElementById('chatInput');
             const text = input.value.trim();
@@ -1128,7 +1128,7 @@ def notifications_setup_page():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Discord Notifications - Zyn</title>
+    <title>Discord Notifications - Zin</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -1379,7 +1379,7 @@ def test_notification_api():
         
         embed = {
             "title": "Test Message",
-            "description": "This is a test notification from Zyn!",
+            "description": "This is a test notification from Zin!",
             "color": 0x5865F2,
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -1661,7 +1661,7 @@ def start_autopilot():
             state["paused"] = False
             state["autopilot_enabled"] = True
             state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-            return {"status": "success", "message": "Zyn is now active and trading!", "autopilot_running": True}
+            return {"status": "success", "message": "Zin is now active and trading!", "autopilot_running": True}
         return {"status": "error", "message": "State file not found", "autopilot_running": False}
     except Exception as e:
         return {"status": "error", "message": str(e), "autopilot_running": False}
@@ -1676,7 +1676,7 @@ def stop_autopilot():
             state["paused"] = True
             state["autopilot_enabled"] = False
             state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-            return {"status": "success", "message": "Zyn has been paused. No new trades will be executed.", "autopilot_running": False}
+            return {"status": "success", "message": "Zin has been paused. No new trades will be executed.", "autopilot_running": False}
         return {"status": "error", "message": "State file not found", "autopilot_running": False}
     except Exception as e:
         return {"status": "error", "message": str(e), "autopilot_running": False}

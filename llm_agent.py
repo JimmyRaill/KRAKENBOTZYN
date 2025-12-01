@@ -412,7 +412,7 @@ def _execute_bracket_with_percentages(symbol: str, amount: float, sl_percent: fl
         bracket_cmd = f"bracket {symbol_upper.lower()} {amount_str} tp {tp_price_str} sl {sl_price_str}"
         
         # Log the conversion
-        print(f"[ZYN-BRACKET-AUTO] Symbol={symbol_upper} | Price=${current_price:.2f} | "
+        print(f"[ZIN-BRACKET-AUTO] Symbol={symbol_upper} | Price=${current_price:.2f} | "
               f"SL={sl_percent}% → ${sl_price:.2f} | TP={tp_percent}% → ${tp_price:.2f}")
         
         # Execute the bracket command
@@ -462,7 +462,7 @@ def _execute_bracket_with_percentages(symbol: str, amount: float, sl_percent: fl
         
     except Exception as e:
         error_msg = f"[BRACKET-AUTO-ERR] {e}"
-        print(f"[ZYN-BRACKET-AUTO-FAIL] {error_msg}")
+        print(f"[ZIN-BRACKET-AUTO-FAIL] {error_msg}")
         return error_msg
 
 
@@ -488,10 +488,10 @@ def _execute_trading_command(command: str) -> str:
         # DIAGNOSTIC: Log exchange instance type
         ex = get_exchange()
         ex_type = type(ex).__name__
-        print(f"[ZYN-EXCHANGE-DEBUG] Mode={mode} | Exchange type: {ex_type}")
+        print(f"[ZIN-EXCHANGE-DEBUG] Mode={mode} | Exchange type: {ex_type}")
         
         # Log the exact command being attempted
-        print(f"[ZYN-COMMAND-ATTEMPT] Mode={mode} | Raw command: '{command}'")
+        print(f"[ZIN-COMMAND-ATTEMPT] Mode={mode} | Raw command: '{command}'")
         
         # CRITICAL SAFETY: Block naked market orders in live mode
         if not is_paper_mode():
@@ -511,7 +511,7 @@ def _execute_trading_command(command: str) -> str:
                     "Example: bracket btc/usd 0.001 tp 95000 sl 90000\n"
                     "For emergencies only, use: sell all <symbol>"
                 )
-                print(f"[ZYN-SAFETY-BLOCK] {mode} | Blocked: {command}")
+                print(f"[ZIN-SAFETY-BLOCK] {mode} | Blocked: {command}")
                 return error_msg
         
         # Execute command
@@ -539,11 +539,11 @@ def _execute_trading_command(command: str) -> str:
                 "2. Calculate absolute prices: SL = price * 0.99, TP = price * 1.02\n"
                 "3. Use calculated prices in bracket command\n"
             )
-            print(f"[ZYN-PARSE-FAIL] Invalid command syntax: '{command}'")
+            print(f"[ZIN-PARSE-FAIL] Invalid command syntax: '{command}'")
             return error_msg
         
         # Log successful command execution
-        print(f"[ZYN-COMMAND-OK] Mode={mode} | Command: {command} | Result: {result_str[:100]}")
+        print(f"[ZIN-COMMAND-OK] Mode={mode} | Command: {command} | Result: {result_str[:100]}")
         
         # ENHANCED: Check for insufficient funds errors and provide helpful guidance
         # This helps the LLM understand WHY the order failed and prevents suggesting naked positions
@@ -563,14 +563,14 @@ def _execute_trading_command(command: str) -> str:
         trade_result = TradeResult.from_command_result(command, result_str, mode)
         structured_json = trade_result.to_json()
         
-        print(f"[ZYN-STRUCTURED-RESULT] Success={trade_result.success} | OrderIDs={trade_result.order_ids}")
+        print(f"[ZIN-STRUCTURED-RESULT] Success={trade_result.success} | OrderIDs={trade_result.order_ids}")
         
         # Return structured JSON for validator
         return structured_json
         
     except Exception as e:
         error_msg = f"[COMMAND-ERR] {e}"
-        print(f"[ZYN-COMMAND-EXCEPTION] Command: '{command}' | Error: {e}")
+        print(f"[ZIN-COMMAND-EXCEPTION] Command: '{command}' | Error: {e}")
         
         # Return structured error
         error_result = TradeResult(
@@ -602,7 +602,7 @@ def _run_paper_trade_test() -> str:
         if mode != "paper":
             return f"❌ Test blocked: Current mode is {mode.upper()}. Paper trade test only runs in PAPER mode."
         
-        print("[ZYN-SELF-TEST] Starting paper trade verification test...")
+        print("[ZIN-SELF-TEST] Starting paper trade verification test...")
         
         # Step 1: Execute a bracket order using percentage helper
         test_symbol = "ZEC/USD"
@@ -610,7 +610,7 @@ def _run_paper_trade_test() -> str:
         test_sl_pct = 1.0
         test_tp_pct = 2.0
         
-        print(f"[ZYN-SELF-TEST] Step 1: Executing test bracket order: {test_amount} {test_symbol}")
+        print(f"[ZIN-SELF-TEST] Step 1: Executing test bracket order: {test_amount} {test_symbol}")
         bracket_result = _execute_bracket_with_percentages(
             symbol=test_symbol,
             amount=test_amount,
@@ -619,7 +619,7 @@ def _run_paper_trade_test() -> str:
         )
         
         # Step 2: Query open orders immediately
-        print("[ZYN-SELF-TEST] Step 2: Querying open orders...")
+        print("[ZIN-SELF-TEST] Step 2: Querying open orders...")
         
         # DIAGNOSTIC: Check what we see directly
         from exchange_manager import get_exchange
@@ -631,11 +631,11 @@ def _run_paper_trade_test() -> str:
         open_result = _execute_trading_command("open")
         
         # Step 3: Query balances
-        print("[ZYN-SELF-TEST] Step 3: Querying balances...")
+        print("[ZIN-SELF-TEST] Step 3: Querying balances...")
         bal_result = _execute_trading_command("bal")
         
         # Step 4: Analyze results
-        print("[ZYN-SELF-TEST] Step 4: Analyzing results...")
+        print("[ZIN-SELF-TEST] Step 4: Analyzing results...")
         
         # Check if orders appear
         has_open_orders = "(no open orders)" not in open_result.lower()
@@ -673,7 +673,7 @@ def _run_paper_trade_test() -> str:
                 "🎯 CONCLUSION: The paper trading ledger is working as expected.\n"
                 "   You can now execute paper trades and they will be visible in queries."
             )
-            print("[ZYN-SELF-TEST] ✅ TEST PASSED")
+            print("[ZIN-SELF-TEST] ✅ TEST PASSED")
         else:
             test_report += (
                 "❌ FAIL: Paper orders NOT appearing in queries\n"
@@ -682,7 +682,7 @@ def _run_paper_trade_test() -> str:
                 "⚠️ CONCLUSION: Paper trading ledger may not be persisting orders.\n"
                 "   Check paper_orders.json and paper_trading_state.json files."
             )
-            print("[ZYN-SELF-TEST] ❌ TEST FAILED")
+            print("[ZIN-SELF-TEST] ❌ TEST FAILED")
         
         test_report += "\n═══════════════════════════════════════════════"
         
@@ -690,7 +690,7 @@ def _run_paper_trade_test() -> str:
     
     except Exception as e:
         error_msg = f"❌ SELF-TEST ERROR: {e}"
-        print(f"[ZYN-SELF-TEST-EXCEPTION] {error_msg}")
+        print(f"[ZIN-SELF-TEST-EXCEPTION] {error_msg}")
         return error_msg
 
 
@@ -989,7 +989,7 @@ def ask_llm(user_text: str, session_id: str = "default", request_id: str = None)
         #         learning_context = f"\n\n(Learning data unavailable: {e})"
         
         system_prompt = (
-            "You are Zyn, a disciplined crypto trading bot for Kraken.\n\n"
+            "You are Zin, a disciplined crypto trading bot for Kraken.\n\n"
             "═══════════════════════════════════════════════════════\n"
             "YOUR ACTUAL TRADING STRATEGY (BE PRECISE):\n"
             "═══════════════════════════════════════════════════════\n"

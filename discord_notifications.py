@@ -1,5 +1,5 @@
 """
-Discord Notification system for Zyn trading bot.
+Discord Notification system for Zin trading bot.
 Sends alerts to your Discord channel via webhook for trades, daily/weekly summaries.
 """
 import os
@@ -33,7 +33,7 @@ def get_notification_config() -> dict:
         "weekly_summary_day": "Sunday",
         "last_daily_sent": None,
         "last_weekly_sent": None,
-        "bot_name": "Zyn",
+        "bot_name": "Zin",
         "bot_avatar": None
     }
     
@@ -56,7 +56,7 @@ def save_notification_config(config: dict):
 def send_discord_message(
     content: str = None,
     embed: Dict[str, Any] = None,
-    username: str = "Zyn",
+    username: str = "Zin",
     force: bool = False
 ) -> bool:
     """

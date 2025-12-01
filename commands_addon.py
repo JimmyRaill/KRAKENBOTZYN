@@ -51,7 +51,7 @@ def _debug_status() -> str:
         
         # Build response
         lines = [
-            "=== ZYN DIAGNOSTIC STATUS ===",
+            "=== ZIN DIAGNOSTIC STATUS ===",
             "",
             f"🔧 Mode: {mode}",
             f"💰 Total Equity: ${total_equity:.2f}",
