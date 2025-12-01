@@ -79,7 +79,7 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
 -   **Continuous Learning**: Analyzes trade outcomes and market patterns.
 -   **Risk Management**: Configurable risk parameters, daily loss kill-switch, ATR-based position sizing, and fee-adjusted edge validation.
 -   **Safety Features**: Validation mode, pre-trade checks, auto-adjustment of position sizes, emergency flatten procedures, and comprehensive telemetry.
--   **SMS Notifications**: Alerts for trade executions and performance reports.
+-   **Discord Notifications**: Alerts via Discord webhook for trade executions, position exits, errors, and daily/weekly performance summaries. Configured via DISCORD_WEBHOOK_URL secret.
 
 ## External Dependencies
 -   **Kraken API**: For real-time market data, order placement, and account management.
