@@ -61,7 +61,7 @@ log_trade = log_decision = log_performance = log_error = None
 notify_trade = check_summaries = None
 try:
     from telemetry_db import log_trade, log_decision, log_performance, log_error
-    from sms_notifications import notify_trade, check_summaries
+    from discord_notifications import notify_trade, check_summaries
     from time_context import get_time_info, get_prompt_context
     TELEMETRY_ENABLED = True
 except ImportError:
@@ -1864,13 +1864,13 @@ def run_forever() -> None:
 
     ex = mk_ex()
     
-    # Send SMS startup test ping if enabled
+    # Send Discord startup test ping if enabled
     if TELEMETRY_ENABLED and notify_trade:
         try:
-            from sms_notifications import send_startup_test_ping
+            from discord_notifications import send_startup_test_ping
             send_startup_test_ping()
         except Exception as e:
-            print(f"[SMS-TEST] Failed to send startup ping: {e}")
+            print(f"[DISCORD-TEST] Failed to send startup ping: {e}")
     
     # Check for daily/weekly summaries
     if TELEMETRY_ENABLED and check_summaries:

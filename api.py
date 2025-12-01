@@ -453,7 +453,7 @@ CONTROL_PANEL = """
         <div class="footer">
             <p>
                 <a href="/dashboard">📊 Full Dashboard</a> | 
-                <a href="/sms-setup">📱 SMS Notifications</a> | 
+                <a href="/notifications">💬 Discord Notifications</a> | 
                 Last updated: <span id="lastUpdate">Never</span>
             </p>
         </div>
@@ -1119,21 +1119,21 @@ class AskIn(BaseModel):
     text: str
     token: Optional[str] = None
 
-@app.get("/sms-setup", response_class=HTMLResponse)
-def sms_setup_page():
-    """SMS notification setup page."""
+@app.get("/notifications", response_class=HTMLResponse)
+def notifications_setup_page():
+    """Discord notification setup page."""
     return """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SMS Notifications Setup - Zyn</title>
+    <title>Discord Notifications - Zyn</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #5865F2 0%, #7289da 100%);
             min-height: 100vh;
             padding: 20px;
             display: flex;
@@ -1149,7 +1149,7 @@ def sms_setup_page():
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
         }
         h1 {
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, #5865F2, #7289da);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             margin-bottom: 10px;
@@ -1162,14 +1162,14 @@ def sms_setup_page():
             margin-bottom: 8px;
             margin-top: 20px;
         }
-        input[type="tel"], input[type="number"] {
+        input[type="number"] {
             width: 100%;
             padding: 12px;
             border: 2px solid #e2e8f0;
             border-radius: 8px;
             font-size: 16px;
         }
-        input:focus { outline: none; border-color: #667eea; }
+        input:focus { outline: none; border-color: #5865F2; }
         .checkbox-group {
             margin: 20px 0;
             padding: 15px;
@@ -1190,7 +1190,7 @@ def sms_setup_page():
         button {
             width: 100%;
             padding: 15px;
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: linear-gradient(135deg, #5865F2, #7289da);
             color: white;
             border: none;
             border-radius: 10px;
@@ -1199,7 +1199,7 @@ def sms_setup_page():
             cursor: pointer;
             margin-top: 20px;
         }
-        button:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4); }
+        button:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(88, 101, 242, 0.4); }
         .status {
             margin-top: 20px;
             padding: 15px;
@@ -1211,24 +1211,36 @@ def sms_setup_page():
         .back-link {
             display: inline-block;
             margin-top: 20px;
-            color: #667eea;
+            color: #5865F2;
             text-decoration: none;
+        }
+        .webhook-status {
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+        .webhook-status.connected { background: #d1fae5; color: #065f46; }
+        .webhook-status.disconnected { background: #fee2e2; color: #991b1b; }
+        .test-btn {
+            background: linear-gradient(135deg, #10b981, #059669);
+            margin-top: 10px;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📱 SMS Notifications Setup</h1>
-        <p>Get text messages on your phone when Zyn makes trades or hits profit/loss targets.</p>
+        <h1>Discord Notifications</h1>
+        <p>Get real-time trade alerts and summaries in your Discord channel.</p>
         
-        <form id="smsForm">
-            <label for="phone">Your Phone Number</label>
-            <input type="tel" id="phone" placeholder="+12345678900" required />
-            <small style="color: #6b7280;">Format: +1 followed by your 10-digit number</small>
-            
+        <div class="webhook-status" id="webhookStatus">Checking webhook...</div>
+        
+        <form id="notificationForm">
             <div class="checkbox-group">
-                <label><input type="checkbox" id="enabled" /> Enable SMS Notifications</label>
+                <label><input type="checkbox" id="enabled" checked /> Enable Discord Notifications</label>
+                <label><input type="checkbox" id="notifyStartup" checked /> Notify on bot startup</label>
                 <label><input type="checkbox" id="notifyTrades" checked /> Notify on every trade</label>
+                <label><input type="checkbox" id="notifyErrors" checked /> Notify on errors</label>
                 <label><input type="checkbox" id="notifyDaily" checked /> Daily summary (6 PM)</label>
                 <label><input type="checkbox" id="notifyWeekly" checked /> Weekly summary (Sundays)</label>
             </div>
@@ -1237,46 +1249,56 @@ def sms_setup_page():
             <input type="number" id="dailyHour" value="18" min="0" max="23" />
             
             <button type="submit">Save Settings</button>
+            <button type="button" class="test-btn" id="testBtn">Send Test Message</button>
         </form>
         
         <div class="status" id="status"></div>
         
-        <a href="/" class="back-link">← Back to Control Panel</a>
+        <a href="/" class="back-link">Back to Control Panel</a>
     </div>
     
     <script>
-        // Load current settings
         async function loadSettings() {
             try {
-                const response = await fetch('/api/sms-config');
+                const response = await fetch('/api/notification-config');
                 const config = await response.json();
                 
-                document.getElementById('phone').value = config.your_phone_number || '';
-                document.getElementById('enabled').checked = config.enabled || false;
+                document.getElementById('enabled').checked = config.enabled !== false;
+                document.getElementById('notifyStartup').checked = config.notify_on_startup !== false;
                 document.getElementById('notifyTrades').checked = config.notify_on_trades !== false;
+                document.getElementById('notifyErrors').checked = config.notify_on_errors !== false;
                 document.getElementById('notifyDaily').checked = config.notify_daily_summary !== false;
                 document.getElementById('notifyWeekly').checked = config.notify_weekly_summary !== false;
                 document.getElementById('dailyHour').value = config.daily_summary_hour || 18;
+                
+                const webhookStatus = document.getElementById('webhookStatus');
+                if (config.webhook_configured) {
+                    webhookStatus.className = 'webhook-status connected';
+                    webhookStatus.textContent = 'Discord webhook connected';
+                } else {
+                    webhookStatus.className = 'webhook-status disconnected';
+                    webhookStatus.textContent = 'No webhook configured - add DISCORD_WEBHOOK_URL to secrets';
+                }
             } catch (error) {
                 console.error('Failed to load settings:', error);
             }
         }
         
-        // Save settings
-        document.getElementById('smsForm').addEventListener('submit', async (e) => {
+        document.getElementById('notificationForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             
             const config = {
                 enabled: document.getElementById('enabled').checked,
-                your_phone_number: document.getElementById('phone').value.trim(),
+                notify_on_startup: document.getElementById('notifyStartup').checked,
                 notify_on_trades: document.getElementById('notifyTrades').checked,
+                notify_on_errors: document.getElementById('notifyErrors').checked,
                 notify_daily_summary: document.getElementById('notifyDaily').checked,
                 notify_weekly_summary: document.getElementById('notifyWeekly').checked,
                 daily_summary_hour: parseInt(document.getElementById('dailyHour').value)
             };
             
             try {
-                const response = await fetch('/api/sms-config', {
+                const response = await fetch('/api/notification-config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(config)
@@ -1287,41 +1309,87 @@ def sms_setup_page():
                 
                 if (result.status === 'success') {
                     statusEl.className = 'status success';
-                    statusEl.textContent = '✅ Settings saved! You\\'ll receive notifications on your phone.';
+                    statusEl.textContent = 'Settings saved!';
                 } else {
                     statusEl.className = 'status error';
-                    statusEl.textContent = '❌ Failed to save: ' + result.message;
+                    statusEl.textContent = 'Failed to save: ' + result.message;
                 }
             } catch (error) {
                 const statusEl = document.getElementById('status');
                 statusEl.className = 'status error';
-                statusEl.textContent = '❌ Error: ' + error.message;
+                statusEl.textContent = 'Error: ' + error.message;
             }
         });
         
-        // Load on page load
+        document.getElementById('testBtn').addEventListener('click', async () => {
+            const statusEl = document.getElementById('status');
+            statusEl.className = 'status';
+            statusEl.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/notification-test', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = 'Test message sent to Discord!';
+                } else {
+                    statusEl.className = 'status error';
+                    statusEl.textContent = 'Failed: ' + result.message;
+                }
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = 'Error: ' + error.message;
+            }
+        });
+        
         loadSettings();
     </script>
 </body>
 </html>
 """
 
-@app.get("/api/sms-config")
-def get_sms_config_api():
-    """Get SMS configuration."""
+@app.get("/api/notification-config")
+def get_notification_config_api():
+    """Get Discord notification configuration."""
     try:
-        from sms_notifications import get_sms_config
-        return get_sms_config()
+        from discord_notifications import get_notification_config, get_discord_webhook_url
+        config = get_notification_config()
+        config["webhook_configured"] = bool(get_discord_webhook_url())
+        return config
     except Exception as e:
         return {"error": str(e)}
 
-@app.post("/api/sms-config")
-def save_sms_config_api(config: dict):
-    """Save SMS configuration."""
+@app.post("/api/notification-config")
+def save_notification_config_api(config: dict):
+    """Save Discord notification configuration."""
     try:
-        from sms_notifications import save_sms_config
-        save_sms_config(config)
-        return {"status": "success", "message": "SMS notifications configured!"}
+        from discord_notifications import save_notification_config
+        save_notification_config(config)
+        return {"status": "success", "message": "Discord notifications configured!"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/notification-test")
+def test_notification_api():
+    """Send a test Discord notification."""
+    try:
+        from discord_notifications import send_discord_message
+        from datetime import datetime
+        
+        embed = {
+            "title": "Test Message",
+            "description": "This is a test notification from Zyn!",
+            "color": 0x5865F2,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        success = send_discord_message(embed=embed, force=True)
+        
+        if success:
+            return {"status": "success", "message": "Test message sent!"}
+        else:
+            return {"status": "error", "message": "Failed to send message - check webhook URL"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

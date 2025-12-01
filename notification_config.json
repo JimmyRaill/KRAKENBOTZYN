@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "notify_on_trades": true,
+  "notify_on_startup": true,
+  "notify_daily_summary": true,
+  "notify_weekly_summary": true,
+  "notify_on_errors": true,
+  "daily_summary_hour": 18,
+  "weekly_summary_day": "Sunday",
+  "last_daily_sent": null,
+  "last_weekly_sent": null,
+  "bot_name": "Zyn",
+  "bot_avatar": null
+}
