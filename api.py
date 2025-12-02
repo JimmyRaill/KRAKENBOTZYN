@@ -433,7 +433,7 @@ CONTROL_PANEL = """
             </div>
             <div class="status-card">
                 <div class="status-label">Portfolio Value</div>
-                <div class="status-value" id="equityValue">$0.00</div>
+                <div class="status-value" id="equityValue">Loading...</div>
             </div>
             <div class="status-card">
                 <div class="status-label">Trading Mode</div>
@@ -491,6 +491,22 @@ CONTROL_PANEL = """
     <script>
         let isUpdating = false;
         
+        // Update portfolio value from mode-aware endpoint
+        async function updatePortfolioValue() {
+            try {
+                const response = await fetch('/api/portfolio-value');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                const value = data.portfolio_value || 0;
+                const el = document.getElementById('equityValue');
+                if (el) {
+                    el.textContent = `$${value.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                }
+            } catch (error) {
+                console.error('Portfolio value error:', error);
+            }
+        }
+        
         // Update status
         async function updateStatus() {
             if (isUpdating) return;
@@ -516,7 +532,6 @@ CONTROL_PANEL = """
                     stopBtn.disabled = true;
                 }
                 
-                document.getElementById('equityValue').textContent = `$${data.equity.toFixed(2)}`;
                 document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
             } catch (error) {
                 console.error('Status update error:', error);
@@ -597,6 +612,8 @@ CONTROL_PANEL = """
                 if (data.status === 'success') {
                     addMessage(data.message, 'system');
                     loadTradingMode();
+                    // Refresh portfolio value for the new mode
+                    updatePortfolioValue();
                 } else {
                     addMessage('Failed to change mode: ' + data.message, 'system');
                     // Revert toggle
@@ -729,13 +746,18 @@ CONTROL_PANEL = """
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
         
-        // Initial load
+        // Initial load - mark as fetching immediately
+        const equityEl = document.getElementById('equityValue');
+        if (equityEl) equityEl.textContent = 'Fetching...';
+        
         updateStatus();
         loadTradingMode();
+        updatePortfolioValue();
         
         // Auto-refresh status every 3 seconds
         setInterval(updateStatus, 3000);
         setInterval(loadTradingMode, 3000);
+        setInterval(updatePortfolioValue, 5000);
     </script>
 </body>
 </html>
@@ -1810,9 +1832,51 @@ def restart_workflows_endpoint():
     """
     return {
         "status": "success",
-        "message": "⚠️ Mode changed! Please manually restart both workflows using the Shell tab or workflow controls.",
+        "message": "Mode changed! Please manually restart both workflows using the Shell tab or workflow controls.",
         "note": "Autopilot will automatically pick up the mode change on its next 5-minute cycle."
     }
+
+@app.get("/api/portfolio-value")
+def get_portfolio_value():
+    """
+    Get portfolio value from the correct source based on current trading mode.
+    LIVE mode: Fetches real balance from Kraken API
+    PAPER mode: Fetches simulated balance from paper ledger
+    """
+    try:
+        from account_state import get_balances
+        from exchange_manager import is_paper_mode, get_mode_str
+        
+        mode = get_mode_str()
+        balances = get_balances()
+        
+        total_usd = 0.0
+        
+        if balances:
+            for currency, bal in balances.items():
+                if isinstance(bal, dict):
+                    if currency == "USD":
+                        total_usd += bal.get('total', 0) or 0
+                    else:
+                        usd_value = bal.get('usd_value', 0)
+                        if usd_value:
+                            total_usd += usd_value
+        
+        return {
+            "portfolio_value": round(total_usd, 2),
+            "mode": mode,
+            "is_paper": is_paper_mode(),
+            "is_live": not is_paper_mode(),
+            "balances_count": len(balances) if balances else 0
+        }
+    except Exception as e:
+        return {
+            "portfolio_value": 0,
+            "mode": "unknown",
+            "is_paper": True,
+            "is_live": False,
+            "error": str(e)
+        }
 
 @app.get("/api/equity_history")
 def get_equity_history(hours: int = 24):
