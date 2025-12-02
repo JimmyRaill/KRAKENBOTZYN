@@ -82,7 +82,7 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
             - Regime override: Confidence >= 0.75 allows trades despite unfavorable HTF regime
             - Regime penalty: -0.15 applied when HTF trend opposes trade direction
             - Breakout boost: +0.1 when RSI > 70, ADX > 25, price > SMA20
-            - Symbol whitelist expanded to 9 assets: BTC,ETH,SOL,UNI,ATOM,LTC,ARB,OP,AAVE
+            - Symbol whitelist expanded to 11 assets: BTC,ETH,SOL,UNI,ATOM,LTC,ARB,OP,AAVE,FIL,NEAR (Dec 2025)
             - Configurable via: MIN_CONFIDENCE_THRESHOLD, REGIME_OVERRIDE_CONFIDENCE, REGIME_PENALTY, BREAKOUT_BOOST env vars
     -   **Paper Trading (`paper_trading.py`)**: Complete simulation system with realistic fills, slippage, fees, and P&L calculation.
     -   **Exchange Manager (`exchange_manager.py`)**: Singleton wrapper for `ccxt` instances, ensuring consistent data fetching.
