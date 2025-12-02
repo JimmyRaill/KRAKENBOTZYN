@@ -1,0 +1,70 @@
+## ✅ POST-IMPLEMENTATION CHECK-IN
+
+Replit, thank you for executing the strategy overhaul. Please confirm and summarize the following so we can ensure everything was implemented exactly as intended:
+
+---
+
+### 🔁 1. FILTER ADJUSTMENTS
+
+- ✅ Did you **reduce the ATR threshold** from 0.3% to 0.2%?  
+  - If so, where is this defined (config, constant, inline)?
+  - Does it now *warn but allow* trades between 0.2%–0.3%?
+
+- ✅ Did you **expand the symbol whitelist** to include:
+  `['BTC', 'ETH', 'SOL', 'UNI', 'ATOM', 'LTC', 'ARB', 'OP', 'AAVE']`?
+  - Where is this list defined?
+  - Is it **configurable externally** (e.g., via config or env var)?
+  - Does logging now indicate when a symbol is rejected and why?
+
+- ✅ Did you adjust the **regime/HTF filter** to be a soft filter now?
+  - Confirm that trades can pass with UNKNOWN regime if signal confidence ≥ 0.65.
+  - Is the override logic functioning at ≥ 0.75 confidence?
+
+---
+
+### ⚙️ 2. SIGNAL DECISION + CONFIDENCE
+
+- ✅ Have you implemented signal confidence thresholds for trade approval?
+  - What is the actual cutoff value?
+  - What happens if confidence is borderline?
+
+- ✅ Did you add any logic to boost confidence for breakouts (e.g., RSI > 70, ADX > 25, price > SMA20)?
+
+---
+
+### 🛒 3. ORDER EXECUTION STRATEGY
+
+- ✅ Did you replace **all Kraken orders** with `market` orders only?
+  - No stop-loss orders?
+  - No take-profit orders?
+  - Where is this implemented in code?
+  - Can you show a sample buy and sell function?
+
+- ✅ Are mental stop-loss / take-profit levels still calculated and **trigger a market sell**?
+  - Where is this logic defined?
+
+---
+
+### 🔒 4. SPOT-ONLY ENFORCEMENT
+
+- ✅ Can you confirm all trading is restricted to **spot** only?
+  - No margin, no futures, no shorting?
+  - Was any logic removed or disabled?
+  - Is there a check/warning in case a restricted action is attempted?
+
+---
+
+### 🧪 5. TESTING + VERIFICATION
+
+- ✅ Did you re-run `test_data_logger.py` or any tests to confirm nothing broke?
+- ✅ Have you backtested this version to verify trades are flowing correctly now?
+
+---
+
+Please reply with a summary of:
+- What you implemented
+- Where key changes live in the codebase
+- Any files/functions you created or refactored
+- Anything that gave you trouble or remains unfinished
+
+Thanks! Looking forward to confirming it's airtight.
