@@ -1,8 +1,8 @@
 {
-  "timestamp": "2025-11-26T17:00:35.611698",
+  "timestamp": "2025-12-02T19:32:33.273726",
   "minimums": {
-    "UNI/USD": {
-      "amount": 0.3,
+    "SOL/USD": {
+      "amount": 0.02,
       "cost": 0.5
     }
   }
