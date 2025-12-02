@@ -147,12 +147,20 @@ class TradingConfig:
     
     # Phase 3B: Regime filter settings (blocks trades in bad conditions)
     regime_filter_enabled: bool = False    # Default OFF - set REGIME_FILTER_ENABLED=1 to enable
-    regime_min_atr_pct: float = 0.3        # Min ATR as % of price (0.3% = normal volatility)
+    regime_min_atr_pct: float = 0.2        # Min ATR as % of price (0.2% = relaxed threshold, was 0.3%)
+    regime_atr_warning_pct: float = 0.3    # ATR below this but above min triggers soft warning
     regime_min_volume_usd: float = 10000.0 # Min 24h volume in USD
     regime_trend_required: bool = False    # Require clear trend (ADX above threshold)
     
+    # Phase 4: Confidence-based decision engine
+    min_confidence_threshold: float = 0.65   # Minimum confidence to allow any trade
+    regime_override_confidence: float = 0.75 # Confidence level that can override unfavorable regime
+    regime_penalty: float = 0.15             # Confidence penalty for unfavorable regime (instead of hard block)
+    breakout_boost: float = 0.10             # Confidence boost for breakout conditions (RSI > 70, ADX > 25, price > SMA20)
+    
     # Phase 3B: Symbol whitelist/blacklist filtering
-    symbol_whitelist: Optional[list] = None   # If set, ONLY these symbols can trade (comma-separated via env)
+    # Default whitelist: 9 liquid, established assets (configurable via SYMBOL_WHITELIST env var)
+    symbol_whitelist: Optional[list] = field(default_factory=lambda: ['BTC', 'ETH', 'SOL', 'UNI', 'ATOM', 'LTC', 'ARB', 'OP', 'AAVE'])
     symbol_blacklist: Optional[list] = None   # These symbols are blocked from trading
     
     # Phase 3B: Decision statistics tracking
@@ -285,7 +293,14 @@ class TradingConfig:
             try:
                 config.regime_min_atr_pct = float(regime_atr_env)
             except (ValueError, TypeError):
-                print(f"[CONFIG-WARN] REGIME_MIN_ATR_PCT invalid: '{regime_atr_env}', using default 0.3")
+                print(f"[CONFIG-WARN] REGIME_MIN_ATR_PCT invalid: '{regime_atr_env}', using default 0.2")
+        
+        regime_atr_warn_env = os.getenv("REGIME_ATR_WARNING_PCT")
+        if regime_atr_warn_env:
+            try:
+                config.regime_atr_warning_pct = float(regime_atr_warn_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] REGIME_ATR_WARNING_PCT invalid: '{regime_atr_warn_env}', using default 0.3")
         
         regime_vol_env = os.getenv("REGIME_MIN_VOLUME_USD")
         if regime_vol_env:
@@ -296,10 +311,50 @@ class TradingConfig:
         
         config.regime_trend_required = os.getenv("REGIME_TREND_REQUIRED", "0") == "1"
         
+        # Phase 4: Confidence-based decision engine
+        min_conf_env = os.getenv("MIN_CONFIDENCE_THRESHOLD")
+        if min_conf_env:
+            try:
+                config.min_confidence_threshold = float(min_conf_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] MIN_CONFIDENCE_THRESHOLD invalid: '{min_conf_env}', using default 0.65")
+        
+        regime_override_env = os.getenv("REGIME_OVERRIDE_CONFIDENCE")
+        if regime_override_env:
+            try:
+                config.regime_override_confidence = float(regime_override_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] REGIME_OVERRIDE_CONFIDENCE invalid: '{regime_override_env}', using default 0.75")
+        
+        regime_penalty_env = os.getenv("REGIME_PENALTY")
+        if regime_penalty_env:
+            try:
+                config.regime_penalty = float(regime_penalty_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] REGIME_PENALTY invalid: '{regime_penalty_env}', using default 0.15")
+        
+        breakout_boost_env = os.getenv("BREAKOUT_BOOST")
+        if breakout_boost_env:
+            try:
+                config.breakout_boost = float(breakout_boost_env)
+            except (ValueError, TypeError):
+                print(f"[CONFIG-WARN] BREAKOUT_BOOST invalid: '{breakout_boost_env}', using default 0.10")
+        
         # Phase 3B: Symbol whitelist/blacklist
+        # Default whitelist: BTC,ETH,SOL,UNI,ATOM,LTC,ARB,OP,AAVE
+        # Can be overridden via SYMBOL_WHITELIST env var (comma-separated)
+        # Set SYMBOL_WHITELIST=* to disable whitelist filtering entirely
         whitelist_env = os.getenv("SYMBOL_WHITELIST", "")
         if whitelist_env.strip():
-            config.symbol_whitelist = [s.strip().upper() for s in whitelist_env.split(",") if s.strip()]
+            if whitelist_env.strip() == "*":
+                config.symbol_whitelist = None  # Disable whitelist filtering
+                print("[CONFIG] Symbol whitelist DISABLED via SYMBOL_WHITELIST=*")
+            else:
+                config.symbol_whitelist = [s.strip().upper() for s in whitelist_env.split(",") if s.strip()]
+                print(f"[CONFIG] Symbol whitelist set via env: {config.symbol_whitelist}")
+        else:
+            # Use default whitelist from dataclass
+            print(f"[CONFIG] Using default symbol whitelist: {config.symbol_whitelist}")
         
         blacklist_env = os.getenv("SYMBOL_BLACKLIST", "")
         if blacklist_env.strip():

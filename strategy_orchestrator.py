@@ -92,6 +92,9 @@ class StrategyOrchestrator:
             'blocked_by_regime_low_volume': 0,
             'blocked_by_regime_no_trend': 0,
             'blocked_by_fee_gate': 0,
+            'blocked_by_confidence_gate': 0,
+            'regime_overrides': 0,
+            'breakout_boosts': 0,
             'passed_all_filters': 0,
             'hold_signals': 0,
         }
@@ -113,6 +116,13 @@ class StrategyOrchestrator:
             logger.info(f"[SYMBOL-FILTER] Whitelist active: {self.config.symbol_whitelist}")
         if self.config.symbol_blacklist:
             logger.info(f"[SYMBOL-FILTER] Blacklist active: {self.config.symbol_blacklist}")
+        
+        logger.info(
+            f"[CONFIDENCE] Thresholds: min={self.config.min_confidence_threshold:.2f}, "
+            f"regime_override={self.config.regime_override_confidence:.2f}, "
+            f"regime_penalty={self.config.regime_penalty:.2f}, "
+            f"breakout_boost={self.config.breakout_boost:.2f}"
+        )
     
     def _apply_fee_gate(self, signal: TradeSignal) -> TradeSignal:
         """
@@ -203,6 +213,163 @@ class StrategyOrchestrator:
                 break
         return sym
     
+    def _detect_breakout_conditions(
+        self,
+        indicators_5m: Dict[str, Any],
+        price: float
+    ) -> tuple[bool, str]:
+        """
+        Detect breakout conditions that warrant a confidence boost.
+        
+        Breakout conditions (all must be met):
+        - RSI > 70 (strong momentum)
+        - ADX > 25 (trending market)
+        - Price > SMA20 (above moving average)
+        
+        Returns:
+            Tuple of (is_breakout, reason_string)
+        """
+        rsi = indicators_5m.get('rsi', 0)
+        adx = indicators_5m.get('adx', 0)
+        sma20 = indicators_5m.get('sma20', 0)
+        
+        is_rsi_strong = rsi > 70
+        is_trending = adx > 25
+        is_above_sma = price > sma20 if sma20 else False
+        
+        if is_rsi_strong and is_trending and is_above_sma:
+            reason = f"BREAKOUT detected: RSI={rsi:.1f}>70, ADX={adx:.1f}>25, price>{sma20:.2f}"
+            return True, reason
+        
+        return False, ""
+    
+    def _apply_confidence_adjustments(
+        self,
+        signal: TradeSignal,
+        indicators_5m: Dict[str, Any],
+        htf: 'HTFContext',
+        regime_result: Any
+    ) -> TradeSignal:
+        """
+        Apply confidence adjustments based on market conditions.
+        
+        Adjustments:
+        1. Regime penalty: If HTF not aligned or regime unfavorable, reduce confidence
+        2. Breakout boost: If breakout conditions met (RSI > 70, ADX > 25, price > SMA20), increase confidence
+        3. Regime override: If confidence >= 0.75, allow trade despite unfavorable regime
+        
+        Returns:
+            Adjusted TradeSignal
+        """
+        if signal.action == 'hold':
+            return signal
+        
+        adjusted_confidence = signal.confidence
+        adjustment_reasons = []
+        
+        # Check for unfavorable regime (HTF not aligned)
+        regime_unfavorable = False
+        if signal.action == 'long' and htf.dominant_trend == 'down':
+            regime_unfavorable = True
+        elif signal.action == 'short' and htf.dominant_trend == 'up':
+            regime_unfavorable = True
+        
+        # Apply regime penalty
+        if regime_unfavorable:
+            penalty = self.config.regime_penalty
+            adjusted_confidence -= penalty
+            adjustment_reasons.append(f"regime_penalty=-{penalty:.2f}")
+            logger.info(
+                f"[CONFIDENCE] {signal.symbol} Regime penalty applied: "
+                f"HTF={htf.dominant_trend}, action={signal.action}, penalty=-{penalty:.2f}"
+            )
+        
+        # Check for breakout conditions
+        is_breakout, breakout_reason = self._detect_breakout_conditions(
+            indicators_5m, signal.entry_price
+        )
+        
+        if is_breakout:
+            boost = self.config.breakout_boost
+            adjusted_confidence += boost
+            adjustment_reasons.append(f"breakout_boost=+{boost:.2f}")
+            logger.info(
+                f"[BREAKOUT-BOOST] {signal.symbol} {breakout_reason}, confidence +{boost:.2f}"
+            )
+        
+        # Cap confidence at 0.95
+        adjusted_confidence = min(0.95, max(0.0, adjusted_confidence))
+        
+        # Check for regime override (high confidence overrides unfavorable regime)
+        regime_overridden = False
+        if regime_unfavorable and adjusted_confidence >= self.config.regime_override_confidence:
+            regime_overridden = True
+            self._decision_stats['regime_overrides'] += 1
+            logger.warning(
+                f"[REGIME-OVERRIDE] {signal.symbol} Trade allowed despite unfavorable regime - "
+                f"confidence {adjusted_confidence:.2f} >= {self.config.regime_override_confidence:.2f} threshold"
+            )
+            adjustment_reasons.append("REGIME_OVERRIDE")
+        
+        # Track breakout boosts
+        if is_breakout:
+            self._decision_stats['breakout_boosts'] += 1
+        
+        # Build adjusted reason
+        if adjustment_reasons:
+            adjusted_reason = f"{signal.reason} [adj: {', '.join(adjustment_reasons)}]"
+        else:
+            adjusted_reason = signal.reason
+        
+        return TradeSignal(
+            action=signal.action,
+            regime=signal.regime,
+            confidence=adjusted_confidence,
+            reason=adjusted_reason,
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            take_profit=signal.take_profit,
+            position_size_multiplier=adjusted_confidence,
+            htf_aligned=signal.htf_aligned,
+            dominant_trend=signal.dominant_trend,
+            symbol=signal.symbol
+        )
+    
+    def _apply_confidence_gate(self, signal: TradeSignal) -> TradeSignal:
+        """
+        Apply final confidence gate - trades must meet minimum confidence threshold.
+        
+        If confidence < min_confidence_threshold (0.65), convert to hold signal.
+        
+        Returns:
+            Original signal if confidence sufficient, hold signal if not
+        """
+        if signal.action == 'hold':
+            return signal
+        
+        if signal.confidence < self.config.min_confidence_threshold:
+            self._decision_stats['blocked_by_confidence_gate'] += 1
+            logger.info(
+                f"[CONFIDENCE-GATE] {signal.symbol} BLOCKED: confidence {signal.confidence:.2f} < "
+                f"min threshold {self.config.min_confidence_threshold:.2f}"
+            )
+            return TradeSignal(
+                action='hold',
+                regime=signal.regime,
+                confidence=signal.confidence,
+                reason=f"CONFIDENCE_GATE blocked: {signal.confidence:.2f} < {self.config.min_confidence_threshold:.2f} threshold",
+                entry_price=signal.entry_price,
+                htf_aligned=signal.htf_aligned,
+                dominant_trend=signal.dominant_trend,
+                symbol=signal.symbol
+            )
+        
+        logger.info(
+            f"[CONFIDENCE-GATE] {signal.symbol} PASSED: confidence {signal.confidence:.2f} >= "
+            f"min threshold {self.config.min_confidence_threshold:.2f}"
+        )
+        return signal
+    
     def _apply_symbol_filter(self, symbol: str, price: float) -> Optional[TradeSignal]:
         """
         Apply symbol whitelist/blacklist filter.
@@ -282,6 +449,11 @@ class StrategyOrchestrator:
         Only blocks trades if regime_filter_enabled=True.
         Always logs decision stats regardless.
         
+        ATR thresholds (updated):
+        - Below 0.2%: Hard block (too little volatility for profitable trades)
+        - 0.2% - 0.3%: Soft warning (marginal volatility, trade allowed)
+        - Above 0.3%: Normal volatility (no warning)
+        
         Args:
             symbol: Trading pair
             price: Current price
@@ -299,6 +471,8 @@ class StrategyOrchestrator:
         adx = indicators_5m.get('adx', 0)
         
         atr_pct = (atr / price * 100) if price > 0 else 0
+        
+        # Hard block: ATR below minimum threshold (0.2%)
         if atr_pct < self.config.regime_min_atr_pct:
             self._decision_stats['blocked_by_regime_low_atr'] += 1
             reason = f"REGIME_LOW_ATR_BLOCK: ATR={atr_pct:.3f}% < min {self.config.regime_min_atr_pct}%"
@@ -321,6 +495,13 @@ class StrategyOrchestrator:
                 reason=reason,
                 entry_price=price,
                 symbol=symbol
+            )
+        
+        # Soft warning: ATR in marginal range (0.2% - 0.3%) - trade allowed but logged
+        if atr_pct < self.config.regime_atr_warning_pct:
+            logger.warning(
+                f"[ATR-WARNING] {symbol} Low ATR {atr_pct:.3f}% - trade allowed but volatility marginal "
+                f"(threshold: {self.config.regime_min_atr_pct}%, warning: {self.config.regime_atr_warning_pct}%)"
             )
         
         if volume_usd_24h is not None and volume_usd_24h < self.config.regime_min_volume_usd:
@@ -391,7 +572,8 @@ class StrategyOrchestrator:
             stats['blocked_by_regime_low_atr'] +
             stats['blocked_by_regime_low_volume'] +
             stats['blocked_by_regime_no_trend'] +
-            stats['blocked_by_fee_gate']
+            stats['blocked_by_fee_gate'] +
+            stats['blocked_by_confidence_gate']
         )
         
         logger.info(
@@ -401,8 +583,10 @@ class StrategyOrchestrator:
             f"low_atr={stats['blocked_by_regime_low_atr']}, "
             f"low_vol={stats['blocked_by_regime_low_volume']}, "
             f"no_trend={stats['blocked_by_regime_no_trend']}, "
-            f"fee_gate={stats['blocked_by_fee_gate']}), "
-            f"Passed={stats['passed_all_filters']}, Hold={stats['hold_signals']}"
+            f"fee_gate={stats['blocked_by_fee_gate']}, "
+            f"confidence_gate={stats['blocked_by_confidence_gate']}), "
+            f"Passed={stats['passed_all_filters']}, Hold={stats['hold_signals']}, "
+            f"RegimeOverrides={stats['regime_overrides']}, BreakoutBoosts={stats['breakout_boosts']}"
         )
     
     def generate_signal(
@@ -507,7 +691,14 @@ class StrategyOrchestrator:
         else:
             signal = self._no_trade_signal(symbol, price, regime_result, htf, "Unknown regime")
         
-        final_signal = self._apply_fee_gate(signal)
+        # Step 4: Apply confidence adjustments (regime penalty, breakout boost, regime override)
+        adjusted_signal = self._apply_confidence_adjustments(signal, indicators_5m, htf, regime_result)
+        
+        # Step 5: Apply fee gate
+        fee_gated_signal = self._apply_fee_gate(adjusted_signal)
+        
+        # Step 6: Apply confidence gate (minimum 0.65 confidence to proceed)
+        final_signal = self._apply_confidence_gate(fee_gated_signal)
         
         if final_signal.action == 'hold':
             self._decision_stats['hold_signals'] += 1

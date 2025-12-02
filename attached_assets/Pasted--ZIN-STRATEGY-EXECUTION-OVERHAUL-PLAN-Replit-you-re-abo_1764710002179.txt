@@ -1,0 +1,103 @@
+🧠 ZIN STRATEGY + EXECUTION OVERHAUL PLAN
+
+Replit, you're about to implement a tightly scoped but important overhaul to how Zin makes trade decisions and executes them. Please read and follow this carefully. This is a live trading system, and precision is essential.
+
+---
+
+🔁 SECTION 1: RELAX OVERLY STRICT TRADE FILTERS
+
+Zin is currently paralyzed by over-filtering, often passing up good opportunities. These filters must be recalibrated to strike a balance between safety and opportunity. The goal is not to make Zin "trade more" blindly, but to allow high-quality trades through that are currently blocked for unnecessary reasons.
+
+✅ Actionable Filter Adjustments:
+
+1. ATR Filter (`REGIME_LOW_ATR_BLOCK`)  
+   - Current Threshold: Blocks trades if ATR% < 0.3%  
+   - New Behavior: Reduce the minimum ATR% threshold to **0.2%**.  
+   - If ATR% is between 0.2% and 0.3%, log a soft warning but still allow the trade if all else passes.
+
+2. Symbol Whitelist (`SYMBOL_WHITELIST_BLOCK`)  
+   - Current Behavior: Blocks trades on all symbols except `['BTC', 'ETH', 'SOL']`  
+   - New Behavior:  
+     - Expand whitelist to include: `['BTC', 'ETH', 'SOL', 'UNI', 'ATOM', 'LTC', 'ARB', 'OP', 'AAVE']`  
+     - Make the list configurable via a global config file or env variable  
+     - Log a debug-level reason if a symbol fails the whitelist check, even if block is removed
+
+3. Regime Filter (`REGIME_FILTER_BLOCK`)  
+   - Current Behavior: Requires a known regime trend and HTF alignment  
+   - New Behavior:  
+     - If regime is UNKNOWN or HTF is not aligned, downgrade this from a hard block to a confidence penalty  
+     - Allow trades to pass if confidence score remains ≥ **0.65**
+
+---
+
+🔁 SECTION 2: DECISION ENGINE ENHANCEMENTS
+
+Zin currently always chooses `NO_TRADE`, despite high-conviction setups. His internal reasoning is solid — but he’s too afraid to act. Time to fix that.
+
+✅ Signal Confidence Threshold
+
+- Introduce or use existing confidence scoring.
+- Allow trades to proceed when `signal.confidence >= 0.65` and filters pass.
+- If the regime is unfavorable but signal confidence is ≥ 0.75, override regime penalty.
+
+✅ Breakout Responsiveness
+
+- Add logic to reward strong RSI + price expansion behavior, especially near Bollinger upper band with rising ADX.
+- If RSI > 70, ADX > 25, and price > SMA20, boost confidence score.
+- This helps Zin catch breakout momentum instead of always waiting for retracements.
+
+---
+
+🔁 SECTION 3: EXECUTION LOGIC ADJUSTMENT
+
+Zin is currently attempting to use Kraken stop-losses and take-profits, which are NOT appropriate right now. These must be completely replaced with market-only order logic.
+
+✅ Replace All Orders with Market Orders
+
+- Zin must use only `market` buys and `market` sells, for both trade entries and exits.
+- Do NOT place stop-loss or take-profit orders on Kraken.
+- Use “mental” stop-loss and take-profit logic to determine exits, then execute a market sell.
+
+Trade Entry:
+kraken_api.create_order(symbol="BTC/USD", side="buy", type="market", ...)
+
+Trade Exit (stop or profit):
+kraken_api.create_order(symbol="BTC/USD", side="sell", type="market", ...)
+
+- Retain existing stop-loss and TP thresholds internally.
+- Log the reason for the exit (e.g., STOP_HIT or TARGET_HIT), even though the execution is always market.
+
+---
+
+🔁 SECTION 4: RESTRICTION TO SPOT TRADING ONLY
+
+Zin must NOT use margin, futures, or any shorting logic. All trading must be on spot market pairs using the base wallet balance.
+
+✅ Enforce Spot-Only Trading
+
+- No margin.
+- No leverage.
+- No futures endpoints or markets.
+- No shorting allowed.
+- Reject or disable any logic related to:
+  - Borrowing funds
+  - Derivative positions
+  - Leveraged instruments
+- Log a warning if such logic is triggered, for debug only.
+
+---
+
+🧪 SECTION 5: TESTING
+
+Once implemented:
+
+- Run `test_data_logger.py` to ensure no regressions in the data engine.
+- Use backtest mode on real examples to confirm:
+  - Trades are now being triggered under relaxed filter conditions.
+  - Executions are routed as market orders only.
+  - No margin or futures logic is activated.
+- Review logs for regime override and symbol whitelist passes.
+
+---
+
+This concludes the full plan prompt. Replit should proceed carefully, commit in small working units, and push changes in a visible, testable manner.
