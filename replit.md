@@ -68,14 +68,22 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
     -   **Signal Engine (`signal_engine.py`)**: Multi-signal decision engine using technical filters (RSI, SMA, volume, volatility, chop, ATR).
     -   **Strategy Orchestrator (`strategy_orchestrator.py`)**: Regime-aware strategy selection with IMPROVED pullback detection (Nov 2025) - requires 0.75 ATR retrace from swing high, price at/below SMA20, RSI < 65 for entries. **PHASE 3A**: Fee gate filter integrated - all actionable signals pass through `_apply_fee_gate()` which computes expected edge vs required edge (fees + safety multiplier) and logs decisions to evaluation_log. Set `FEE_GATE_ENABLED=1` to block low-edge trades. **PHASE 3B (Nov 2025)**: Pre-trade filtering pipeline with decision statistics:
           - Symbol filter: `SYMBOL_WHITELIST` (comma-separated, e.g., "BTC,ETH") restricts trading to listed symbols; `SYMBOL_BLACKLIST` blocks specific symbols
-          - Regime filter (set `REGIME_FILTER_ENABLED=1`): `REGIME_MIN_ATR_PCT` (default 0.3%), `REGIME_MIN_VOLUME_USD` (default $10k), `REGIME_TREND_REQUIRED` (requires ADX>20)
+          - Regime filter (set `REGIME_FILTER_ENABLED=1`): `REGIME_MIN_ATR_PCT` (default 0.2%), `REGIME_MIN_VOLUME_USD` (default $10k), `REGIME_TREND_REQUIRED` (requires ADX>20)
+          - ATR soft warning: Logs warning for marginal volatility (0.2-0.3% ATR) while still allowing trades
           - Decision stats tracking: Logs filter block counts every 50 evaluations (`get_decision_stats()`, `log_decision_stats()`)
-          - Filter order: Symbol → Regime → Fee Gate → Strategy logic
+          - Filter order: Symbol → Regime → Fee Gate → Confidence Gate → Strategy logic
           - All filters disabled by default for unchanged behavior
           - **PHASE 3C (Nov 2025)**: Consistency fixes from architecture audit:
             - Volume passthrough: autopilot now fetches 24h quoteVolume via ticker and passes to regime filter
             - Decision stats fix: Removed duplicate hold_signals increments from filter helpers (single increment in generate_signal only)
             - Lockfile hardening: Added `_ensure_lockfile_exists()` helper to position_tracker for race condition prevention
+          - **PHASE 3D - Confidence-Based Decision Engine (Dec 2025)**: Intelligent trade gating based on signal confidence:
+            - Min confidence threshold: 0.65 (trades below this blocked via `_apply_confidence_gate()`)
+            - Regime override: Confidence >= 0.75 allows trades despite unfavorable HTF regime
+            - Regime penalty: -0.15 applied when HTF trend opposes trade direction
+            - Breakout boost: +0.1 when RSI > 70, ADX > 25, price > SMA20
+            - Symbol whitelist expanded to 9 assets: BTC,ETH,SOL,UNI,ATOM,LTC,ARB,OP,AAVE
+            - Configurable via: MIN_CONFIDENCE_THRESHOLD, REGIME_OVERRIDE_CONFIDENCE, REGIME_PENALTY, BREAKOUT_BOOST env vars
     -   **Paper Trading (`paper_trading.py`)**: Complete simulation system with realistic fills, slippage, fees, and P&L calculation.
     -   **Exchange Manager (`exchange_manager.py`)**: Singleton wrapper for `ccxt` instances, ensuring consistent data fetching.
     -   **Risk Manager (`risk_manager.py`)**: Calculates per-trade and portfolio-wide risk.
