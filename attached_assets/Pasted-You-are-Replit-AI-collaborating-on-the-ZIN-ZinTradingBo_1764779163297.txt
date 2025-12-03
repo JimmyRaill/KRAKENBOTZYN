@@ -1,0 +1,190 @@
+You are Replit AI collaborating on the ZIN (ZinTradingBot) project.
+
+We recently implemented a **data vault** with:
+- `data/meta/` (version history)
+- `data/decisions/` (decision logs)
+- `data/trades/` (trades)
+- `data/daily/` (daily summaries)
+- `data/anomalies/` (anomalies)
+- `data/snapshots/` (currently just an empty folder)
+
+Now we want to **properly implement the `snapshots/` system**.
+
+High-level goal
+---------------
+Add a **lightweight snapshot system** that writes **~3 snapshots per day** into `data/snapshots/`. Each snapshot is a **“state dump”** of ZIN’s world at that moment:
+
+- Account & balances state
+- Risk/config state
+- Open positions state (including mental SL/TP)
+- Small health/performance summary
+
+We already have:
+- `data_logger.py` with logging helpers for decisions, trades, daily summaries, anomalies
+- A running live loop (autopilot / main loop) that can be used to schedule snapshot calls
+- `data/snapshots/` directory created, but not yet used
+
+Do NOT change any of the existing logging behavior; only extend it with snapshot support.
+
+What a snapshot should contain
+------------------------------
+Each snapshot should be a **single JSON file** in `data/snapshots/` with an ISO-timestamped filename like:
+
+- `data/snapshots/2025-12-02T21-45-00Z_snapshot.json`
+
+Structure of the JSON (top-level keys):
+
+1. **Metadata**
+   - `logged_at` (ISO8601 with timezone)
+   - `zin_version` (same version identifier we already log everywhere)
+   - `mode` (`"live"` or `"paper"`)
+   - `snapshot_id` (unique id, e.g. timestamp + random suffix)
+   - `date` (YYYY-MM-DD string)
+
+2. **Account / Equity State**
+   - `account`:
+     - `total_equity_usd`
+     - `cash_balance_usd` (free USD or quote currency)
+     - `balances` (dict of `{symbol: amount}`, e.g. `{ "BTC": 0.02, "ETH": 0.5, "USD": 1234.56 }`)
+     - `realized_pnl_usd` (for the day, if easily available; otherwise overall)
+     - `unrealized_pnl_usd` (total across open positions)
+     - `unrealized_pnl_pct` (relative to total_equity_usd if easy to compute)
+
+3. **Risk / Config State**
+   - `risk_config`:
+     - `regime_min_atr_pct` (current effective min ATR %, from env or config)
+     - `min_confidence` (current min signal confidence threshold)
+     - `regime_override_confidence` (threshold where we allow trades even if regime/HTF is unfavorable)
+     - `breakout_confidence_bonus` (the extra confidence added in breakout conditions, if configured)
+     - `max_risk_per_trade_pct` (if defined in config; otherwise omit or null)
+     - `enable_shorts` (bool, currently should be false)
+     - `max_concurrent_positions` (if such a cap exists)
+     - `symbol_whitelist` (current active whitelist as used in filters)
+     - `validate_only` or similar flag (whether we are in validate-only vs live trading)
+   - The idea: if we look at a snapshot months later, we can understand **why** ZIN behaved like that based on the configuration at the time.
+
+4. **Open Positions State**
+   - `open_positions`: array of objects; one per open position.
+     Each position object should include at least:
+     - `symbol` (e.g. `"BTC/USD"`)
+     - `side` (`"long"` only for now, since shorts are disabled)
+     - `size_base` (amount of the base asset)
+     - `size_quote` (notional in quote currency)
+     - `entry_price`
+     - `current_price` (if easily accessible from the current market data context)
+     - `mental_stop_loss` (price used as the “mental” SL, based on the ATR logic)
+     - `mental_take_profit` (price used as the “mental” TP)
+     - `opened_at` (ISO timestamp)
+     - `unrealized_pnl_usd` (per-position)
+     - `unrealized_pnl_pct` (per-position)
+   - These values should be sourced from existing position/account tracking components (e.g. `position_tracker.py`, `account_state.py`, or equivalent) rather than recomputing from scratch.
+
+5. **Performance Summary (Compact)**
+   - `performance_summary`:
+     - `date`
+     - `total_trades_today` (if easy to retrieve from existing logs/db)
+     - `win_rate_today` (optional; if easy to compute from today’s trades)
+     - `realized_pnl_today_usd` (optional)
+     - `max_drawdown_today_pct` (optional, if available from existing stats)
+   - Note: We already store more detailed statistics in `data/daily/`. For snapshots, keep this **small** and use existing helpers if they are already implemented (e.g. from `data_logger.py`).
+
+6. **System / Health State (Lightweight)**
+   - `system_health`:
+     - `last_decision_timestamp` (most recent decision logged)
+     - `open_positions_count`
+     - `recent_anomalies` (e.g. last N anomaly types or a simple boolean like `has_recent_anomaly`)
+     - `uptime_seconds` or similar, if easy to get
+   - This should be lightweight: do not duplicate full anomaly logs, just enough to know if things looked “healthy”.
+
+Implementation requirements
+---------------------------
+1. **Extend `data_logger.py` with snapshot support**
+   - Add a new method, something like:
+     - `log_snapshot(snapshot_payload: dict) -> str`
+   - Responsibilities:
+     - Ensure `data/snapshots/` exists.
+     - Build a filename using the `logged_at` timestamp (or current UTC time) with a safe format, e.g.:
+       - `YYYY-MM-DDTHH-MM-SSZ_snapshot.json`
+     - Write the `snapshot_payload` as pretty-printed JSON to that file.
+     - Optionally return the filepath.
+   - `snapshot_payload` should follow the structure outlined above.
+   - Do **not** introduce heavy dependencies; reuse existing utilities if we already have a JSON writer or path helper.
+
+2. **Implement snapshot assembly logic**
+   - Either inside `data_logger.py` or a small helper like `snapshot_builder.py`, implement a function to **gather the current state**:
+     - Read account state from existing modules (`account_state.py`, `exchange_manager.py`, or wherever we currently track balances/equity).
+     - Read open positions from `position_tracker.py` or equivalent.
+     - Read configuration from `trading_config.py` (and/or env variables that override it).
+     - Optionally use existing daily stats helpers if we already have a function that computes daily stats (e.g. from trades logs).
+   - The builder should return a **snapshot dict** that can be passed into `DataLogger.log_snapshot()`.
+
+3. **Scheduling: ~3 snapshots per day**
+   - Integrate snapshot triggering into the **main loop/autopilot** so that we get ~3 snapshots/day in practice.
+   - Pick a simple, robust strategy, for example:
+     - Track the timestamp of the **last snapshot** taken (in memory, or stored in a small meta file, or inferred from the last snapshot filename).
+     - Only allow a new snapshot if:
+       - We are in `live` mode (or `mode != "paper"` if that’s how it’s represented).
+       - At least ~6–8 hours have elapsed since the last snapshot **AND**
+       - Less than 3 snapshots exist for the current UTC date.
+   - Implement a small helper, e.g.:
+     - `maybe_take_snapshot(now: datetime) -> None`
+       - Called from the main trading loop at a reasonable cadence (e.g. each iteration or every N minutes).
+       - Checks the above conditions, and if satisfied, builds + logs a snapshot via `data_logger`.
+   - Make sure this scheduling is **low-overhead**:
+     - Do not scan the entire snapshots directory on every loop; you can cache the count of snapshots taken today in memory and update it when you log a new one.
+     - If you do need to look at filesystem, do it infrequently or in an optimized way.
+
+4. **Keep snapshots minimal and focused**
+   - Do **NOT** dump:
+     - Full candle histories
+     - Raw decision logs
+     - Large tick data
+   - Snapshots should be **small, self-contained state views**, not event logs.
+   - If some field would require a very heavy query or large data load, skip it or summarize it.
+
+5. **Backward compatibility & safety**
+   - Do not break any existing logging functions:
+     - `log_decision`
+     - `log_trade`
+     - `log_daily_summary`
+     - `log_anomaly` / `log_anomaly_event`
+   - Keep the existing on-disk formats under `data/` unchanged.
+   - `data_logger` should remain the central interface for writing to the data vault.
+
+6. **Testing**
+   - Add a simple extension to `test_data_logger.py` (or create a new test file) that:
+     - Calls the snapshot builder with a mocked or simplified state (you can stub out account/position data if necessary).
+     - Calls `log_snapshot()` and verifies:
+       - A file is created in `data/snapshots/`
+       - The JSON has the expected top-level keys (`logged_at`, `zin_version`, `account`, `risk_config`, `open_positions`, etc.).
+   - The tests can be minimal but should catch obvious issues (e.g. bad paths, missing keys).
+
+7. **Documentation**
+   - Update `replit.md` or `UPGRADE_GUIDE.md` (whichever is more appropriate) with a short section:
+     - Explaining what `data/snapshots/` is for.
+     - Which fields are included in each snapshot.
+     - The approximate frequency (~3 snapshots/day in live mode).
+   - This will help future work when we let ZIN use these snapshots for self-analysis and strategy evolution.
+
+Constraints / priorities
+------------------------
+- Priority is **correctness and low risk**:
+  - Do not introduce heavy load or huge files.
+  - Keep snapshot creation robust even if some data (like daily stats) is temporarily unavailable — in that case, record `null` or omit optional fields instead of failing.
+- Keep the implementation style consistent with the current codebase patterns in `data_logger.py` and related modules.
+- After you generate your plan, please clearly list:
+  - Which files you’ll modify
+  - Which new functions you’ll add
+  - How the snapshot scheduling is triggered in the main loop
+
+Goal recap
+----------
+When you’re done, the bot should:
+
+- Automatically write **up to ~3 snapshot JSON files per day** into `data/snapshots/` while running live.
+- Each snapshot should be a compact but rich state view: account, config, open positions, light performance, basic health.
+- No existing logging behavior should be broken.
+
+Please now:
+1. Analyze the existing repo (especially `data_logger.py`, account/position/config modules, and the main run/autopilot loop).
+2. Produce a detailed implementation plan following the above requirements.
