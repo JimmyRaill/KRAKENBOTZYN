@@ -53,7 +53,7 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
     -   **Trade Result Validator (`trade_result_validator.py`)**: Multi-layered anti-hallucination system to validate LLM claims against actual Kraken execution.
     -   **Evaluation Log (`evaluation_log.db`)**: SQLite database for transparent logging of trading decisions and executed orders.
     -   **Data Vault (`data_logger.py`)**: Centralized JSONL-based logging system for long-term analysis and self-iteration. **IMPLEMENTED (Dec 2025)**:
-          - Directory structure: `/data/{trades, decisions, daily, meta, anomalies}` (gitignored)
+          - Directory structure: `/data/{trades, decisions, daily, meta, anomalies, snapshots}` (gitignored)
           - `log_trade()`: Complete trade lifecycle (entry/exit with P&L, fees, regime, decision_id reference)
           - `log_decision()`: Every market evaluation with indicators, regime, filters, and outcome
           - `log_daily_summary()`: Daily performance stats (trades, win rate, P&L, drawdown)
@@ -62,6 +62,19 @@ The system emphasizes mode isolation (LIVE vs. PAPER). Key architectural compone
           - `compute_daily_stats()`: Aggregates trades for daily summary generation
           - Integrated with: autopilot startup, strategy_orchestrator (decision logging), execution_manager (trade logging), discord_notifications (daily summary logging)
           - Version tracking via `ZIN_VERSION` constant in trading_config.py
+    -   **Snapshot System (`snapshot_builder.py`)**: Periodic state snapshots for self-analysis and strategy evolution. **IMPLEMENTED (Dec 2025)**:
+          - Location: `data/snapshots/YYYYMMDDTHH-MM-SSZ_snapshot.json` (individual JSON files)
+          - Frequency: ~3 snapshots per day in LIVE mode only (8-hour minimum interval)
+          - Scheduling: `maybe_take_snapshot()` called from autopilot main loop
+          - Snapshot contents:
+            - **Metadata**: logged_at, zin_version, mode, snapshot_id, date
+            - **Account**: total_equity_usd, cash_balance_usd, balances dict, unrealized_pnl_usd/pct
+            - **Risk Config**: regime_min_atr_pct, min_confidence, regime_override_confidence, breakout_boost, symbol_whitelist, execution_mode, enable_shorts, validate_only
+            - **Open Positions**: Array of positions with symbol, side, size_base/quote, entry_price, current_price, mental_stop_loss, mental_take_profit, unrealized_pnl
+            - **Performance Summary**: total_trades_today, win_rate_today, realized_pnl_today_usd, max_drawdown_today_pct
+            - **System Health**: last_decision_timestamp, open_positions_count, has_recent_anomaly
+          - Purpose: Future self-analysis, strategy evolution, and understanding historical bot behavior
+          - Testing: `force_snapshot()` bypasses scheduling for manual snapshots
 -   **Trading Components**:
     -   **Autopilot (`autopilot.py`)**: Autonomous trading loop executing a 5-minute closed-candle strategy, monitoring mental SL/TP levels and integrating risk gatekeepers.
     -   **Trading Config (`trading_config.py`)**: Centralized configuration for indicators, market filters, risk parameters, and execution mode, supporting environment variable overrides.

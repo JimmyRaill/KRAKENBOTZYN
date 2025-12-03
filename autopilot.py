@@ -87,6 +87,16 @@ except ImportError as e:
 from reconciliation_service import run_reconciliation_cycle
 from loguru import logger as reconciliation_logger
 
+# SNAPSHOT SYSTEM - Periodic state snapshots (~3 per day)
+SNAPSHOT_ENABLED = False
+maybe_take_snapshot = None
+try:
+    from snapshot_builder import maybe_take_snapshot
+    SNAPSHOT_ENABLED = True
+    print("[INIT] ✅ Snapshot system enabled (~3 snapshots/day in live mode)")
+except ImportError as e:
+    print(f"[WARNING] Snapshot system not available: {e}")
+
 # Advanced feature imports with individual toggles
 MULTI_STRATEGY_ENABLED = False
 PATTERN_RECOGNITION_ENABLED = False
@@ -1970,6 +1980,13 @@ def run_forever() -> None:
                 last_reconciliation_time = current_time
             except Exception as e:
                 reconciliation_logger.error(f"[RECONCILE] Error in cycle: {e}")
+        
+        # Periodic snapshot (~3 per day in live mode)
+        if SNAPSHOT_ENABLED and maybe_take_snapshot:
+            try:
+                maybe_take_snapshot()
+            except Exception as e:
+                print(f"[SNAPSHOT] Error taking snapshot: {e}")
         
         time.sleep(iv)
 

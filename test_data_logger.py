@@ -234,5 +234,101 @@ def test_data_logger():
     return all_ok
 
 
+def test_snapshot_builder():
+    """Test snapshot builder functionality."""
+    print("\n" + "=" * 60)
+    print("SNAPSHOT BUILDER TEST")
+    print("=" * 60)
+    
+    from pathlib import Path
+    from snapshot_builder import (
+        build_snapshot,
+        save_snapshot,
+        force_snapshot,
+        SNAPSHOTS_DIR
+    )
+    
+    print("\n--- Testing build_snapshot ---")
+    snapshot = build_snapshot()
+    
+    required_keys = ["logged_at", "zin_version", "mode", "snapshot_id", "date",
+                     "account", "risk_config", "open_positions", 
+                     "performance_summary", "system_health"]
+    
+    missing_keys = [k for k in required_keys if k not in snapshot]
+    if missing_keys:
+        print(f"  [FAIL] Missing top-level keys: {missing_keys}")
+        return False
+    else:
+        print(f"  [OK] All required keys present: {list(snapshot.keys())}")
+    
+    print(f"\n  Snapshot details:")
+    print(f"    - logged_at: {snapshot.get('logged_at')}")
+    print(f"    - zin_version: {snapshot.get('zin_version')}")
+    print(f"    - mode: {snapshot.get('mode')}")
+    print(f"    - snapshot_id: {snapshot.get('snapshot_id')}")
+    
+    print("\n--- Testing account section ---")
+    account = snapshot.get("account", {})
+    print(f"  - total_equity_usd: {account.get('total_equity_usd')}")
+    print(f"  - cash_balance_usd: {account.get('cash_balance_usd')}")
+    print(f"  - balances: {len(account.get('balances', {}))} currencies")
+    
+    print("\n--- Testing risk_config section ---")
+    risk = snapshot.get("risk_config", {})
+    print(f"  - regime_min_atr_pct: {risk.get('regime_min_atr_pct')}")
+    print(f"  - min_confidence: {risk.get('min_confidence')}")
+    print(f"  - symbol_whitelist: {risk.get('symbol_whitelist')}")
+    
+    print("\n--- Testing open_positions section ---")
+    positions = snapshot.get("open_positions", [])
+    print(f"  - Open positions count: {len(positions)}")
+    for pos in positions[:3]:
+        print(f"    - {pos.get('symbol')}: {pos.get('side')}, entry={pos.get('entry_price')}")
+    
+    print("\n--- Testing save_snapshot ---")
+    filepath = save_snapshot(snapshot)
+    if filepath:
+        print(f"  [OK] Snapshot saved to: {filepath}")
+        
+        snapshot_path = Path(filepath)
+        if snapshot_path.exists():
+            size = snapshot_path.stat().st_size
+            print(f"  [OK] File exists with {size} bytes")
+            
+            import json
+            with open(snapshot_path, 'r') as f:
+                loaded = json.load(f)
+            print(f"  [OK] Valid JSON with {len(loaded)} keys")
+        else:
+            print(f"  [FAIL] File not found: {filepath}")
+            return False
+    else:
+        print(f"  [FAIL] save_snapshot returned None")
+        return False
+    
+    print("\n--- Verifying snapshots directory ---")
+    if SNAPSHOTS_DIR.exists():
+        snapshot_files = list(SNAPSHOTS_DIR.glob("*.json"))
+        print(f"  [OK] {len(snapshot_files)} snapshot file(s) in {SNAPSHOTS_DIR}")
+        for sf in snapshot_files[-3:]:
+            print(f"    - {sf.name}")
+    else:
+        print(f"  [WARN] Snapshots directory not found: {SNAPSHOTS_DIR}")
+    
+    print("\n" + "=" * 60)
+    print("SNAPSHOT BUILDER TESTS PASSED!")
+    print("=" * 60)
+    return True
+
+
 if __name__ == "__main__":
-    test_data_logger()
+    logger_ok = test_data_logger()
+    snapshot_ok = test_snapshot_builder()
+    
+    print("\n" + "=" * 60)
+    print("FINAL RESULTS")
+    print("=" * 60)
+    print(f"  Data Logger: {'PASS' if logger_ok else 'FAIL'}")
+    print(f"  Snapshot Builder: {'PASS' if snapshot_ok else 'FAIL'}")
+    print("=" * 60)

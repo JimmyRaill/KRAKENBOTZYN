@@ -226,11 +226,14 @@ class DataLogger:
             print(f"[DATA-LOGGER] Anomaly logged: {anomaly_record.get('type', 'UNKNOWN')} - {anomaly_record.get('description', 'N/A')[:50]}")
         return success
     
-    def log_snapshot(self, snapshot_record: Dict[str, Any]) -> bool:
+    def log_snapshot(self, snapshot_record: Dict[str, Any]) -> Optional[str]:
         """
-        Log a market/state snapshot (for future use).
+        Log a state snapshot to an individual JSON file.
         
-        Returns True on success, False on failure.
+        Snapshots are saved as individual JSON files with ISO timestamp filenames:
+        - data/snapshots/YYYYMMDDTHH-MM-SSZ_snapshot.json
+        
+        Returns filepath on success, None on failure.
         """
         record = {
             "logged_at": _get_timestamp(),
@@ -238,10 +241,23 @@ class DataLogger:
             **snapshot_record
         }
         
-        date_str = _get_date_str()
-        file_path = SNAPSHOTS_DIR / f"{date_str}_snapshots.jsonl"
-        
-        return _append_jsonl(file_path, record)
+        try:
+            _ensure_directories()
+            
+            logged_at = record.get("logged_at", _get_timestamp())
+            dt = datetime.fromisoformat(logged_at.replace('Z', '+00:00'))
+            filename = dt.strftime("%Y%m%dT%H-%M-%SZ") + "_snapshot.json"
+            
+            file_path = SNAPSHOTS_DIR / filename
+            
+            success = _write_json(file_path, record)
+            if success:
+                print(f"[DATA-LOGGER] Snapshot logged: {file_path}")
+                return str(file_path)
+            return None
+        except Exception as e:
+            print(f"[DATA-LOGGER] WARNING: Failed to write snapshot: {e}")
+            return None
 
 
 _data_logger_instance: Optional[DataLogger] = None
