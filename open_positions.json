@@ -1,1 +1,13 @@
-{}
+{
+  "AAVE/USD": {
+    "symbol": "AAVE/USD",
+    "entry_price": 193.36,
+    "quantity": 0.31043704,
+    "stop_loss_price": 190.49571428571429,
+    "take_profit_price": 197.6564285714286,
+    "atr": 1.43214285714286,
+    "entry_timestamp": 1764774311.1541424,
+    "source": "autopilot",
+    "is_short": false
+  }
+}

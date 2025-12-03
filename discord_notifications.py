@@ -159,8 +159,26 @@ def send_startup_test_ping() -> bool:
     return result
 
 
-def notify_trade(symbol: str, side: str, quantity: float, price: float, reason: str):
-    """Send Discord notification when Zyn makes a trade."""
+def notify_trade(
+    symbol: str,
+    side: str,
+    quantity: float,
+    price: float,
+    reason: str,
+    stop_loss_price: Optional[float] = None,
+    take_profit_price: Optional[float] = None
+):
+    """Send Discord notification when Zyn makes a trade.
+    
+    Args:
+        symbol: Trading pair (e.g., "AAVE/USD")
+        side: "buy" or "sell"
+        quantity: Amount of asset
+        price: Entry/exit price
+        reason: Signal reason
+        stop_loss_price: Mental stop-loss price (optional)
+        take_profit_price: Mental take-profit price (optional)
+    """
     config = get_notification_config()
     
     if not config.get("notify_on_trades"):
@@ -171,31 +189,52 @@ def notify_trade(symbol: str, side: str, quantity: float, price: float, reason: 
     emoji = "🟢" if is_buy else "🔴"
     value = quantity * price
     
+    fields = [
+        {
+            "name": "Quantity",
+            "value": f"{quantity:.6f}",
+            "inline": True
+        },
+        {
+            "name": "Price",
+            "value": f"${price:,.2f}",
+            "inline": True
+        },
+        {
+            "name": "Value",
+            "value": f"${value:,.2f}",
+            "inline": True
+        }
+    ]
+    
+    if stop_loss_price is not None and take_profit_price is not None:
+        fields.append({
+            "name": "Stop Loss",
+            "value": f"${stop_loss_price:,.2f}",
+            "inline": True
+        })
+        fields.append({
+            "name": "Take Profit",
+            "value": f"${take_profit_price:,.2f}",
+            "inline": True
+        })
+        risk_reward = abs(take_profit_price - price) / abs(price - stop_loss_price) if abs(price - stop_loss_price) > 0 else 0
+        fields.append({
+            "name": "R:R",
+            "value": f"{risk_reward:.1f}:1",
+            "inline": True
+        })
+    
+    fields.append({
+        "name": "Reason",
+        "value": reason[:200] if reason else "No reason provided",
+        "inline": False
+    })
+    
     embed = {
         "title": f"{emoji} {side.upper()} {symbol}",
         "color": color,
-        "fields": [
-            {
-                "name": "Quantity",
-                "value": f"{quantity:.6f}",
-                "inline": True
-            },
-            {
-                "name": "Price",
-                "value": f"${price:,.2f}",
-                "inline": True
-            },
-            {
-                "name": "Value",
-                "value": f"${value:,.2f}",
-                "inline": True
-            },
-            {
-                "name": "Reason",
-                "value": reason[:200] if reason else "No reason provided",
-                "inline": False
-            }
-        ],
+        "fields": fields,
         "timestamp": datetime.utcnow().isoformat()
     }
     

@@ -1,8 +1,8 @@
 {
-  "timestamp": "2025-12-02T19:32:33.273726",
+  "timestamp": "2025-12-03T15:05:07.363236",
   "minimums": {
-    "SOL/USD": {
-      "amount": 0.02,
+    "AAVE/USD": {
+      "amount": 0.015,
       "cost": 0.5
     }
   }

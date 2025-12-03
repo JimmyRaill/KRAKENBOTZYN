@@ -1312,16 +1312,9 @@ def loop_once(ex, symbols: List[str]) -> None:
                         except Exception as record_err:
                             print(f"[DAILY-LIMIT-RECORD-ERR] {sym}: {record_err}")
                         
-                        # Log to telemetry (if enabled)
-                        if TELEMETRY_ENABLED and log_decision:
-                            try:
-                                log_decision(sym, "buy", why, result.fill_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
-                                if notify_trade:
-                                    notify_trade(sym, "buy", result.filled_qty, result.fill_price, why)
-                            except Exception as log_err:
-                                print(f"[TELEMETRY-ERR] {log_err}")
-                        
-                        # MENTAL SL/TP: Store position with calculated exit levels
+                        # MENTAL SL/TP: Store position with calculated exit levels FIRST
+                        # (we need the SL/TP prices for the Discord notification)
+                        position = None
                         try:
                             position = add_position(
                                 symbol=sym,
@@ -1335,6 +1328,17 @@ def loop_once(ex, symbols: List[str]) -> None:
                             print(f"📍 [POSITION-STORED] {sym} - SL=${position.stop_loss_price:.4f}, TP=${position.take_profit_price:.4f}")
                         except Exception as pos_err:
                             print(f"[POSITION-TRACKER-ERR] {sym}: {pos_err} - position not tracked!")
+                        
+                        # Log to telemetry and send Discord notification (now with SL/TP)
+                        if TELEMETRY_ENABLED and log_decision:
+                            try:
+                                log_decision(sym, "buy", why, result.fill_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
+                                if notify_trade:
+                                    sl_price = position.stop_loss_price if position else None
+                                    tp_price = position.take_profit_price if position else None
+                                    notify_trade(sym, "buy", result.filled_qty, result.fill_price, why, sl_price, tp_price)
+                            except Exception as log_err:
+                                print(f"[TELEMETRY-ERR] {log_err}")
                         
                         trade_log.append({"symbol": sym, "action": "market_buy", "usd": float(f"{usd_to_spend:.2f}")})
                         print(f"🎯 [MARKET-BUY-COMPLETE] {sym} - Position opened, monitoring for exit signals")
@@ -1405,16 +1409,6 @@ def loop_once(ex, symbols: List[str]) -> None:
                     
                     print(f"✅ [TRADE-SUCCESS] {sym} - Entry filled: {actual_qty:.6f} @ ${actual_price:.4f} | TP/SL attached via Kraken conditional close")
                     
-                    # Log decision and trade to learning database
-                    if TELEMETRY_ENABLED and log_decision and log_trade:
-                        try:
-                            log_decision(sym, "buy", why, actual_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
-                            log_trade(sym, "buy", "market_buy", actual_qty, actual_price, usd_to_spend, None, why, "autopilot")
-                            if notify_trade:
-                                notify_trade(sym, "buy", actual_qty, actual_price or 0.0, why)
-                        except Exception as log_err:
-                            print(f"[TELEMETRY-ERR] {log_err}")
-                    
                     # Record trade opened for daily limit tracking (applies to both paper/live)
                     try:
                         record_trade_opened(sym, mode_str)
@@ -1434,9 +1428,11 @@ def loop_once(ex, symbols: List[str]) -> None:
                     
                     # POSITION TRACKER: Store position for monitoring alongside exchange orders
                     # This ensures position_tracker.py tracks the position with actual SL/TP prices
+                    # Get SL/TP prices from bracket_order for Discord notification
+                    bracket_sl_price = bracket_order.stop_price if bracket_order else None
+                    bracket_tp_price = bracket_order.take_profit_price if bracket_order else None
+                    
                     try:
-                        bracket_sl_price = bracket_order.stop_price if bracket_order else None
-                        bracket_tp_price = bracket_order.take_profit_price if bracket_order else None
                         
                         if bracket_sl_price and bracket_tp_price and actual_qty > 0:
                             # Create Position with ACTUAL bracket prices (not mental recalculation)
@@ -1470,6 +1466,16 @@ def loop_once(ex, symbols: List[str]) -> None:
                             print(f"⚠️  [BRACKET-POSITION-SKIP] {sym} - Missing SL/TP prices or qty, position not tracked")
                     except Exception as pos_err:
                         print(f"[BRACKET-POSITION-ERR] {sym}: {pos_err} - position not tracked in position_tracker!")
+                    
+                    # Log decision and trade to learning database (now with SL/TP)
+                    if TELEMETRY_ENABLED and log_decision and log_trade:
+                        try:
+                            log_decision(sym, "buy", why, actual_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
+                            log_trade(sym, "buy", "market_buy", actual_qty, actual_price, usd_to_spend, None, why, "autopilot")
+                            if notify_trade:
+                                notify_trade(sym, "buy", actual_qty, actual_price or 0.0, why, bracket_sl_price, bracket_tp_price)
+                        except Exception as log_err:
+                            print(f"[TELEMETRY-ERR] {log_err}")
                     
                     # SUCCESS: Brackets are GUARANTEED by atomic order (conditional close API)
                     # No emergency flatten needed - if brackets fail, the entire order is rejected
@@ -1647,17 +1653,9 @@ def loop_once(ex, symbols: List[str]) -> None:
                     except Exception as record_err:
                         print(f"[DAILY-LIMIT-RECORD-ERR] {sym}: {record_err}")
                         
-                    # Log to telemetry
-                    if TELEMETRY_ENABLED and log_decision:
-                        try:
-                            log_decision(sym, "sell_short", why, result.fill_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
-                            if notify_trade:
-                                notify_trade(sym, "sell_short", result.filled_qty, result.fill_price, why)
-                        except Exception as log_err:
-                            print(f"[TELEMETRY-ERR] {log_err}")
-                    
-                    # MENTAL SL/TP: Store SHORT position with INVERTED exit levels
+                    # MENTAL SL/TP: Store SHORT position with INVERTED exit levels FIRST
                     # For shorts: SL is ABOVE entry (stop loss on upside), TP is BELOW entry (take profit on downside)
+                    position = None
                     try:
                         position = add_position(
                             symbol=sym,
@@ -1672,6 +1670,17 @@ def loop_once(ex, symbols: List[str]) -> None:
                         print(f"📍 [SHORT-POSITION-STORED] {sym} - SL=${position.stop_loss_price:.4f} (above entry), TP=${position.take_profit_price:.4f} (below entry)")
                     except Exception as pos_err:
                         print(f"[POSITION-TRACKER-ERR] {sym}: {pos_err} - short position not tracked!")
+                    
+                    # Log to telemetry and send Discord notification (now with SL/TP)
+                    if TELEMETRY_ENABLED and log_decision:
+                        try:
+                            log_decision(sym, "sell_short", why, result.fill_price, edge_pct, atr, pos_qty, eq_usd, executed=True)
+                            if notify_trade:
+                                sl_price = position.stop_loss_price if position else None
+                                tp_price = position.take_profit_price if position else None
+                                notify_trade(sym, "sell_short", result.filled_qty, result.fill_price, why, sl_price, tp_price)
+                        except Exception as log_err:
+                            print(f"[TELEMETRY-ERR] {log_err}")
                     
                     trade_log.append({"symbol": sym, "action": "market_short", "usd": float(f"{usd_to_spend:.2f}")})
                     print(f"🎯 [MARKET-SHORT-COMPLETE] {sym} - Short position opened, monitoring for exit signals")
