@@ -13,6 +13,28 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 import ccxt
 
+# =============================================================================
+# SAFETY GATE: Set dev environment to paper mode BEFORE importing ExchangeManager
+# =============================================================================
+# ExchangeManager is a singleton created at import time. We must set
+# KRAKEN_VALIDATE_ONLY=1 for dev environments BEFORE importing it, otherwise
+# the initial exchange object will be created in live mode.
+def _pre_import_dev_safety():
+    """Check if we're in a dev environment and force paper mode BEFORE ExchangeManager import."""
+    is_deployed = os.getenv("REPL_DEPLOYMENT", "") == "1"
+    is_replit = bool(os.getenv("REPL_ID", ""))
+    allow_dev_live = os.getenv("ALLOW_DEV_LIVE", "0") == "1"
+    
+    if is_replit and not is_deployed and not allow_dev_live:
+        # Dev environment without explicit live override - force paper mode
+        # This ensures ExchangeManager is initialized in paper mode from the start
+        if os.getenv("KRAKEN_VALIDATE_ONLY") != "1":
+            os.environ["KRAKEN_VALIDATE_ONLY"] = "1"
+            print("[DEV-SAFETY] Pre-import: Forcing KRAKEN_VALIDATE_ONLY=1 for dev environment")
+
+_pre_import_dev_safety()
+# =============================================================================
+
 # NEW: Candle-based strategy imports for 5-minute closed-candle system
 from candle_strategy import (
     calculate_sma, calculate_atr, calculate_rsi, calculate_adx, calculate_bollinger_bands,
@@ -255,7 +277,8 @@ except ImportError as e:
 # .env + constants
 # -------------------------------------------------------------------
 ENV_PATH = Path(__file__).with_name(".env")
-load_dotenv(dotenv_path=str(ENV_PATH), override=True)
+# CRITICAL: override=False so we don't stomp on KRAKEN_VALIDATE_ONLY set by safety checks
+load_dotenv(dotenv_path=str(ENV_PATH), override=False)
 
 # Single source of truth for state path (chat + autopilot must match)
 DEFAULT_STATE_PATH = Path(__file__).with_name("state.json")

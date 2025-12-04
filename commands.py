@@ -10,7 +10,8 @@ from evaluation_log import log_order_execution, register_pending_child_order
 from telemetry_db import log_trade
 
 # Load .env from project root
-load_dotenv(dotenv_path=".env", override=True)
+# CRITICAL: override=False so we don't stomp on KRAKEN_VALIDATE_ONLY set by safety checks
+load_dotenv(dotenv_path=".env", override=False)
 
 HELP = (
     "Commands:\n"

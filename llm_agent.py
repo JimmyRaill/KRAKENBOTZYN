@@ -13,7 +13,8 @@ from loguru import logger
 
 # --- .env (next to this file) ---
 ENV_PATH = Path(__file__).with_name(".env")
-load_dotenv(dotenv_path=str(ENV_PATH), override=True)
+# CRITICAL: override=False so we don't stomp on KRAKEN_VALIDATE_ONLY set by safety checks
+load_dotenv(dotenv_path=str(ENV_PATH), override=False)
 
 # --- OpenAI client (v1 SDK) ---
 MODEL_NAME: str = os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
