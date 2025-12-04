@@ -7,9 +7,9 @@ from dotenv import load_dotenv
 from pathlib import Path
 from paper_exchange_wrapper import PaperExchangeWrapper
 
-# Load environment
+# Load environment (override=False so we don't stomp on os.environ set by safety checks)
 ENV_PATH = Path(__file__).with_name(".env")
-load_dotenv(dotenv_path=str(ENV_PATH), override=True)
+load_dotenv(dotenv_path=str(ENV_PATH), override=False)
 
 
 class ExchangeManager:
@@ -36,10 +36,12 @@ class ExchangeManager:
     
     def _reload_config(self):
         """Reload configuration from environment and reinitialize exchange"""
-        # Reload .env to get latest values
-        load_dotenv(dotenv_path=str(ENV_PATH), override=True)
+        # Load .env WITHOUT override - this respects any os.environ[] set by safety checks
+        # CRITICAL: Safety checks in main.py/autopilot.py may set KRAKEN_VALIDATE_ONLY=1 
+        # in os.environ, and we must NOT let the .env file override that.
+        load_dotenv(dotenv_path=str(ENV_PATH), override=False)
         
-        # Read validate mode from environment
+        # Read validate mode from environment (os.environ takes precedence over .env)
         # DEFAULT IS "0" (LIVE MODE) - This matches main.py's default
         # Reserved VM should trade live unless explicitly set to validate-only
         # Dev workspace safety is handled by instance_guard.should_allow_live_trading()

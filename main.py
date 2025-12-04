@@ -354,6 +354,11 @@ def main():
     exchange_type = "PaperSimulator" if is_paper_mode() else "KrakenLive"
     print(f"[STARTUP] env={deploy_env} | mode={'validate-only' if validate_only else 'live'} | exchange={exchange_type}")
     
+    # Sanity check: ensure env var and exchange state match
+    env_validate = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
+    if env_validate != is_paper_mode():
+        print(f"[WARNING] Mode mismatch! KRAKEN_VALIDATE_ONLY={env_validate} but is_paper_mode()={is_paper_mode()}")
+    
     # Send startup notification to Discord
     send_startup_notification()
     

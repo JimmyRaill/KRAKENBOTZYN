@@ -2128,6 +2128,26 @@ if __name__ == "__main__":
         final_mode = "VALIDATE-ONLY (SAFE)" if os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1" else "LIVE"
         print(f"[FINAL MODE] {final_mode}", flush=True)
         
+        # =====================================================================
+        # CRITICAL: Reload exchange manager AFTER safety checks finalize mode
+        # =====================================================================
+        # The ExchangeManager singleton is created at import time, before safety
+        # checks run. Now that KRAKEN_VALIDATE_ONLY is finalized, reload so the
+        # exchange picks up the correct paper/live mode.
+        from exchange_manager import reload_exchange_config, is_paper_mode
+        reload_exchange_config()
+        
+        # Log the actual exchange state for debugging
+        is_deployed = os.getenv("REPL_DEPLOYMENT", "") == "1"
+        deploy_env = "reserved_vm" if is_deployed else "dev"
+        exchange_type = "PaperSimulator" if is_paper_mode() else "KrakenLive"
+        print(f"[STARTUP] env={deploy_env} | mode={'validate-only' if os.getenv('KRAKEN_VALIDATE_ONLY', '0') == '1' else 'live'} | exchange={exchange_type}", flush=True)
+        
+        # Sanity check: ensure env var and exchange state match
+        env_validate = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
+        if env_validate != is_paper_mode():
+            print(f"[WARNING] Mode mismatch! KRAKEN_VALIDATE_ONLY={env_validate} but is_paper_mode()={is_paper_mode()}", flush=True)
+        
         print("[MAIN] entering run_forever()", flush=True)
         run_forever()
     except Exception as e:
