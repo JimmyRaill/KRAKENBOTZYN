@@ -21,17 +21,6 @@
     "source": "autopilot",
     "is_short": false
   },
-  "ARB/USD": {
-    "symbol": "ARB/USD",
-    "entry_price": 0.2233,
-    "quantity": 269.1613,
-    "stop_loss_price": 0.22197142857142857,
-    "take_profit_price": 0.22529285714285713,
-    "atr": 0.0006642857142857085,
-    "entry_timestamp": 1764806108.6294882,
-    "source": "autopilot",
-    "is_short": false
-  },
   "ETH/USD": {
     "symbol": "ETH/USD",
     "entry_price": 3189.46,
