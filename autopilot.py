@@ -58,10 +58,10 @@ except ImportError as e:
 # Self-learning imports
 TELEMETRY_ENABLED = False
 log_trade = log_decision = log_performance = log_error = None
-notify_trade = check_summaries = None
+notify_trade = check_summaries = notify_position_exit = None
 try:
     from telemetry_db import log_trade, log_decision, log_performance, log_error
-    from discord_notifications import notify_trade, check_summaries
+    from discord_notifications import notify_trade, check_summaries, notify_position_exit
     from time_context import get_time_info, get_prompt_context
     TELEMETRY_ENABLED = True
 except ImportError:
@@ -714,6 +714,18 @@ def loop_once(ex, symbols: List[str]) -> None:
                 print(f"   Fill: {result.filled_qty:.6f} @ ${result.fill_price:.4f}")
                 print(f"   P&L: ${pnl_usd:.2f} ({pnl_pct:+.2f}%)")
                 print(f"   Fee: ${result.fee:.4f}")
+                
+                if notify_position_exit:
+                    exit_type = "🛑 Stop-Loss" if trigger == "stop_loss" else "🎯 Take-Profit"
+                    notify_position_exit(
+                        symbol=sym,
+                        entry_price=position.entry_price,
+                        exit_price=result.fill_price,
+                        quantity=result.filled_qty,
+                        pnl_usd=pnl_usd,
+                        pnl_pct=pnl_pct,
+                        exit_type=exit_type
+                    )
             else:
                 print(f"❌ [EXIT-FAILED] {sym} - {result.error}")
                 print(f"   WARNING: Position may still be tracked - manual intervention may be required")
