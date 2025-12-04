@@ -105,7 +105,7 @@ def send_startup_notification():
         version = get_zin_version()
         
         # Determine if this is a Reserved VM deployment
-        is_deployed = os.getenv("REPL_DEPLOYMENT", "") == "1"
+        is_deployed = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
         deploy_type = "Reserved VM" if is_deployed else "Development Workspace"
         
         message = (
@@ -280,7 +280,7 @@ def main():
     print(f"Version: {version}")
     print(f"Mode: {mode.upper()}")
     print(f"Execution Mode: {os.getenv('EXECUTION_MODE', 'MARKET_ONLY')}")
-    print(f"Environment: {'Reserved VM' if os.getenv('REPL_DEPLOYMENT') == '1' else 'Development Workspace'}")
+    print(f"Environment: {'Reserved VM' if os.getenv('REPLIT_DEPLOYMENT') == '1' else 'Development Workspace'}")
     print("=" * 60)
     
     # Ensure data directory exists for heartbeat
@@ -349,7 +349,7 @@ def main():
     reload_exchange_config()
     
     # Log the actual exchange state for debugging
-    is_deployed = os.getenv("REPL_DEPLOYMENT", "") == "1"
+    is_deployed = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
     deploy_env = "reserved_vm" if is_deployed else "dev"
     exchange_type = "PaperSimulator" if is_paper_mode() else "KrakenLive"
     print(f"[STARTUP] env={deploy_env} | mode={'validate-only' if validate_only else 'live'} | exchange={exchange_type}")

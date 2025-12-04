@@ -21,7 +21,8 @@ import ccxt
 # the initial exchange object will be created in live mode.
 def _pre_import_dev_safety():
     """Check if we're in a dev environment and force paper mode BEFORE ExchangeManager import."""
-    is_deployed = os.getenv("REPL_DEPLOYMENT", "") == "1"
+    # REPLIT_DEPLOYMENT (not REPL_DEPLOYMENT) is set to "1" on Reserved VM / published deployments
+    is_deployed = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
     is_replit = bool(os.getenv("REPL_ID", ""))
     allow_dev_live = os.getenv("ALLOW_DEV_LIVE", "0") == "1"
     
@@ -2161,7 +2162,7 @@ if __name__ == "__main__":
         reload_exchange_config()
         
         # Log the actual exchange state for debugging
-        is_deployed = os.getenv("REPL_DEPLOYMENT", "") == "1"
+        is_deployed = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
         deploy_env = "reserved_vm" if is_deployed else "dev"
         exchange_type = "PaperSimulator" if is_paper_mode() else "KrakenLive"
         print(f"[STARTUP] env={deploy_env} | mode={'validate-only' if os.getenv('KRAKEN_VALIDATE_ONLY', '0') == '1' else 'live'} | exchange={exchange_type}", flush=True)

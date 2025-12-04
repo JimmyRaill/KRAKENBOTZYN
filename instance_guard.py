@@ -314,10 +314,10 @@ def is_dev_environment() -> bool:
     """
     Detect if we're running in a Replit development workspace vs Reserved VM.
     
-    Reserved VM deployments set REPL_DEPLOYMENT=1.
-    Development workspaces have REPL_ID but not REPL_DEPLOYMENT.
+    Reserved VM deployments set REPLIT_DEPLOYMENT=1 (note: REPLIT not REPL).
+    Development workspaces have REPL_ID but not REPLIT_DEPLOYMENT.
     """
-    is_deployed = os.getenv("REPL_DEPLOYMENT", "") == "1"
+    is_deployed = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
     is_replit = bool(os.getenv("REPL_ID", ""))
     
     if is_deployed:
@@ -334,7 +334,7 @@ def should_allow_live_trading() -> tuple[bool, str]:
     
     This implements the ALLOW_DEV_LIVE safety gate:
     - In dev workspace: ALLOW_DEV_LIVE must be "1" to trade live
-    - In Reserved VM (REPL_DEPLOYMENT=1): Always allowed (production)
+    - In Reserved VM (REPLIT_DEPLOYMENT=1): Always allowed (production)
     - Outside Replit: Use ALLOW_DEV_LIVE check
     
     Returns:
@@ -342,7 +342,7 @@ def should_allow_live_trading() -> tuple[bool, str]:
     """
     allow_dev_live = os.getenv("ALLOW_DEV_LIVE", "0") == "1"
     is_dev = is_dev_environment()
-    is_deployed = os.getenv("REPL_DEPLOYMENT", "") == "1"
+    is_deployed = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
     
     if is_deployed:
         return True, "Reserved VM deployment - live trading allowed"
@@ -376,7 +376,7 @@ def get_instance_status() -> Dict[str, Any]:
         "heartbeat": _read_json_file(HEARTBEAT_FILE),
         "lock": _read_json_file(INSTANCE_LOCK_FILE),
         "is_dev_environment": is_dev_environment(),
-        "is_deployed": os.getenv("REPL_DEPLOYMENT", "") == "1",
+        "is_deployed": os.getenv("REPLIT_DEPLOYMENT", "") == "1",
         "allow_dev_live": os.getenv("ALLOW_DEV_LIVE", "0") == "1",
         "current_pid": os.getpid(),
         "current_host": socket.gethostname()
