@@ -1,0 +1,89 @@
+You are my senior reliability engineer for a live trading bot named ZIN running on Kraken via Python.
+
+I have just PUBLISHED this Replit as a **Reserved VM deployment**. I want you to do a STRICTLY DIAGNOSTIC PASS ONLY right now – do NOT change any code or configs unless you find a clear bug that would break the bot. If you think a change is needed, STOP and summarize the proposed change instead of applying it.
+
+Goals of this check:
+1) Confirm the deployed VM is running the bot correctly
+2) Confirm ONLY ONE trading loop is live (no duplicate bots)
+3) Confirm trading mode, secrets, and logging are correct in the deployed environment
+4) Confirm there were no errors during publishing that could affect trading
+
+Please go through these steps explicitly and answer them one by one:
+
+1. Deployment / process check
+- Inspect the deployment configuration (publishing / deployment settings) and confirm:
+  - Deployment type is **Reserved VM**
+  - The **run command** is `python3 main.py` (or whatever entrypoint we intended)
+- From the VM logs, confirm that:
+  - main.py started successfully
+  - autopilot / trading loop started (look for log lines that indicate the loop is running)
+  - there are no immediate tracebacks, import errors, or configuration errors at startup
+
+2. Double-instance protection (make sure only one Zin is trading)
+- Check if ANY of the following are also running:
+  - Replit Workflows still running `python autopilot.py`
+  - The normal “Run” button process running a second instance of the bot
+- Verify that in the current state:
+  - ONLY the Reserved VM instance is running the trading loop
+  - There is NOT a second process that could also place trades
+- If you find a potential second instance, DO NOT stop anything yourself – just:
+  - Identify exactly where it’s running from (workflow, Run button, etc.)
+  - Tell me what to turn off or reconfigure.
+
+3. Trading mode, secrets, and Kraken config (DEPLOYED environment)
+- Inspect the **deployment secrets** (NOT the dev workspace ones) and verify:
+  - Kraken API key and secret exist and are non-empty
+  - `KRAKEN_VALIDATE_ONLY` is set to `0` (live trading enabled)
+  - Any other key trading flags (like EXECUTION_MODE, TRADE_INTERVAL_SEC, etc.) have the expected values
+- Confirm that in the deployed VM:
+  - We are in **LIVE** mode (not paper unless that’s what the code says is default)
+  - We are using **market-only entries and exits** (per our latest changes)
+  - Shorts/margin/futures are **still disabled** (spot-only trading)
+
+4. Data logging and directories (production side)
+- Confirm that the deployment is writing logs and data to the expected locations:
+  - `data/decisions/...`
+  - `data/trades/...`
+  - `data/daily/...`
+  - `data/anomalies/...`
+- Verify that new decision/trade entries are being created **after** the time of deployment (i.e., production VM is actually evaluating the market and logging events).
+- Confirm that there is no path or permissions issue in the VM (for example, not failing to write JSONL/JSON files).
+
+5. Discord + health / heartbeat behavior
+- Check the code paths for Discord alerts and confirm they are wired to the same environment variables in the deployment secrets.
+- From logs, verify:
+  - That at least one Discord notification has been attempted from the deployed VM (if enough time has passed)
+  - There are no repeated errors about failing to connect to Discord webhooks.
+
+6. Error / anomaly scan after deployment
+- Scan the logs starting from the publish time and look for:
+  - Any recurring stack traces
+  - Any API auth failures to Kraken
+  - Any “rate limit exceeded” loops
+  - Any anomalies logged by our anomaly or data logging system
+- Summarize:
+  - Whether the bot has successfully completed at least one evaluation cycle on the VM
+  - Whether it has already placed any trades from the VM instance
+  - Any warnings that might impact reliability but haven’t crashed the bot
+
+7. Final status report for me (very important)
+Produce a concise status report with the following sections:
+
+- Deployment status:
+  - Is the Reserved VM currently running without errors?
+  - What command is it running?
+- Instance count:
+  - How many trading loops did you detect?
+  - Are we safe that only ONE instance can place trades right now?
+- Trading config:
+  - Live vs paper
+  - Market-only execution confirmed?
+  - Spot-only confirmed (no shorts/margin/futures)?
+- Data/logging:
+  - Are new decisions/trades being logged post-deployment?
+- Alerts/Discord:
+  - Any signs of webhook/alert failures?
+- Recommendations:
+  - List any concrete follow-up actions I should take (for example: “Disable workflow X”, “Update secret Y in deployment”, etc.)
+
+Again: do NOT modify code or configs as part of this task unless you find a blocking bug. This pass is mainly to verify that publishing to the Reserved VM did NOT introduce issues and that there is NOT a second bot trading by accident.

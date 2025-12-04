@@ -1,0 +1,179 @@
+You are my senior backend / reliability engineer for a live Kraken trading bot called ZIN.
+
+We just diagnosed a CRITICAL ISSUE:
+- The Reserved VM deployment is likely running ZIN (python3 main.py)
+- The DEVELOPMENT workspace is ALSO running autopilot workflows (python autopilot.py)
+- This means we can accidentally have TWO live bots trading at the same time.
+
+Your job now is to IMPLEMENT CODE-LEVEL PROTECTIONS so this *never* happens again, even if I forget to stop a workflow.
+
+===========================
+HARD REQUIREMENTS
+===========================
+1) Do NOT modify ZIN's core trading logic:
+   - Do NOT change SL/TP behavior
+   - Do NOT change risk, filters, signals, or execution logic
+   - Do NOT change how orders are built or sent to Kraken
+
+2) ONLY add:
+   - Instance guard / singleton protection
+   - Safe defaults for dev workspace (validate-only)
+   - Logging / alerts around multi-instance detection
+
+3) Trading must continue to work exactly as before when there is ONLY ONE instance running.
+
+===========================
+GOAL 1 – Instance Guard (Singleton Protection)
+===========================
+We want a robust guard that prevents multiple *live* instances of ZIN from trading simultaneously, regardless of:
+- Reserved VM vs dev workspace
+- Multiple processes in the same workspace
+- Accidental second launch
+
+Design and implement an "instance guard" with the following properties:
+
+1) New module:
+   - Create: `instance_guard.py`
+
+2) Core functions (suggested interface, you can refine):
+
+   def acquire_instance_lock(max_heartbeat_age_minutes: int = 5) -> bool:
+       """
+       Returns True if this process is allowed to run as the ONE live trading instance.
+       Returns False if another active instance is detected.
+       Uses heartbeat.json + a small lock file to decide.
+       """
+
+   def release_instance_lock() -> None:
+       """
+       Best-effort cleanup of the lock / state when this process exits cleanly.
+       """
+
+3) Use both:
+   - `data/heartbeat.json` (already exists)
+   - A lock/state file, e.g. `data/meta/instance_lock.json`
+
+4) Proposed logic for `acquire_instance_lock`:
+   - Read `data/heartbeat.json` if it exists:
+     - Extract `last_heartbeat`, `mode`, `interval_sec`, `loop_count` if available.
+   - Compute how recent the last heartbeat is (in minutes) vs now (UTC).
+   - If last_heartbeat is VERY recent (e.g. less than `max_heartbeat_age_minutes`):
+     - Assume *another* instance is actively running.
+   - Also consult `data/meta/instance_lock.json`:
+     - Example structure:
+       {
+         "locked_at": "<ISO timestamp>",
+         "owner_host": "<hostname>",
+         "owner_pid": 12345,
+         "mode": "live"
+       }
+     - If this lock file exists AND is not stale (e.g. locked_at is recent), treat it as another active instance.
+
+   - If we detect a conflicting active instance:
+     - Log a VERY loud warning to the console, e.g.:
+       "[INSTANCE-GUARD] Another active ZIN instance detected (last heartbeat XX minutes ago). This process will NOT trade."
+     - Return False from `acquire_instance_lock`.
+
+   - If no active instance is detected:
+     - Write/refresh `instance_lock.json` with this process’s info:
+       - `locked_at` (now, ISO)
+       - `owner_host` (use `socket.gethostname()`)
+       - `owner_pid` (use `os.getpid()`)
+       - `mode` (e.g. "live" or "paper" – use whatever is known from config)
+     - Return True.
+
+5) Staleness thresholds:
+   - Make `max_heartbeat_age_minutes` configurable via env var:
+     - `INSTANCE_MAX_HEARTBEAT_AGE_MINUTES`, default = 5
+   - Use a slightly larger age for the lock file if needed (e.g. 10 minutes) and document the behavior in comments.
+
+===========================
+GOAL 2 – Wire the Guard Into Startup
+===========================
+We need to call `acquire_instance_lock()` at the right place so that:
+
+- The Reserved VM instance can run as the *primary* live trader.
+- Dev workspace processes will refuse to trade live if another instance appears active.
+- Paper / validate-only modes remain safe.
+
+Implementation details:
+
+1) Identify the main entrypoint for the trading autopilot:
+   - Most likely in `autopilot.py` and/or `main.py`.
+   - Wherever the main live trading loop is started (before connecting to Kraken and placing real orders) is where we want to enforce the guard.
+
+2) Insert guard call BEFORE starting the infinite trading loop:
+   - Pseudocode:
+
+     from instance_guard import acquire_instance_lock
+
+     def main():
+         # ... config + setup ...
+         if live_trading_enabled:  # e.g. mode == "live" and KRAKEN_VALIDATE_ONLY == 0
+             if not acquire_instance_lock():
+                 logger.error("[INSTANCE-GUARD] Live trading disabled in this process due to another active instance.")
+                 # Option A: downgrade to validate-only mode
+                 # Option B: exit process
+                 # Choose one and document it clearly.
+         # then start the main loop normally
+
+3) Choose behavior on conflict (PICK ONE and implement):
+   - Preferred Option A (safer dev experience):
+     - If another instance is detected AND we’re in a dev-like environment:
+       - Automatically set ZIN to `KRAKEN_VALIDATE_ONLY=1` in this process
+       - Log VERY clearly that this process is running in "SAFE SIMULATION MODE – no real orders"
+   - Option B:
+       - Simply `sys.exit(1)` with a clear message.
+
+   You can decide which is cleaner given the current config architecture, but explain what you did in comments and logs.
+
+4) Make sure this only applies to LIVE trading:
+   - If `KRAKEN_VALIDATE_ONLY == 1` or we are in explicit paper/backtest mode, skip the guard OR just log that we’re in safe mode already.
+
+===========================
+GOAL 3 – Make Dev Workspace SAFE BY DEFAULT
+===========================
+We want the DEV REPLIT WORKSPACE to be harmless unless I *explicitly* choose to let it trade live.
+
+1) Use an environment variable to gate live trading in the dev workspace:
+   - New env var: `ALLOW_DEV_LIVE`
+     - Default behavior: if this env var is NOT "1", treat the workspace as NOT allowed to trade live.
+   - In the startup logic where mode / live trading is determined:
+     - If running in the dev workspace context (you may detect via `REPL_ID`, deployment env vars, or simply documented behavior):
+       - If `ALLOW_DEV_LIVE != "1"`, force `KRAKEN_VALIDATE_ONLY = 1` for this process and log:
+         - "[SAFETY] Dev environment live trading is disabled by default. Running in validate-only mode (no real orders). Set ALLOW_DEV_LIVE=1 to enable."
+
+2) It is OK if the Reserved VM does NOT use this gate, or if `ALLOW_DEV_LIVE` is only set in the deployment secrets when truly desired. Just be explicit in comments.
+
+3) DO NOT override anything silently in production (Reserved VM) unless it’s clearly documented and safe.
+
+===========================
+GOAL 4 – Minimal Tests / Sanity Checks
+===========================
+Add a small test script, e.g. `test_instance_guard.py`, that:
+
+1) Creates a fake `heartbeat.json` with a very recent timestamp (e.g. now - 1 minute).
+2) Calls `acquire_instance_lock()` and verifies it returns False (simulate "another active instance").
+3) Creates a heartbeat with an OLD timestamp (e.g. 30 minutes ago).
+4) Calls `acquire_instance_lock()` and verifies it returns True.
+5) Prints clear output to the console so I can manually inspect (no need for full pytest).
+
+===========================
+FINAL SUMMARY TO RETURN
+===========================
+When you are done making code changes, please return a clear summary including:
+
+1) Files created and modified (with paths).
+2) The final function signature(s) in `instance_guard.py`.
+3) Where exactly you integrated the guard into startup (which function in which file).
+4) What behavior happens when a second instance starts while another is active:
+   - Does it exit?
+   - Does it flip to validate-only?
+5) How to:
+   - Run `test_instance_guard.py`
+   - Manually verify that only ONE live instance can trade at a time.
+
+Again: DO NOT alter ZIN’s trading strategy, indicators, filters, or SL/TP logic. Only add:
+- instance guarding
+- safe defaults for dev
+- logging around conflicts
