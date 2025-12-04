@@ -97,6 +97,34 @@ try:
 except ImportError as e:
     print(f"[WARNING] Snapshot system not available: {e}")
 
+# HEARTBEAT SYSTEM - For Reserved VM health monitoring
+HEARTBEAT_FILE = Path("data/heartbeat.json")
+
+def _write_heartbeat(loop_count: int, symbols_count: int, interval_sec: int):
+    """Write heartbeat file for health monitoring. Called after each trading loop."""
+    from datetime import datetime, timezone
+    try:
+        HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
+        heartbeat_data = {
+            "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+            "mode": get_mode_str(),
+            "status": "running",
+            "pid": os.getpid(),
+            "loop_count": loop_count,
+            "symbols_count": symbols_count,
+            "interval_sec": interval_sec
+        }
+        
+        # Atomic write using temp file
+        temp_file = HEARTBEAT_FILE.with_suffix('.tmp')
+        with open(temp_file, 'w') as f:
+            json.dump(heartbeat_data, f, indent=2)
+        temp_file.replace(HEARTBEAT_FILE)
+        
+    except Exception as e:
+        print(f"[HEARTBEAT] Failed to write: {e}")
+
 # Advanced feature imports with individual toggles
 MULTI_STRATEGY_ENABLED = False
 PATTERN_RECOGNITION_ENABLED = False
@@ -1981,7 +2009,11 @@ def run_forever() -> None:
     last_reconciliation_time = 0
     reconciliation_interval = 60  # seconds
 
+    # Track loop iterations for heartbeat
+    loop_count = 0
+    
     while True:
+        loop_count += 1
         loop_once(ex, symbols)
         
         # Run reconciliation cycle for TP/SL fill monitoring
@@ -1999,6 +2031,12 @@ def run_forever() -> None:
                 maybe_take_snapshot()
             except Exception as e:
                 print(f"[SNAPSHOT] Error taking snapshot: {e}")
+        
+        # Write heartbeat after each successful loop (for Reserved VM health monitoring)
+        try:
+            _write_heartbeat(loop_count, len(symbols), iv)
+        except Exception as e:
+            print(f"[HEARTBEAT] Warning: {e}")
         
         time.sleep(iv)
 

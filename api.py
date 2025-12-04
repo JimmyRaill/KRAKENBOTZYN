@@ -8,7 +8,7 @@ import uuid
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, FileResponse
@@ -2001,3 +2001,96 @@ def get_trading_mode():
                 "traceback": traceback.format_exc()
             }
         )
+
+
+# ============================================================================
+# HEALTH ENDPOINT - For Reserved VM monitoring
+# ============================================================================
+
+@app.get("/health")
+def health_check():
+    """
+    Health check endpoint for Reserved VM monitoring.
+    
+    Reads the heartbeat.json file written by the autopilot loop
+    and returns status information including staleness detection.
+    
+    Returns:
+        JSON with:
+        - status: "ok", "stale", "no_heartbeat", or "error"
+        - mode: Current trading mode (live/paper)
+        - last_heartbeat: ISO timestamp of last heartbeat
+        - age_seconds: How old the heartbeat is (if available)
+        - Additional fields from heartbeat file
+    
+    Status meanings:
+        - ok: Autopilot is running and heartbeat is fresh (<10 min old)
+        - stale: Heartbeat is >10 minutes old, autopilot may be stuck
+        - no_heartbeat: Heartbeat file not found, autopilot may not be started
+        - error: Error reading heartbeat file
+    """
+    try:
+        from main import read_heartbeat
+        heartbeat_data = read_heartbeat()
+        
+        # Add server timestamp
+        heartbeat_data["server_time"] = datetime.now(timezone.utc).isoformat()
+        
+        return heartbeat_data
+        
+    except ImportError:
+        # main.py not available (running api.py directly in dev mode)
+        # Fallback: read heartbeat file directly
+        try:
+            heartbeat_file = Path("data/heartbeat.json")
+            if not heartbeat_file.exists():
+                return {
+                    "status": "no_heartbeat",
+                    "mode": "unknown",
+                    "last_heartbeat": None,
+                    "server_time": datetime.now(timezone.utc).isoformat(),
+                    "message": "Heartbeat file not found - autopilot may not have started yet"
+                }
+            
+            with open(heartbeat_file, 'r') as f:
+                data = json.load(f)
+            
+            # Check staleness
+            last_hb = data.get("last_heartbeat")
+            if last_hb:
+                last_dt = datetime.fromisoformat(last_hb.replace('Z', '+00:00'))
+                age_seconds = (datetime.now(timezone.utc) - last_dt).total_seconds()
+                
+                if age_seconds > 600:  # 10 minutes
+                    data["status"] = "stale"
+                    data["stale_seconds"] = int(age_seconds)
+                else:
+                    data["age_seconds"] = int(age_seconds)
+            
+            data["server_time"] = datetime.now(timezone.utc).isoformat()
+            return data
+            
+        except Exception as e:
+            return {
+                "status": "error",
+                "mode": "unknown", 
+                "last_heartbeat": None,
+                "server_time": datetime.now(timezone.utc).isoformat(),
+                "message": f"Error reading heartbeat: {str(e)}"
+            }
+    
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "error": str(e),
+                "server_time": datetime.now(timezone.utc).isoformat()
+            }
+        )
+
+
+@app.get("/api/health")
+def api_health_check():
+    """Alias for /health endpoint at /api/health path."""
+    return health_check()

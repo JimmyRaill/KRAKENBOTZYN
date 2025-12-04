@@ -1,0 +1,15 @@
+	•	What is the exact timestamp of the last log line before the long gap, and what does that line say?
+	•	Do you see any Python traceback, exception, or “Killed”/“OOM”/signal message right before the gap starts? If yes, what is it?
+	•	Was the process manually stopped, restarted, or rebuilt around that time (for example by a Run/Stop action or workspace reset)?
+	•	Are we currently running ZIN from the normal “Run” button in the Replit editor, or from a Deploy/Always-On service? Please specify exactly how the process is launched.
+	•	If this is running from a standard workspace process, what are Replit’s sleep or idle policies that would apply to this project, and do the timestamps match one of those sleep windows?
+	•	Can you detect whether the Replit environment was put to sleep or suspended by the platform during that ~13 hour window? If yes, what event or condition triggered the sleep?
+	•	If the environment was not slept, do logs or system metadata show any resource-related kill such as out-of-memory, CPU limit, or timeout? If so, what was the reason and exit code?
+	•	At the time the gap began, was the bot inside the main autopilot loop, or was it exiting due to an error path, unhandled exception, or early return? Please point to the exact code path if so.
+	•	Is there any indication that Kraken API errors, network errors, or rate limits caused the process to crash or exit instead of being handled and retried?
+	•	Right after the gap, when the database is “initialized” again, what exactly triggered that restart? Was it a manual Run, workspace wake, or some automatic restart by Replit?
+	•	Are there any health checks, watchdogs, or background tasks configured for this project that might have restarted the process, or is it a simple one-shot Python process that dies when it crashes or sleeps when Replit suspends it?
+	•	Can you confirm the exact command being run to start ZIN (for example python run.py), and whether it is wrapped in any process manager (like a Replit Nix service, pm2, etc.) that might affect restarts or shutdowns?
+	•	Based on all available logs and metadata, what is your best concrete classification of the cause of the ~13 hour downtime: Replit sleep, crash due to exception, crash due to resource limits, manual stop, or something else?
+	•	If it was a crash, what is the precise exception type and message, and in which file and line did it occur?
+	•	If it was sleep/idle, what configuration change (if any) would be required to keep this bot running reliably 24/7 in this Replit project?

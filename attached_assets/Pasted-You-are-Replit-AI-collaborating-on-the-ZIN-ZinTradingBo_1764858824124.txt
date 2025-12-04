@@ -1,0 +1,233 @@
+You are Replit AI collaborating on the ZIN (ZinTradingBot) project.
+
+Context:
+- ZIN is now using **spot-only, market-only** execution (no margin, no futures, no shorts).
+- All stop-loss and take-profit behavior is now **mental**, enforced by the bot (NOT by Kraken bracket orders).
+- In live trading, ZIN **missed multiple stop-loss exits** (e.g., ETH/USD should have exited around 3184.12 but stayed open and took a larger loss).
+- Our next step is to **diagnose exactly why the mental stop-loss logic failed** before we change any code.
+
+Your task **right now** is NOT to modify code.
+Instead, your job is to:
+1. Read and understand the existing stop-loss system.
+2. Answer a series of very specific questions about how it currently works.
+3. Provide concrete references (file names, function names, line numbers, and relevant code snippets).
+4. Where helpful, also pull in relevant log lines that show what happened during a real trade.
+
+We will use your answers later to generate a precise refactor/fix plan.
+
+Please proceed in sections and answer the following:
+
+---
+
+## 1. Mental Stop-Loss Architecture Overview
+
+**Goal:** Explain how the mental SL/TP system is currently implemented end-to-end.
+
+Questions to answer:
+
+1.1. Which files implement the mental stop-loss and take-profit logic?  
+- List all relevant files (e.g., `position_tracker.py`, `execution_manager.py`, `risk_manager.py`, `strategy_orchestrator.py`, etc.).  
+- For each file, list the key functions related to:
+  - tracking open positions
+  - monitoring price vs stop-loss / take-profit
+  - triggering exits
+
+1.2. Where is the **stop-loss value** for a position stored?  
+- Is it stored in a position object, DB row, JSON file, or in-memory structure?  
+- Show the data structure / model for a single open position (code snippet).
+
+1.3. Which function is responsible for **checking if the current price has crossed the mental stop-loss or take-profit**?  
+- Provide:
+  - the function name
+  - signature
+  - a concise code snippet of the SL/TP check logic
+- Indicate whether this function:
+  - loops over all open positions, or
+  - is called per-symbol/per-position.
+
+---
+
+## 2. Polling / Scheduling of Stop-Loss Checks
+
+**Goal:** Understand WHEN and HOW OFTEN the SL checks are run.
+
+Questions:
+
+2.1. Where in the codebase is the stop-loss monitor called from?  
+- Is it part of a main loop (e.g., `run.py`, `autopilot.py`, or a scheduler)?  
+- Identify the call-site(s) and show a snippet where the SL-checking function is invoked.
+
+2.2. How frequently are stop-loss checks performed in live trading?  
+- Is there a fixed sleep interval (e.g., every N seconds)?  
+- Is it tied to candle closes, WebSocket events, or some other schedule?  
+- Show the exact value of N and where it’s configured.
+
+2.3. Is there any logic that can **skip** or delay SL checks?  
+- For example:
+  - early returns if there are 0 open positions,
+  - conditions based on trading mode (`validate_only`, `paper`, etc.),
+  - error states or circuit breakers.
+- If so, show those conditions and explain when they apply.
+
+---
+
+## 3. Price Source Used for Stop-Loss Comparison
+
+**Goal:** Confirm which price ZIN is actually using to decide if SL/TP is hit.
+
+Questions:
+
+3.1. Which function or module supplies the **current price** used in the SL logic?  
+- Is it using:
+  - last traded price,
+  - bid/ask,
+  - candle close,
+  - or something else?
+- Provide the exact function and a snippet where the price is fetched for SL/TP.
+
+3.2. Is the price used for SL checks **the same** as the price used when sending the market exit order?  
+- If not, explain the difference.
+
+3.3. Are SL checks based on:
+  - intrabar prices (tick/stream / latest quote), or
+  - only on completed candle closes?
+
+If only on candle closes, show how/where that’s enforced (or implied in the code).
+
+---
+
+## 4. Stop-Loss Trigger Condition Logic
+
+**Goal:** Verify that the comparison logic itself is correct (no inverted signs, off-by-one, etc.).
+
+Questions:
+
+4.1. For a **long position**, what is the exact condition used to decide “stop-loss is hit”?  
+- Example: `if current_price <= stop_loss_price:`  
+- Provide the actual conditional line(s) from the code.
+
+4.2. For a **take-profit** on a long position, what is the exact condition?  
+- Example: `if current_price >= take_profit_price:`  
+- Again, provide the actual code snippet.
+
+4.3. Is there any additional filter or guard around SL/TP triggers?  
+- e.g., minimum PnL %, minimum time in trade, ATR filters, regime filters, or confidence checks.  
+- If yes, list them and show how they interact with the basic price vs SL/TP comparison.
+
+4.4. Is there ANY scenario where the SL condition could be true, but the code chooses to “hold” instead of exiting?  
+- For example, a condition like:
+  - `if confidence < X: skip exit`
+  - or `if volume too low: skip`
+- If such logic exists, identify it and explain.
+
+---
+
+## 5. Execution Path After Stop-Loss Trigger
+
+**Goal:** Confirm that when SL is detected, ZIN actually calls the execution code correctly.
+
+Questions:
+
+5.1. When a stop-loss is triggered for a long position, which function is called to execute the exit?  
+- Provide:
+  - function name
+  - which file it’s in
+  - the snippet that calls it when SL triggers.
+
+5.2. In the execution layer (`execution_manager.py` or equivalent), show the function that sends a **market exit** order.  
+- Provide the function body (or the core relevant part) for:
+  - building the Kraken API request
+  - handling response
+  - handling errors
+
+5.3. How does the bot update the state after a stop-loss market exit?  
+- Where is the position marked as closed?  
+- Is there any async or race condition (e.g., closing in DB after Kraken confirms, but monitoring loop still thinks it’s open)?
+
+5.4. Is there any **error handling or retry logic** if the exit order fails due to:
+  - network error,
+  - timeout,
+  - Kraken 429 or 5xx,
+  - validation failure?
+
+If so, describe it and show the relevant snippet.
+
+---
+
+## 6. Logs and Evidence Around the Missed SL Trade
+
+**Goal:** Connect the behavior we see in Discord / Kraken UI to log-level evidence.
+
+Use the ETH/USD trade that missed its stop-loss as a reference.
+
+Questions:
+
+6.1. Find the ETH/USD trade in the **trade logs** and/or main log file around the time it should have stopped out.  
+- Identify:
+  - the open time,
+  - the intended stop-loss price,
+  - the time/price when it should have been hit.
+
+6.2. Search the logs for any messages related to:
+  - "stop loss",
+  - "SL trigger",
+  - "exit",
+  - "market sell",
+  - or anomalies at that time.
+
+Summarize:
+- Did the bot **detect** the SL condition in the logs?
+- Did it **attempt** to send an exit order?
+- Was there any error logged (e.g., API error, validation failure, insufficient funds, etc.)?
+
+6.3. If possible, reconstruct a **timeline** for that ETH trade from logs:
+- T0: Position opened (price, size, SL/TP)
+- T1: Price moved toward SL
+- T2: SL technically hit in the market
+- T3: What the bot actually did (or did not do)
+
+A short bullet-style timeline is enough.
+
+---
+
+## 7. Configuration Flags That Might Affect SL Behavior
+
+**Goal:** Make sure no hidden feature flags are quietly disabling SL exits.
+
+Questions:
+
+7.1. List any config flags or env vars that could influence:
+- stop-loss behavior,
+- exit behavior,
+- validation-only mode,
+- paper vs live,
+- risk limits that might prevent closing positions.
+
+Examples:
+- `KRAKEN_VALIDATE_ONLY`
+- `ZIN_MODE`
+- any risk-per-trade caps or safety checks.
+
+7.2. For the current live configuration, what are the **effective values** of:
+- mode (live vs paper),
+- validate_only,
+- enable_shorts,
+- max leverage (should be 1.0),
+- any flags related to stop-loss or auto-exit behavior?
+
+---
+
+## 8. Deliverable Format
+
+Finally, please provide your answers in a **clear, structured format**:
+
+- Use section headings matching the sections above (1–7).
+- For each question, clearly answer with:
+  - explanation in plain English AND
+  - the exact file + function + line range (approximate is fine) AND
+  - short code snippets where helpful.
+
+Do **NOT** change any code yet.  
+This phase is strictly **diagnostic and descriptive** so a separate system (another AI) can design a precise fix later.
+
+Once you have all this information compiled, output it as your plan/analysis.

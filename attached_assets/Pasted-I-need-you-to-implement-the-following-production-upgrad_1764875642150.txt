@@ -1,0 +1,108 @@
+I need you to implement the following production upgrade so my trading bot (Zin) can be deployed on a 24/7 Reserved VM. Follow each step exactly and do not modify any trading logic, indicator logic, thresholds, or risk systems.
+
+IMPORTANT: Do not remove, exclude, or ignore any existing files. The Reserved VM must contain the entire bot and all data/logging functionality exactly as it exists now. You are only adding a new entrypoint (main.py) that orchestrates the existing systems.
+
+===========================
+OBJECTIVE
+===========================
+Create a clean, production-ready entry point (`main.py`) that runs:
+1. The trading autopilot loop (currently in autopilot.py)
+2. The API/health server (e.g. in api.py or wherever the current API / LLM agent lives)
+
+Both must run at the same time inside a single Reserved VM process.
+
+===========================
+REQUIREMENTS
+===========================
+
+### 1. Create main.py
+- main.py must launch:
+    - the autopilot trading loop
+    - the API/health server
+- Use either:
+    - threading, or
+    - asyncio with background tasks
+- Ensure both components run indefinitely.
+- Ensure if one thread/task fails, it does NOT block or permanently kill the other (log the failure, but keep the other component alive).
+
+### 2. Autopilot Integration
+- Import the existing autopilot loop exactly as-is.
+- DO NOT modify the logic inside autopilot.py or any trading/risk logic.
+- Wrap the existing startup in a function like:
+
+    def start_autopilot():
+        # existing autopilot startup sequence goes here
+        # this should start the live trading loop just like it does today
+
+- main.py should call this function in a background thread (or background task) so it can run alongside the API/health server.
+
+### 3. API / Health Server Integration
+- Identify the current API server (FastAPI / other) used in this project (e.g. api.py, llm_agent.py, or similar).
+- Expose at least one endpoint:
+
+    GET /health → returns JSON:
+    {
+        "status": "ok",
+        "mode": CURRENT_MODE,           # e.g. "live" / "paper" / etc.
+        "last_heartbeat": <timestamp>
+    }
+
+- The API/health server must run concurrently with the autopilot loop.
+- If there is already an API server, reuse it and just add a /health endpoint. Do NOT break existing API behavior.
+
+### 4. Heartbeat Mechanism
+- Add a simple heartbeat mechanism that the autopilot updates at the end of each full loop.
+- Implementation detail:
+    - After each completed main evaluation loop in the autopilot (where all symbols are processed), write/update a file:
+        data/heartbeat.json
+    - Format of heartbeat.json:
+
+        {
+            "last_heartbeat": "<ISO timestamp>",
+            "mode": "<current_mode>",
+            "status": "running"
+        }
+
+- The /health endpoint should:
+    - Read this heartbeat file
+    - Return its contents in the response body (or merged into the JSON it returns)
+- If the file does not exist or is stale, the API should still respond, but clearly indicate status = "stale" or similar.
+
+### 5. Deployment Preparation (Reserved VM)
+- Update the appropriate config (pyproject.toml, replit.nix, or replit.toml depending on this project) so that deployment will run:
+
+    python3 main.py
+
+- In whatever deployment config file is used for Replit, ensure:
+
+    [deployment]
+    run = ["python3", "main.py"]
+    deploymentTarget = "vm"
+
+- Do NOT actually trigger deployment. Just prepare the code and config so I can go into the Deploy tab and select a Reserved VM with that run command.
+- Ensure that all environment variables and secrets (Kraken keys, EXECUTION_MODE, KRAKEN_VALIDATE_ONLY, etc.) are still expected to come from Replit Secrets / env in the usual way. Do not hardcode any secrets.
+
+===========================
+VALIDATION / SUMMARY
+===========================
+
+When you are finished, provide a clear summary that includes:
+
+1. Exactly what files you created or edited (with paths).
+2. A high-level description of main.py:
+   - How it starts the autopilot
+   - How it starts the API/health server
+   - Whether you used threading or asyncio, and why.
+3. Confirmation that:
+   - autopilot.py and all trading logic were left unchanged.
+   - risk management, stop-loss, take-profit, and filters are untouched.
+4. Instructions for how to run locally in the Replit shell:
+   - The exact command, e.g. `python main.py`
+5. A reminder of the deployment command / config for the Reserved VM:
+   - What `[deployment]` config you added or modified.
+6. How the heartbeat.json file is written and how /health reads it.
+
+Do not skip these validation steps and do not change any of Zin’s trading logic. Only add orchestration and health/heartbeat functionality.
+===========================
+END OF PLAN
+===========================

@@ -1,8 +1,9 @@
 {
   "current_date": "2025-12-04",
-  "total_trades_today": 1,
+  "total_trades_today": 3,
   "trades_by_symbol": {
-    "ETH/USD": 1
+    "ETH/USD": 2,
+    "ARB/USD": 1
   },
   "max_trades_per_symbol": 10000,
   "max_total_trades": 10000

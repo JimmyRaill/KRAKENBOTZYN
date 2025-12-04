@@ -111,6 +111,21 @@ def send_discord_message(
         return False
 
 
+def send_notification(message: str, force: bool = True) -> bool:
+    """
+    Simple wrapper to send a plain text notification to Discord.
+    Used by main.py for startup notifications.
+    
+    Args:
+        message: Plain text message to send
+        force: Send even if notifications are disabled (default True)
+    
+    Returns:
+        True if sent successfully
+    """
+    return send_discord_message(content=message, force=force)
+
+
 def send_startup_test_ping() -> bool:
     """
     Send a test message when bot starts up to verify Discord integration.
