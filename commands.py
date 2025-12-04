@@ -990,10 +990,15 @@ def handle(text: str) -> str:
     if m:
         f = m.group(1)
         try:
-            # DIAGNOSTIC: Log exchange instance type
-            ex_type = type(ex).__name__
+            # DIAGNOSTIC: Log exchange instance type with clear paper/live indicator
+            from exchange_manager import is_paper_mode
             mode = get_mode_str()
-            print(f"[CMD-OPEN-DEBUG] Mode={mode} | Exchange type: {ex_type}")
+            # Clear labeling: PaperSimulator vs KrakenLive (not the wrapper class name)
+            if is_paper_mode():
+                exchange_label = "PaperSimulator (validate-only, no real orders)"
+            else:
+                exchange_label = "KrakenLive (REAL ORDERS enabled)"
+            print(f"[CMD-OPEN-DEBUG] Mode={mode} | Exchange: {exchange_label}")
             
             sym = _norm_sym(f) if f else None
             return _open_orders_text(ex, sym)

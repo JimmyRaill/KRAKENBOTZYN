@@ -340,6 +340,20 @@ def main():
     print(f"[FINAL MODE] {final_mode}")
     print("=" * 60)
     
+    # =========================================================================
+    # CRITICAL: Reload exchange manager AFTER safety checks finalize the mode
+    # =========================================================================
+    # The ExchangeManager singleton is created at import time, before safety checks.
+    # Now that we've finalized KRAKEN_VALIDATE_ONLY, reload so it picks up the correct value.
+    from exchange_manager import reload_exchange_config, is_paper_mode
+    reload_exchange_config()
+    
+    # Log the actual exchange state for debugging
+    is_deployed = os.getenv("REPL_DEPLOYMENT", "") == "1"
+    deploy_env = "reserved_vm" if is_deployed else "dev"
+    exchange_type = "PaperSimulator" if is_paper_mode() else "KrakenLive"
+    print(f"[STARTUP] env={deploy_env} | mode={'validate-only' if validate_only else 'live'} | exchange={exchange_type}")
+    
     # Send startup notification to Discord
     send_startup_notification()
     
