@@ -1,8 +1,28 @@
 {
-  "timestamp": "2025-12-03T15:05:07.363236",
+  "timestamp": "2025-12-04T00:02:51.652360",
   "minimums": {
-    "AAVE/USD": {
-      "amount": 0.015,
+    "ARB/USD": {
+      "amount": 5.2,
+      "cost": 0.5
+    },
+    "UNI/USD": {
+      "amount": 0.3,
+      "cost": 0.5
+    },
+    "FIL/USD": {
+      "amount": 0.7,
+      "cost": 0.5
+    },
+    "SOL/USD": {
+      "amount": 0.02,
+      "cost": 0.5
+    },
+    "XRP/USD": {
+      "amount": 1.65,
+      "cost": 0.5
+    },
+    "ETH/USD": {
+      "amount": 0.001,
       "cost": 0.5
     }
   }

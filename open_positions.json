@@ -1,12 +1,45 @@
 {
-  "AAVE/USD": {
-    "symbol": "AAVE/USD",
-    "entry_price": 193.36,
-    "quantity": 0.31043704,
-    "stop_loss_price": 190.49571428571429,
-    "take_profit_price": 197.6564285714286,
-    "atr": 1.43214285714286,
-    "entry_timestamp": 1764774311.1541424,
+  "FIL/USD": {
+    "symbol": "FIL/USD",
+    "entry_price": 1.604,
+    "quantity": 37.51076618,
+    "stop_loss_price": 1.5932857142857144,
+    "take_profit_price": 1.6200714285714286,
+    "atr": 0.005357142857142838,
+    "entry_timestamp": 1764804529.8894198,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "SOL/USD": {
+    "symbol": "SOL/USD",
+    "entry_price": 144.65,
+    "quantity": 0.41546403,
+    "stop_loss_price": 143.57999999999998,
+    "take_profit_price": 146.25500000000002,
+    "atr": 0.5350000000000047,
+    "entry_timestamp": 1764804965.9215944,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "ARB/USD": {
+    "symbol": "ARB/USD",
+    "entry_price": 0.2233,
+    "quantity": 269.1613,
+    "stop_loss_price": 0.22197142857142857,
+    "take_profit_price": 0.22529285714285713,
+    "atr": 0.0006642857142857085,
+    "entry_timestamp": 1764806108.6294882,
+    "source": "autopilot",
+    "is_short": false
+  },
+  "ETH/USD": {
+    "symbol": "ETH/USD",
+    "entry_price": 3189.46,
+    "quantity": 0.01883299,
+    "stop_loss_price": 3172.7742857142857,
+    "take_profit_price": 3214.4885714285715,
+    "atr": 8.34285714285709,
+    "entry_timestamp": 1764806574.882125,
     "source": "autopilot",
     "is_short": false
   }
