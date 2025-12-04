@@ -40,7 +40,10 @@ class ExchangeManager:
         load_dotenv(dotenv_path=str(ENV_PATH), override=True)
         
         # Read validate mode from environment
-        validate_str = os.getenv("KRAKEN_VALIDATE_ONLY", "1").strip().lower()
+        # DEFAULT IS "0" (LIVE MODE) - This matches main.py's default
+        # Reserved VM should trade live unless explicitly set to validate-only
+        # Dev workspace safety is handled by instance_guard.should_allow_live_trading()
+        validate_str = os.getenv("KRAKEN_VALIDATE_ONLY", "0").strip().lower()
         self._validate_mode = validate_str in ("1", "true", "yes", "on")
         
         # Create exchange with validate flag
