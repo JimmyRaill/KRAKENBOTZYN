@@ -1,0 +1,85 @@
+You are the architect/engineer for my trading bot ZIN, now deployed on a Reserved VM. I just published and started the VM, and I’m looking at the deployment logs filtered by `CMD-OPEN-DEBUG`.
+
+Problem:
+On the Reserved VM logs I see lines like:
+
+  [CMD-OPEN-DEBUG] Mode=live | Exchange type: PaperExchangeWrapper
+
+That means the bot is still using the paper exchange wrapper, even though it is running in `mode=live` on the Reserved VM. I want the **Reserved VM instance** to use the REAL Kraken exchange for live trading, and keep the dev workspace using the paper exchange / validate-only mode.
+
+Your job:
+Figure out exactly WHY the VM is still using `PaperExchangeWrapper` and then fix it so that:
+
+- Reserved VM (deployment environment):
+  - Uses the real Kraken exchange implementation (no paper wrapper) when:
+    - mode=live
+    - Kraken keys are present and valid
+    - KRAKEN_VALIDATE_ONLY is NOT enabled
+  - Clearly logs something like:
+    - `[CMD-OPEN-DEBUG] Mode=live | Exchange type: KrakenSpotExchange` (or whatever the real exchange class is)
+- Dev workspace:
+  - Continues to use PaperExchangeWrapper / validate-only by default.
+  - Never places real Kraken orders unless I *explicitly* override a safety flag.
+
+I need you to do ALL of the following:
+
+1. Trace the exchange selection logic
+   - Find the function(s) that actually construct the exchange object (for example: `create_exchange()`, `open_exchange()`, or anything similar).
+   - Identify every branch that can result in `PaperExchangeWrapper` being used:
+     - Based on env vars (`KRAKEN_VALIDATE_ONLY`, `PAPER_MODE`, `EXCHANGE_IMPLEMENTATION`, etc.).
+     - Based on environment detection (`is_dev_environment()`, `REPL_DEPLOYMENT`, etc.).
+     - Based on safety checks (missing keys, instance_guard, etc.).
+   - Add a short comment in the code explaining each branch in plain English.
+
+2. Inspect deployment secrets vs dev env
+   - Check how the VM gets its env vars:
+     - Confirm what values are expected for:
+       - `MODE`
+       - `KRAKEN_VALIDATE_ONLY`
+       - Any `PAPER_*` or `EXCHANGE_*` flags
+       - `REPL_DEPLOYMENT` or any flag used to detect “deployed vs dev”
+   - Make sure the **Reserved VM** will NOT inherit any dev-only paper/validate flags by default.
+
+3. Define clear rules for which exchange to use
+   Implement this logic in the exchange factory in a clean, centralized way (one function, not scattered):
+
+   - If `KRAKEN_VALIDATE_ONLY=1` OR `mode != "live"`:
+       - Use `PaperExchangeWrapper` (paper trading).
+       - Log: `[CMD-OPEN-DEBUG] Mode={mode} | Exchange type: PaperExchangeWrapper (validate-only or non-live mode)`.
+   - ELSE IF we are in a deployed environment (Reserved VM), Kraken keys are present, and safety checks pass:
+       - Use the REAL Kraken exchange implementation.
+       - Log: `[CMD-OPEN-DEBUG] Mode=live | Exchange type: <REAL_EXCHANGE_CLASS_NAME> (live Kraken)`.
+   - ELSE (no keys or env missing):
+       - Fallback safely to PaperExchangeWrapper.
+       - Log a big warning: `[SAFETY] Missing or invalid Kraken configuration, falling back to PaperExchangeWrapper`.
+
+4. Make sure the VM is not being forced into validate-only
+   - Check `instance_guard` and `should_allow_live_trading()`:
+     - Confirm that on the Reserved VM, they are NOT forcing `KRAKEN_VALIDATE_ONLY=1` unless a real conflict is detected.
+   - Add a debug log near where `KRAKEN_VALIDATE_ONLY` might be flipped so I can see if the VM ever gets forced into validate-only.
+
+5. Add explicit startup logs
+   On startup (in `main.py` when running on the VM):
+
+   - Log a single, clear line summarizing:
+     - Environment: `dev` vs `reserved_vm`
+     - Mode: `live` vs `validate-only`
+     - Exchange class in use
+   Something like:
+     - `[STARTUP] env=reserved_vm | mode=live | exchange=KrakenSpotExchange`
+     - `[STARTUP] env=dev | mode=validate-only | exchange=PaperExchangeWrapper`
+
+6. Verify on the VM
+   - After you make the changes, I want you to:
+     - Show me the exact log line that will appear on the Reserved VM when it is using the REAL Kraken exchange.
+     - Confirm which env vars I need to set (and to what values) in the Reserved VM’s **deployment secrets** so that:
+       - VM = real Kraken live trading.
+       - Dev workspace = paper/validate-only.
+     - Confirm that the dev workspace CANNOT accidentally hijack the live lock or bypass the instance guard to place real trades.
+
+Do NOT remove any of the existing safety mechanisms (instance guard, dev detection, etc.). Just fix the exchange selection so the Reserved VM can actually use the real Kraken exchange for live trading, while dev stays safely on paper.
+
+When you’re done, summarize:
+- What the root cause was (why PaperExchangeWrapper was used on the VM),
+- What code you changed,
+- What log line I should look for in the VM logs to confirm “yes, this is the REAL Kraken exchange now”.

@@ -1,0 +1,145 @@
+You are my senior reliability engineer for my live Kraken trading bot ZIN.
+
+We have just:
+- Deployed a Reserved VM running `python3 main.py`
+- Implemented an instance guard (`instance_guard.py`) to prevent multiple live instances
+- Wired the guard into startup
+- Added tests (`test_instance_guard.py`)
+- Set up dev workspace safety (validate-only unless explicitly allowed)
+
+Your job now is DIAGNOSTIC ONLY:
+✅ Check everything and tell me if ZIN is safe and correctly configured  
+❌ Do NOT modify any code or config unless there is a clear, blocking bug
+
+If you believe changes are needed, just propose them in your summary. Do NOT apply them.
+
+===========================
+PART 1 – CODE & WIRING VERIFICATION
+===========================
+Inspect these files:
+
+- `instance_guard.py`
+- `main.py`
+- `autopilot.py`
+- Any config / env handling affecting:
+  - `KRAKEN_VALIDATE_ONLY`
+  - `ALLOW_DEV_LIVE`
+  - mode (live/paper)
+
+Answer clearly:
+
+1.1 Instance guard
+- Confirm `instance_guard.py` exports:
+  - `acquire_instance_lock(max_heartbeat_age_minutes: int = 5) -> bool`
+  - `release_instance_lock() -> None` (or equivalent)
+- Confirm the guard:
+  - Reads `data/heartbeat.json`
+  - Uses a lock file (e.g. `data/meta/instance_lock.json`)
+  - Applies staleness logic using `INSTANCE_MAX_HEARTBEAT_AGE_MINUTES` (default ~5)
+  - Logs clearly when it:
+    - Allows this instance to trade
+    - Blocks this instance due to another active instance
+
+1.2 Integration points
+- Where EXACTLY is `acquire_instance_lock()` called?
+  - Which function(s)?
+  - Which file(s)?
+- Confirm it is called BEFORE the main live trading loop starts.
+- Confirm it ONLY applies when:
+  - Mode is LIVE
+  - `KRAKEN_VALIDATE_ONLY == 0`
+- Confirm that if we’re in validate-only / paper / backtest modes, the guard either:
+  - Does nothing, OR
+  - Logs that we are already in safe mode.
+
+1.3 Conflict behavior
+- From the code, what happens when `acquire_instance_lock()` detects another active instance?
+  - Does this process exit?
+  - Or does it flip into validate-only / safe mode?
+- Quote or summarize the **exact log message** used when a second instance is blocked so I know what to look for in logs.
+
+===========================
+PART 2 – DEV WORKSPACE SAFETY
+===========================
+We want the dev Replit workspace to be harmless by default.
+
+2.1 `ALLOW_DEV_LIVE` behavior
+- Find where `ALLOW_DEV_LIVE` is read.
+- Confirm that if `ALLOW_DEV_LIVE != "1"`:
+  - The dev workspace CANNOT place real orders (e.g., `KRAKEN_VALIDATE_ONLY` is forced to 1, or equivalent).
+  - There is a clear log like:
+    - "[SAFETY] Dev environment live trading is disabled by default. Running in validate-only mode."
+- Confirm that this behavior does NOT unintentionally affect the Reserved VM deployment (e.g., only applies to dev, or requires explicit env in production).
+
+2.2 Accidental live risk
+- Is there any code path where the dev workspace could still:
+  - Run in LIVE mode **and**
+  - Bypass the instance guard?
+- If yes, describe that path and mark it as a risk (but do NOT fix it).
+
+===========================
+PART 3 – TESTING THE INSTANCE GUARD
+===========================
+Run `python test_instance_guard.py` in the dev workspace and report:
+
+- Did it run without errors?
+- Confirm that both scenarios behave as expected:
+  - “Recent heartbeat” → `acquire_instance_lock()` returns False (another instance active)
+  - “Stale heartbeat” → `acquire_instance_lock()` returns True (safe to run)
+- Summarize the console output so I can see:
+  - The scenarios you tested
+  - The actual results
+
+If anything fails, do NOT fix it. Just tell me:
+- What failed
+- How you recommend we fix it next.
+
+===========================
+PART 4 – CURRENT RUNTIME STATE (DEV WORKSPACE)
+===========================
+From the **dev workspace only**:
+
+4.1 Process / workflow check
+- List any currently running processes:
+  - `python main.py`
+  - `python autopilot.py`
+  - `uvicorn api:app ...`
+  - Any workflows that might still be active
+- Based on config + instance guard, state whether:
+  - The dev workspace is currently live-trading
+  - Running validate-only
+  - Or idle
+
+4.2 Double-instance scenario sanity check
+- Hypothetically, if the Reserved VM is running live trading and I accidentally start the dev autopilot:
+  - Walk through what the guard and safety checks will do.
+  - Confirm that the dev instance will either:
+    - Exit, OR
+    - Switch into validate-only / no real orders.
+- Explain this in simple terms so I can mentally simulate it.
+
+===========================
+PART 5 – FINAL STATUS SUMMARY (FOR ME)
+===========================
+End with a concise summary, with these sections:
+
+- INSTANCE GUARD:
+  - Is it correctly implemented?
+  - Is it actually called in the right place(s)?
+  - What exactly happens when a second instance tries to start?
+
+- DEV WORKSPACE SAFETY:
+  - Is the dev environment safe by default?
+  - What env var(s) must I set if I ever WANT the dev workspace to trade live?
+  - Can the dev workspace accidentally conflict with the VM under normal usage?
+
+- TEST RESULTS:
+  - Did `test_instance_guard.py` pass all scenarios?
+  - Any edge cases or weaknesses you see?
+
+- OVERALL SAFETY RATING:
+  - Give me a simple verdict like:
+    - "Safe enough for 24/7 use with low risk of double-trading"
+    - OR "Mostly safe but I strongly recommend X and Y changes next."
+
+Again: this is a **check-only pass**. Do NOT change anything unless ZIN cannot run or there is an immediate, critical bug. Just tell me what you found and what you would improve next.
