@@ -9,6 +9,11 @@ This module orchestrates both components of the Zin trading system:
 Both run concurrently using threading, with failure isolation so one
 component crashing doesn't kill the other.
 
+SAFETY FEATURES:
+- Instance Guard: Prevents multiple live ZIN instances from trading simultaneously
+- Dev Environment Safety: Dev workspace defaults to validate-only mode
+- ALLOW_DEV_LIVE env var: Must be set to "1" to allow live trading in dev
+
 Usage:
     python main.py
 
@@ -29,6 +34,13 @@ from pathlib import Path
 
 import uvicorn
 from loguru import logger
+
+from instance_guard import (
+    acquire_instance_lock,
+    should_allow_live_trading,
+    is_dev_environment,
+    get_instance_status
+)
 
 
 # ============================================================================
@@ -243,6 +255,10 @@ def main():
     """
     Main entry point for Reserved VM deployment.
     Starts both autopilot and API server in parallel threads.
+    
+    SAFETY CHECKS (in order):
+    1. Dev environment check - defaults to validate-only unless ALLOW_DEV_LIVE=1
+    2. Instance guard - prevents multiple live instances
     """
     print("=" * 60)
     print("🤖 ZIN TRADING BOT - PRODUCTION STARTUP")
@@ -264,10 +280,65 @@ def main():
     print(f"Version: {version}")
     print(f"Mode: {mode.upper()}")
     print(f"Execution Mode: {os.getenv('EXECUTION_MODE', 'MARKET_ONLY')}")
+    print(f"Environment: {'Reserved VM' if os.getenv('REPL_DEPLOYMENT') == '1' else 'Development Workspace'}")
     print("=" * 60)
     
     # Ensure data directory exists for heartbeat
     Path("data").mkdir(exist_ok=True)
+    Path("data/meta").mkdir(exist_ok=True)
+    
+    # =========================================================================
+    # SAFETY CHECK 1: Dev Environment Gate
+    # =========================================================================
+    # Dev workspaces default to validate-only mode for safety.
+    # Set ALLOW_DEV_LIVE=1 to enable live trading in dev (not recommended).
+    
+    validate_only = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
+    is_live_mode = mode.lower() == "live" and not validate_only
+    
+    if is_live_mode:
+        allow_live, reason = should_allow_live_trading()
+        print(f"[SAFETY] {reason}")
+        
+        if not allow_live:
+            print("=" * 60)
+            print("[SAFETY] ⚠️  FORCING VALIDATE-ONLY MODE FOR SAFETY")
+            print("[SAFETY] This process will NOT place real orders.")
+            print("[SAFETY] To enable live trading in dev, set ALLOW_DEV_LIVE=1")
+            print("=" * 60)
+            os.environ["KRAKEN_VALIDATE_ONLY"] = "1"
+            validate_only = True
+            is_live_mode = False
+    
+    # =========================================================================
+    # SAFETY CHECK 2: Instance Guard (Singleton Protection)
+    # =========================================================================
+    # Prevents multiple live ZIN instances from trading simultaneously.
+    # Uses heartbeat.json and instance_lock.json to detect active instances.
+    
+    if is_live_mode:
+        print("[INSTANCE-GUARD] Checking for other active ZIN instances...")
+        
+        if not acquire_instance_lock(mode="live"):
+            print("=" * 60)
+            print("[INSTANCE-GUARD] ⚠️  ANOTHER ACTIVE INSTANCE DETECTED!")
+            print("[INSTANCE-GUARD] Forcing this process to validate-only mode.")
+            print("[INSTANCE-GUARD] Only ONE live trading instance is allowed.")
+            print("[INSTANCE-GUARD] Stop the other instance first, or wait 5+ minutes.")
+            print("=" * 60)
+            os.environ["KRAKEN_VALIDATE_ONLY"] = "1"
+            validate_only = True
+            is_live_mode = False
+        else:
+            print("[INSTANCE-GUARD] ✅ Lock acquired - this is the primary live instance")
+    else:
+        print(f"[INSTANCE-GUARD] Skipping lock (validate_only={validate_only}, mode={mode})")
+    
+    # Final mode after safety checks
+    final_mode = "VALIDATE-ONLY (SAFE)" if validate_only else f"LIVE ({mode.upper()})"
+    print("=" * 60)
+    print(f"[FINAL MODE] {final_mode}")
+    print("=" * 60)
     
     # Send startup notification to Discord
     send_startup_notification()

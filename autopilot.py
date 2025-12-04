@@ -2042,6 +2042,62 @@ def run_forever() -> None:
 
 if __name__ == "__main__":
     try:
+        from pathlib import Path
+        
+        # Ensure data directories exist
+        Path("data").mkdir(exist_ok=True)
+        Path("data/meta").mkdir(exist_ok=True)
+        
+        # =====================================================================
+        # SAFETY CHECK: Instance Guard (Singleton Protection)
+        # =====================================================================
+        # Prevents multiple live ZIN instances from trading simultaneously.
+        # If another active instance is detected, this process will flip to
+        # validate-only mode instead of trading live.
+        
+        from instance_guard import (
+            acquire_instance_lock,
+            should_allow_live_trading,
+            is_dev_environment
+        )
+        
+        validate_mode = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
+        mode = get_mode_str()
+        is_live_mode = mode.lower() == "live" and not validate_mode
+        
+        if is_live_mode:
+            # Check 1: Dev environment safety gate
+            allow_live, reason = should_allow_live_trading()
+            print(f"[SAFETY] {reason}", flush=True)
+            
+            if not allow_live:
+                print("=" * 60, flush=True)
+                print("[SAFETY] ⚠️  FORCING VALIDATE-ONLY MODE FOR SAFETY", flush=True)
+                print("[SAFETY] Dev environment live trading is disabled by default.", flush=True)
+                print("[SAFETY] Set ALLOW_DEV_LIVE=1 to enable (not recommended).", flush=True)
+                print("=" * 60, flush=True)
+                os.environ["KRAKEN_VALIDATE_ONLY"] = "1"
+                validate_mode = True
+                is_live_mode = False
+            
+            # Check 2: Instance guard (only if still live mode)
+            if is_live_mode:
+                print("[INSTANCE-GUARD] Checking for other active ZIN instances...", flush=True)
+                
+                if not acquire_instance_lock(mode="live"):
+                    print("=" * 60, flush=True)
+                    print("[INSTANCE-GUARD] ⚠️  ANOTHER ACTIVE INSTANCE DETECTED!", flush=True)
+                    print("[INSTANCE-GUARD] Forcing this process to validate-only mode.", flush=True)
+                    print("[INSTANCE-GUARD] Only ONE live trading instance is allowed.", flush=True)
+                    print("=" * 60, flush=True)
+                    os.environ["KRAKEN_VALIDATE_ONLY"] = "1"
+                    validate_mode = True
+                    is_live_mode = False
+                else:
+                    print("[INSTANCE-GUARD] ✅ Lock acquired - this is the primary live instance", flush=True)
+        else:
+            print(f"[INSTANCE-GUARD] Skipping lock (validate_only={validate_mode}, mode={mode})", flush=True)
+        
         # CRITICAL: Validate Kraken API credentials and connectivity before trading
         print("[STARTUP] Running Kraken health check...", flush=True)
         from kraken_health import kraken_health_check, get_health_summary
@@ -2067,6 +2123,10 @@ if __name__ == "__main__":
                 print("⚠️  Continuing in PAPER mode (validate mode enabled)", flush=True)
         else:
             print("✅ Kraken API health check PASSED - ready for live trading\n", flush=True)
+        
+        # Final mode after all safety checks
+        final_mode = "VALIDATE-ONLY (SAFE)" if os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1" else "LIVE"
+        print(f"[FINAL MODE] {final_mode}", flush=True)
         
         print("[MAIN] entering run_forever()", flush=True)
         run_forever()
