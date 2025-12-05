@@ -5,6 +5,7 @@ import math
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from statistics import mean
 import statistics
@@ -2070,120 +2071,374 @@ def run_forever() -> None:
         except Exception as e:
             print(f"[HEARTBEAT] Warning: {e}")
         
+        # Record successful loop iteration for crash recovery
+        # This resets the backoff/circuit breaker after sustained stability
+        try:
+            if _crash_recovery_instance is not None:
+                _crash_recovery_instance.record_success()
+        except Exception:
+            pass  # Don't let crash recovery issues affect trading
+        
         time.sleep(iv)
 
-if __name__ == "__main__":
-    try:
-        from pathlib import Path
+# Global crash recovery instance - set by run_with_crash_recovery()
+_crash_recovery_instance: Optional['CrashRecovery'] = None
+
+# =============================================================================
+# CRASH RECOVERY SYSTEM
+# =============================================================================
+# Implements exponential backoff restart with circuit breaker pattern to ensure
+# 24/7 uptime. If autopilot crashes, it will automatically restart with
+# increasing delays. Notifies jimmy via Discord when crashes/restarts occur.
+
+class CrashRecovery:
+    """Manages crash recovery with exponential backoff and circuit breaker."""
+    
+    # Configuration
+    MIN_BACKOFF_SECONDS = 10        # Start with 10 second wait
+    MAX_BACKOFF_SECONDS = 300       # Cap at 5 minutes
+    BACKOFF_MULTIPLIER = 2          # Double delay each time
+    CIRCUIT_BREAKER_THRESHOLD = 5   # Max consecutive crashes before circuit opens
+    CIRCUIT_RESET_SECONDS = 3600    # Reset circuit after 1 hour of stability
+    
+    def __init__(self):
+        self.consecutive_crashes = 0
+        self.current_backoff = self.MIN_BACKOFF_SECONDS
+        self.last_crash_time = None
+        self.last_successful_loop_time = None
+        self.total_crashes = 0
+        self.startup_time = datetime.now()
+    
+    def record_crash(self, error: Exception) -> dict:
+        """Record a crash and return recovery info."""
+        self.consecutive_crashes += 1
+        self.total_crashes += 1
+        self.last_crash_time = datetime.now()
         
-        # Ensure data directories exist
-        Path("data").mkdir(exist_ok=True)
-        Path("data/meta").mkdir(exist_ok=True)
-        
-        # =====================================================================
-        # SAFETY CHECK: Instance Guard (Singleton Protection)
-        # =====================================================================
-        # Prevents multiple live ZIN instances from trading simultaneously.
-        # If another active instance is detected, this process will flip to
-        # validate-only mode instead of trading live.
-        
-        from instance_guard import (
-            acquire_instance_lock,
-            should_allow_live_trading,
-            is_dev_environment
+        # Calculate next backoff
+        next_backoff = min(
+            self.current_backoff * self.BACKOFF_MULTIPLIER,
+            self.MAX_BACKOFF_SECONDS
         )
         
-        validate_mode = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
-        mode = get_mode_str()
-        is_live_mode = mode.lower() == "live" and not validate_mode
+        recovery_info = {
+            "consecutive_crashes": self.consecutive_crashes,
+            "total_crashes": self.total_crashes,
+            "current_backoff": self.current_backoff,
+            "next_backoff": next_backoff,
+            "circuit_open": self.is_circuit_open(),
+            "error_type": type(error).__name__,
+            "error_message": str(error)[:500],
+            "uptime_before_crash": str(datetime.now() - self.startup_time)
+        }
         
-        if is_live_mode:
-            # Check 1: Dev environment safety gate
-            allow_live, reason = should_allow_live_trading()
-            print(f"[SAFETY] {reason}", flush=True)
+        # Update backoff for next time
+        self.current_backoff = next_backoff
+        
+        return recovery_info
+    
+    def record_success(self):
+        """Record successful loop iteration - resets backoff after stability."""
+        try:
+            self.last_successful_loop_time = datetime.now()
             
-            if not allow_live:
-                print("=" * 60, flush=True)
-                print("[SAFETY] ⚠️  FORCING VALIDATE-ONLY MODE FOR SAFETY", flush=True)
-                print("[SAFETY] Dev environment live trading is disabled by default.", flush=True)
-                print("[SAFETY] Set ALLOW_DEV_LIVE=1 to enable (not recommended).", flush=True)
-                print("=" * 60, flush=True)
-                os.environ["KRAKEN_VALIDATE_ONLY"] = "1"
-                validate_mode = True
-                is_live_mode = False
+            # Reset backoff and consecutive crashes after stable operation
+            if self.consecutive_crashes > 0:
+                # If we've been stable for a while, reset
+                if self.last_crash_time:
+                    time_since_crash = (datetime.now() - self.last_crash_time).total_seconds()
+                    if time_since_crash > self.CIRCUIT_RESET_SECONDS:
+                        print(f"[RECOVERY] Stable for {time_since_crash/60:.0f} min - resetting backoff", flush=True)
+                        self.consecutive_crashes = 0
+                        self.current_backoff = self.MIN_BACKOFF_SECONDS
+        except Exception as e:
+            pass
+    
+    def is_circuit_open(self) -> bool:
+        """Check if circuit breaker is open (too many consecutive crashes)."""
+        return self.consecutive_crashes >= self.CIRCUIT_BREAKER_THRESHOLD
+    
+    def get_wait_time(self) -> int:
+        """Get current wait time before restart."""
+        return self.current_backoff
+    
+    def get_status(self) -> dict:
+        """Get current recovery status."""
+        return {
+            "consecutive_crashes": self.consecutive_crashes,
+            "total_crashes": self.total_crashes,
+            "current_backoff_seconds": self.current_backoff,
+            "circuit_open": self.is_circuit_open(),
+            "uptime": str(datetime.now() - self.startup_time),
+            "last_crash": self.last_crash_time.isoformat() if self.last_crash_time else None
+        }
+
+
+def send_crash_notification(recovery: CrashRecovery, recovery_info: dict, will_restart: bool):
+    """Send Discord notification about crash and recovery status."""
+    try:
+        from discord_notifications import send_discord_message
+        
+        if recovery_info["circuit_open"]:
+            # Circuit breaker opened - critical alert
+            embed = {
+                "title": "🚨 CRITICAL: Autopilot Circuit Breaker OPEN",
+                "description": f"**{recovery_info['consecutive_crashes']} consecutive crashes** - autopilot has stopped",
+                "color": 0xff0000,  # Red
+                "fields": [
+                    {
+                        "name": "Error Type",
+                        "value": recovery_info["error_type"],
+                        "inline": True
+                    },
+                    {
+                        "name": "Total Crashes",
+                        "value": str(recovery_info["total_crashes"]),
+                        "inline": True
+                    },
+                    {
+                        "name": "Uptime Before Crash",
+                        "value": recovery_info["uptime_before_crash"],
+                        "inline": True
+                    },
+                    {
+                        "name": "Error Message",
+                        "value": f"```{recovery_info['error_message'][:200]}```",
+                        "inline": False
+                    },
+                    {
+                        "name": "Action Required",
+                        "value": "Manual intervention needed. Check logs and republish.",
+                        "inline": False
+                    }
+                ],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            # Normal crash - will restart
+            embed = {
+                "title": "⚠️ Autopilot Crashed - Restarting",
+                "description": f"Crash #{recovery_info['consecutive_crashes']} - restarting in {recovery_info['current_backoff']}s",
+                "color": 0xff9900,  # Orange
+                "fields": [
+                    {
+                        "name": "Error Type",
+                        "value": recovery_info["error_type"],
+                        "inline": True
+                    },
+                    {
+                        "name": "Backoff",
+                        "value": f"{recovery_info['current_backoff']}s → {recovery_info['next_backoff']}s",
+                        "inline": True
+                    },
+                    {
+                        "name": "Uptime",
+                        "value": recovery_info["uptime_before_crash"],
+                        "inline": True
+                    },
+                    {
+                        "name": "Error",
+                        "value": f"```{recovery_info['error_message'][:200]}```",
+                        "inline": False
+                    }
+                ],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        send_discord_message(embed=embed, force=True)
+    except Exception as e:
+        print(f"[CRASH-NOTIFY] Failed to send Discord notification: {e}", flush=True)
+
+
+def send_recovery_success_notification(recovery: CrashRecovery):
+    """Send Discord notification that autopilot recovered successfully."""
+    try:
+        from discord_notifications import send_discord_message
+        
+        embed = {
+            "title": "✅ Autopilot Recovered",
+            "description": "Trading loop restarted successfully",
+            "color": 0x00ff00,  # Green
+            "fields": [
+                {
+                    "name": "Total Crashes Today",
+                    "value": str(recovery.total_crashes),
+                    "inline": True
+                },
+                {
+                    "name": "Current Backoff",
+                    "value": f"{recovery.current_backoff}s",
+                    "inline": True
+                }
+            ],
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        send_discord_message(embed=embed, force=True)
+    except Exception as e:
+        print(f"[RECOVERY-NOTIFY] Failed to send Discord notification: {e}", flush=True)
+
+
+def run_with_crash_recovery():
+    """
+    Main entry point with crash recovery wrapper.
+    Runs the autopilot with automatic restart on crashes.
+    """
+    from pathlib import Path
+    
+    global _crash_recovery_instance
+    
+    recovery = CrashRecovery()
+    _crash_recovery_instance = recovery  # Make available to run_forever for success tracking
+    first_run = True
+    
+    while True:
+        try:
+            # Ensure data directories exist
+            Path("data").mkdir(exist_ok=True)
+            Path("data/meta").mkdir(exist_ok=True)
             
-            # Check 2: Instance guard (only if still live mode)
+            # =====================================================================
+            # SAFETY CHECK: Instance Guard (Singleton Protection)
+            # =====================================================================
+            from instance_guard import (
+                acquire_instance_lock,
+                should_allow_live_trading,
+                is_dev_environment
+            )
+            
+            validate_mode = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
+            mode = get_mode_str()
+            is_live_mode = mode.lower() == "live" and not validate_mode
+            
             if is_live_mode:
-                print("[INSTANCE-GUARD] Checking for other active ZIN instances...", flush=True)
+                # Check 1: Dev environment safety gate
+                allow_live, reason = should_allow_live_trading()
+                print(f"[SAFETY] {reason}", flush=True)
                 
-                if not acquire_instance_lock(mode="live"):
+                if not allow_live:
                     print("=" * 60, flush=True)
-                    print("[INSTANCE-GUARD] ⚠️  ANOTHER ACTIVE INSTANCE DETECTED!", flush=True)
-                    print("[INSTANCE-GUARD] Forcing this process to validate-only mode.", flush=True)
-                    print("[INSTANCE-GUARD] Only ONE live trading instance is allowed.", flush=True)
+                    print("[SAFETY] ⚠️  FORCING VALIDATE-ONLY MODE FOR SAFETY", flush=True)
+                    print("[SAFETY] Dev environment live trading is disabled by default.", flush=True)
+                    print("[SAFETY] Set ALLOW_DEV_LIVE=1 to enable (not recommended).", flush=True)
                     print("=" * 60, flush=True)
                     os.environ["KRAKEN_VALIDATE_ONLY"] = "1"
                     validate_mode = True
                     is_live_mode = False
-                else:
-                    print("[INSTANCE-GUARD] ✅ Lock acquired - this is the primary live instance", flush=True)
-        else:
-            print(f"[INSTANCE-GUARD] Skipping lock (validate_only={validate_mode}, mode={mode})", flush=True)
-        
-        # CRITICAL: Validate Kraken API credentials and connectivity before trading
-        print("[STARTUP] Running Kraken health check...", flush=True)
-        from kraken_health import kraken_health_check, get_health_summary
-        
-        health_results = kraken_health_check()
-        print(get_health_summary(health_results), flush=True)
-        
-        # Fail-fast if credentials or connectivity issues detected
-        if not all(r.ok for r in health_results.values()):
-            print("\n" + "=" * 60, flush=True)
-            print("🔴 CRITICAL: Kraken API health check FAILED", flush=True)
-            print("=" * 60, flush=True)
-            print("Live trading and live data access are DISABLED.", flush=True)
-            print("Fix the issues above before running autopilot in LIVE mode.", flush=True)
-            print("=" * 60 + "\n", flush=True)
-            
-            # Check if we're in validate/paper mode - if so, we can continue
-            validate_mode = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
-            if not validate_mode:
-                print("ERROR: Cannot run autopilot in LIVE mode without valid Kraken credentials.", flush=True)
-                sys.exit(1)
+                
+                # Check 2: Instance guard (only if still live mode)
+                if is_live_mode:
+                    print("[INSTANCE-GUARD] Checking for other active ZIN instances...", flush=True)
+                    
+                    if not acquire_instance_lock(mode="live"):
+                        print("=" * 60, flush=True)
+                        print("[INSTANCE-GUARD] ⚠️  ANOTHER ACTIVE INSTANCE DETECTED!", flush=True)
+                        print("[INSTANCE-GUARD] Forcing this process to validate-only mode.", flush=True)
+                        print("[INSTANCE-GUARD] Only ONE live trading instance is allowed.", flush=True)
+                        print("=" * 60, flush=True)
+                        os.environ["KRAKEN_VALIDATE_ONLY"] = "1"
+                        validate_mode = True
+                        is_live_mode = False
+                    else:
+                        print("[INSTANCE-GUARD] ✅ Lock acquired - this is the primary live instance", flush=True)
             else:
-                print("⚠️  Continuing in PAPER mode (validate mode enabled)", flush=True)
-        else:
-            print("✅ Kraken API health check PASSED - ready for live trading\n", flush=True)
-        
-        # Final mode after all safety checks
-        final_mode = "VALIDATE-ONLY (SAFE)" if os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1" else "LIVE"
-        print(f"[FINAL MODE] {final_mode}", flush=True)
-        
-        # =====================================================================
-        # CRITICAL: Reload exchange manager AFTER safety checks finalize mode
-        # =====================================================================
-        # The ExchangeManager singleton is created at import time, before safety
-        # checks run. Now that KRAKEN_VALIDATE_ONLY is finalized, reload so the
-        # exchange picks up the correct paper/live mode.
-        from exchange_manager import reload_exchange_config, is_paper_mode
-        reload_exchange_config()
-        
-        # Log the actual exchange state for debugging
-        is_deployed = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
-        deploy_env = "reserved_vm" if is_deployed else "dev"
-        exchange_type = "PaperSimulator" if is_paper_mode() else "KrakenLive"
-        print(f"[STARTUP] env={deploy_env} | mode={'validate-only' if os.getenv('KRAKEN_VALIDATE_ONLY', '0') == '1' else 'live'} | exchange={exchange_type}", flush=True)
-        
-        # Sanity check: ensure env var and exchange state match
-        env_validate = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
-        if env_validate != is_paper_mode():
-            print(f"[WARNING] Mode mismatch! KRAKEN_VALIDATE_ONLY={env_validate} but is_paper_mode()={is_paper_mode()}", flush=True)
-        
-        print("[MAIN] entering run_forever()", flush=True)
-        run_forever()
-    except Exception as e:
-        import traceback
-        print("[FATAL]", e, flush=True)
-        traceback.print_exc()
-        sys.exit(1)
+                print(f"[INSTANCE-GUARD] Skipping lock (validate_only={validate_mode}, mode={mode})", flush=True)
+            
+            # CRITICAL: Validate Kraken API credentials and connectivity before trading
+            print("[STARTUP] Running Kraken health check...", flush=True)
+            from kraken_health import kraken_health_check, get_health_summary
+            
+            health_results = kraken_health_check()
+            print(get_health_summary(health_results), flush=True)
+            
+            # Fail-fast if credentials or connectivity issues detected
+            if not all(r.ok for r in health_results.values()):
+                print("\n" + "=" * 60, flush=True)
+                print("🔴 CRITICAL: Kraken API health check FAILED", flush=True)
+                print("=" * 60, flush=True)
+                print("Live trading and live data access are DISABLED.", flush=True)
+                print("Fix the issues above before running autopilot in LIVE mode.", flush=True)
+                print("=" * 60 + "\n", flush=True)
+                
+                # Check if we're in validate/paper mode - if so, we can continue
+                validate_mode = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
+                if not validate_mode:
+                    print("ERROR: Cannot run autopilot in LIVE mode without valid Kraken credentials.", flush=True)
+                    # Don't sys.exit - let crash recovery handle it
+                    raise RuntimeError("Kraken API health check failed - cannot trade in LIVE mode")
+                else:
+                    print("⚠️  Continuing in PAPER mode (validate mode enabled)", flush=True)
+            else:
+                print("✅ Kraken API health check PASSED - ready for live trading\n", flush=True)
+            
+            # Final mode after all safety checks
+            final_mode = "VALIDATE-ONLY (SAFE)" if os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1" else "LIVE"
+            print(f"[FINAL MODE] {final_mode}", flush=True)
+            
+            # =====================================================================
+            # CRITICAL: Reload exchange manager AFTER safety checks finalize mode
+            # =====================================================================
+            from exchange_manager import reload_exchange_config, is_paper_mode
+            reload_exchange_config()
+            
+            # Log the actual exchange state for debugging
+            is_deployed = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
+            deploy_env = "reserved_vm" if is_deployed else "dev"
+            exchange_type = "PaperSimulator" if is_paper_mode() else "KrakenLive"
+            print(f"[STARTUP] env={deploy_env} | mode={'validate-only' if os.getenv('KRAKEN_VALIDATE_ONLY', '0') == '1' else 'live'} | exchange={exchange_type}", flush=True)
+            
+            # Sanity check: ensure env var and exchange state match
+            env_validate = os.getenv("KRAKEN_VALIDATE_ONLY", "0") == "1"
+            if env_validate != is_paper_mode():
+                print(f"[WARNING] Mode mismatch! KRAKEN_VALIDATE_ONLY={env_validate} but is_paper_mode()={is_paper_mode()}", flush=True)
+            
+            # Send recovery notification if this is a restart after crash
+            if not first_run:
+                send_recovery_success_notification(recovery)
+            first_run = False
+            
+            print("[MAIN] entering run_forever()", flush=True)
+            run_forever()
+            
+        except KeyboardInterrupt:
+            print("\n[SHUTDOWN] KeyboardInterrupt received - shutting down gracefully", flush=True)
+            break
+            
+        except SystemExit as e:
+            print(f"[SHUTDOWN] SystemExit({e.code}) - exiting", flush=True)
+            raise
+            
+        except Exception as e:
+            import traceback
+            
+            # Record the crash
+            recovery_info = recovery.record_crash(e)
+            
+            print("\n" + "=" * 70, flush=True)
+            print(f"[CRASH] Autopilot crashed! (#{recovery_info['consecutive_crashes']})", flush=True)
+            print(f"[CRASH] Error: {recovery_info['error_type']}: {recovery_info['error_message']}", flush=True)
+            print("=" * 70, flush=True)
+            traceback.print_exc()
+            print("=" * 70 + "\n", flush=True)
+            
+            # Check circuit breaker
+            if recovery.is_circuit_open():
+                print(f"[CIRCUIT-BREAKER] OPEN - {recovery_info['consecutive_crashes']} consecutive crashes", flush=True)
+                print("[CIRCUIT-BREAKER] Autopilot will NOT restart automatically", flush=True)
+                print("[CIRCUIT-BREAKER] Manual intervention required - check logs and republish", flush=True)
+                send_crash_notification(recovery, recovery_info, will_restart=False)
+                sys.exit(1)
+            
+            # Send crash notification
+            send_crash_notification(recovery, recovery_info, will_restart=True)
+            
+            # Wait with backoff before restart
+            wait_time = recovery.get_wait_time()
+            print(f"[RECOVERY] Waiting {wait_time}s before restart (backoff: {recovery_info['current_backoff']}s → {recovery_info['next_backoff']}s)", flush=True)
+            time.sleep(wait_time)
+            
+            print("[RECOVERY] Attempting restart...", flush=True)
+
+
+if __name__ == "__main__":
+    run_with_crash_recovery()
