@@ -302,6 +302,8 @@ def add_position(
         f"Qty={quantity:.6f}"
     )
     
+    _sync_position_to_db(position)
+    
     # VALIDATION: Warn if stop is too tight (less than expected ATR multiple)
     if atr > 0:
         actual_sl_distance = abs(entry_price - stop_loss_price)
@@ -353,6 +355,7 @@ def remove_position(symbol: str) -> bool:
                 # Save while still holding lock
                 _save_positions_locked(positions, lock_handle)
                 logger.info(f"[POSITION-TRACKER] ❌ Removed position: {symbol}")
+                _remove_position_from_db(symbol)
                 return True
             else:
                 logger.warning(f"[POSITION-TRACKER] Position not found for removal: {symbol}")
@@ -574,3 +577,191 @@ def clear_all_positions():
     if POSITIONS_FILE.exists():
         POSITIONS_FILE.unlink()
         logger.warning("[POSITION-TRACKER] ⚠️ Cleared all positions")
+    
+    _clear_positions_from_db()
+
+
+def _get_db_connection():
+    """Get PostgreSQL connection for position persistence."""
+    try:
+        import psycopg2
+        import os
+        
+        database_url = os.getenv("DATABASE_URL")
+        if not database_url:
+            return None
+        
+        return psycopg2.connect(database_url)
+    except Exception as e:
+        logger.debug(f"[POSITION-TRACKER] DB not available: {e}")
+        return None
+
+
+def _sync_position_to_db(position: Position):
+    """Sync a single position to PostgreSQL for persistence across republishes."""
+    conn = _get_db_connection()
+    if not conn:
+        return
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO positions (symbol, side, entry_price, size, stop_loss, take_profit, atr_at_entry, opened_at, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), %s)
+            ON CONFLICT (symbol) DO UPDATE SET
+                side = EXCLUDED.side,
+                entry_price = EXCLUDED.entry_price,
+                size = EXCLUDED.size,
+                stop_loss = EXCLUDED.stop_loss,
+                take_profit = EXCLUDED.take_profit,
+                atr_at_entry = EXCLUDED.atr_at_entry,
+                last_updated = NOW(),
+                metadata = EXCLUDED.metadata
+        """, (
+            position.symbol,
+            "short" if position.is_short else "long",
+            position.entry_price,
+            position.quantity,
+            position.stop_loss_price,
+            position.take_profit_price,
+            position.atr,
+            position.entry_timestamp,
+            json.dumps({"source": position.source})
+        ))
+        conn.commit()
+        logger.debug(f"[POSITION-TRACKER] Synced {position.symbol} to database")
+    except Exception as e:
+        logger.warning(f"[POSITION-TRACKER] Failed to sync position to DB: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def _remove_position_from_db(symbol: str):
+    """Remove a position from PostgreSQL."""
+    conn = _get_db_connection()
+    if not conn:
+        return
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM positions WHERE symbol = %s", (symbol,))
+        conn.commit()
+        logger.debug(f"[POSITION-TRACKER] Removed {symbol} from database")
+    except Exception as e:
+        logger.warning(f"[POSITION-TRACKER] Failed to remove position from DB: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def _clear_positions_from_db():
+    """Clear all positions from PostgreSQL."""
+    conn = _get_db_connection()
+    if not conn:
+        return
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM positions")
+        conn.commit()
+        logger.debug("[POSITION-TRACKER] Cleared all positions from database")
+    except Exception as e:
+        logger.warning(f"[POSITION-TRACKER] Failed to clear positions from DB: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def restore_positions_from_db() -> int:
+    """
+    Restore positions from PostgreSQL database.
+    
+    Called on VM startup to recover positions that were tracked before republish.
+    Only restores if local file is empty/missing.
+    
+    Returns:
+        Number of positions restored
+    """
+    if POSITIONS_FILE.exists():
+        try:
+            with open(POSITIONS_FILE, 'r') as f:
+                data = json.load(f)
+            if data:
+                logger.info(f"[POSITION-TRACKER] Local file has {len(data)} positions, skipping DB restore")
+                return 0
+        except Exception:
+            pass
+    
+    conn = _get_db_connection()
+    if not conn:
+        logger.debug("[POSITION-TRACKER] No DB connection, cannot restore positions")
+        return 0
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT symbol, side, entry_price, size, stop_loss, take_profit, 
+                   atr_at_entry, EXTRACT(EPOCH FROM opened_at) as opened_at, metadata
+            FROM positions
+        """)
+        
+        rows = cursor.fetchall()
+        if not rows:
+            logger.info("[POSITION-TRACKER] No positions in database to restore")
+            return 0
+        
+        positions = {}
+        for row in rows:
+            symbol, side, entry_price, size, stop_loss, take_profit, atr, opened_at, metadata = row
+            
+            meta = {}
+            if metadata:
+                try:
+                    meta = json.loads(metadata) if isinstance(metadata, str) else metadata
+                except:
+                    pass
+            
+            position = Position(
+                symbol=symbol,
+                entry_price=float(entry_price),
+                quantity=float(size),
+                stop_loss_price=float(stop_loss),
+                take_profit_price=float(take_profit),
+                atr=float(atr) if atr else 0.0,
+                entry_timestamp=float(opened_at) if opened_at else time.time(),
+                source=meta.get("source", "restored"),
+                is_short=(side == "short")
+            )
+            positions[symbol] = position
+        
+        _save_positions(positions)
+        logger.info(f"[POSITION-TRACKER] ✅ Restored {len(positions)} position(s) from database")
+        
+        for symbol, pos in positions.items():
+            logger.info(
+                f"[POSITION-TRACKER] Restored: {symbol} | Entry=${pos.entry_price:.4f}, "
+                f"SL=${pos.stop_loss_price:.4f}, TP=${pos.take_profit_price:.4f}"
+            )
+        
+        return len(positions)
+    
+    except Exception as e:
+        logger.error(f"[POSITION-TRACKER] Failed to restore positions from DB: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def sync_all_positions_to_db():
+    """Sync all current positions to database for backup."""
+    positions = get_all_positions()
+    
+    if not positions:
+        logger.debug("[POSITION-TRACKER] No positions to sync")
+        return
+    
+    for symbol, position in positions.items():
+        _sync_position_to_db(position)
+    
+    logger.info(f"[POSITION-TRACKER] Synced {len(positions)} position(s) to database")

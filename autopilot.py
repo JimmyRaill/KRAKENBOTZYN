@@ -1958,6 +1958,14 @@ def run_forever() -> None:
         })
         return
 
+    from position_tracker import restore_positions_from_db
+    try:
+        restored = restore_positions_from_db()
+        if restored > 0:
+            print(f"[AUTOPILOT] ✅ Restored {restored} position(s) from database", flush=True)
+    except Exception as e:
+        print(f"[AUTOPILOT] Position restore failed (non-fatal): {e}", flush=True)
+
     ex = mk_ex()
     
     # Send Discord startup test ping if enabled

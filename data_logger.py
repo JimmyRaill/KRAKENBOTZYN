@@ -2,14 +2,14 @@
 Data Logger Module - Centralized structured logging for Zin Trading Bot
 
 This module provides a centralized, append-only logging system for:
-- Trade outcomes (JSONL per day)
-- Decision events (JSONL per day) 
-- Daily summaries (JSON per day)
-- Version/config history (JSONL)
-- Anomaly events (JSONL)
+- Trade outcomes (PostgreSQL + JSONL fallback)
+- Decision events (PostgreSQL + JSONL fallback) 
+- Daily summaries (PostgreSQL + JSON fallback)
+- Version/config history (PostgreSQL + JSONL fallback)
+- Anomaly events (PostgreSQL + JSONL fallback)
 
-All logs are written to the /data directory in machine-readable formats.
-Logging failures never crash the trading bot - all writes are wrapped in try/except.
+Primary storage is PostgreSQL for persistence across VM republishes.
+File logging is kept as a fallback and for local development.
 """
 
 import json
@@ -17,7 +17,7 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from pathlib import Path
-
+from contextlib import contextmanager
 
 DATA_DIR = Path("data")
 TRADES_DIR = DATA_DIR / "trades"
@@ -26,6 +26,82 @@ DAILY_DIR = DATA_DIR / "daily"
 META_DIR = DATA_DIR / "meta"
 ANOMALIES_DIR = DATA_DIR / "anomalies"
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
+
+_db_pool = None
+_db_available = None
+
+
+def _get_db_connection():
+    """Get a database connection from the pool."""
+    global _db_pool, _db_available
+    
+    if _db_available is False:
+        return None
+    
+    if _db_pool is None:
+        try:
+            import psycopg2
+            from psycopg2 import pool
+            
+            database_url = os.getenv("DATABASE_URL")
+            if not database_url:
+                print("[DATA-LOGGER] No DATABASE_URL found, using file-only mode")
+                _db_available = False
+                return None
+            
+            _db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, database_url)
+            _db_available = True
+            print("[DATA-LOGGER] PostgreSQL connection pool initialized")
+        except Exception as e:
+            print(f"[DATA-LOGGER] PostgreSQL unavailable, using file-only mode: {e}")
+            _db_available = False
+            return None
+    
+    try:
+        return _db_pool.getconn()
+    except Exception as e:
+        print(f"[DATA-LOGGER] Failed to get DB connection: {e}")
+        return None
+
+
+def _return_db_connection(conn):
+    """Return a connection to the pool."""
+    global _db_pool
+    if _db_pool and conn:
+        try:
+            _db_pool.putconn(conn)
+        except Exception:
+            pass
+
+
+@contextmanager
+def _db_cursor():
+    """Context manager for database operations.
+    
+    Yields a cursor or None if DB unavailable.
+    Caller must handle None case by falling back to file storage.
+    On DB error during operations, caller's block will raise - they should catch and fallback.
+    """
+    conn = _get_db_connection()
+    if conn is None:
+        yield None
+        return
+    
+    cursor = None
+    try:
+        cursor = conn.cursor()
+        yield cursor
+        conn.commit()
+    except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        print(f"[DATA-LOGGER] DB error: {e}")
+        raise
+    finally:
+        _return_db_connection(conn)
 
 
 def _ensure_directories():
@@ -56,6 +132,16 @@ def _safe_json_dumps(record: Dict[str, Any]) -> str:
     return json.dumps(record, default=default_serializer, ensure_ascii=False)
 
 
+def _to_json(data: Any) -> Optional[str]:
+    """Convert data to JSON string for database storage."""
+    if data is None:
+        return None
+    try:
+        return _safe_json_dumps(data)
+    except Exception:
+        return None
+
+
 def _append_jsonl(file_path: Path, record: Dict[str, Any]) -> bool:
     """Append a single JSON record to a JSONL file. Returns True on success."""
     try:
@@ -84,8 +170,9 @@ class DataLogger:
     """
     Centralized data logger for Zin trading bot.
     
+    Writes to PostgreSQL (primary) with file fallback.
     All methods are designed to be safe - they will never crash the bot
-    even if file I/O fails.
+    even if database or file I/O fails.
     """
     
     def __init__(self, zin_version: str = "ZIN_V1"):
@@ -95,18 +182,9 @@ class DataLogger:
     
     def log_trade(self, trade_record: Dict[str, Any]) -> bool:
         """
-        Log a completed trade to the daily trades JSONL file.
+        Log a completed trade to PostgreSQL and daily trades JSONL file.
         
-        Expected fields (partial records are OK):
-        - timestamp_open, timestamp_close
-        - zin_version, mode (live/paper)
-        - symbol, direction (long/short)
-        - entry_price, exit_price, size
-        - pnl_abs, pnl_pct
-        - max_favorable_excursion_pct, max_adverse_excursion_pct
-        - reason_code, regime (dict), decision_id
-        
-        Returns True on success, False on failure.
+        Returns True on success (either DB or file), False on total failure.
         """
         record = {
             "logged_at": _get_timestamp(),
@@ -115,28 +193,61 @@ class DataLogger:
         }
         
         date_str = _get_date_str()
-        file_path = TRADES_DIR / f"{date_str}_trades.jsonl"
+        db_success = False
         
-        success = _append_jsonl(file_path, record)
-        if success:
+        try:
+            with _db_cursor() as cursor:
+                if cursor:
+                    cursor.execute("""
+                        INSERT INTO trades (
+                            trade_date, zin_version, mode, symbol, direction,
+                            entry_price, exit_price, size, pnl_abs, pnl_pct,
+                            max_favorable_excursion_pct, max_adverse_excursion_pct,
+                            reason_code, regime, decision_id, timestamp_open,
+                            timestamp_close, metadata
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        )
+                    """, (
+                        date_str,
+                        record.get("zin_version"),
+                        record.get("mode", "live"),
+                        record.get("symbol"),
+                        record.get("direction"),
+                        record.get("entry_price"),
+                        record.get("exit_price"),
+                        record.get("size"),
+                        record.get("pnl_abs"),
+                        record.get("pnl_pct"),
+                        record.get("max_favorable_excursion_pct"),
+                        record.get("max_adverse_excursion_pct"),
+                        record.get("reason_code"),
+                        _to_json(record.get("regime")),
+                        record.get("decision_id"),
+                        record.get("timestamp_open"),
+                        record.get("timestamp_close"),
+                        _to_json(record)
+                    ))
+            db_success = cursor is not None
+            if db_success:
+                print(f"[DATA-LOGGER] Trade logged to DB: {trade_record.get('symbol', 'N/A')}")
+        except Exception as e:
+            db_success = False
+            print(f"[DATA-LOGGER] DB trade insert failed: {e}")
+        
+        file_path = TRADES_DIR / f"{date_str}_trades.jsonl"
+        file_success = _append_jsonl(file_path, record)
+        
+        if db_success or file_success:
             print(f"[DATA-LOGGER] Trade logged: {trade_record.get('symbol', 'N/A')} {trade_record.get('direction', 'N/A')}")
-        return success
+        
+        return db_success or file_success
     
     def log_decision(self, decision_record: Dict[str, Any]) -> bool:
         """
-        Log a trading decision (evaluation) to the daily decisions JSONL file.
+        Log a trading decision to PostgreSQL and daily decisions JSONL file.
         
-        Expected fields:
-        - timestamp, zin_version, mode
-        - symbol, timeframe
-        - decision (NO_TRADE, ENTER_LONG, EXIT_LONG, etc.)
-        - indicators (dict of indicator values used)
-        - regime (dict with trend, volatility)
-        - risk_context (dict with equity, active_risk_pct, etc.)
-        - filters (dict of boolean filter states)
-        - reason_code, decision_id
-        
-        Returns True on success, False on failure.
+        Returns True on success (either DB or file), False on total failure.
         """
         record = {
             "logged_at": _get_timestamp(),
@@ -145,23 +256,50 @@ class DataLogger:
         }
         
         date_str = _get_date_str()
-        file_path = DECISIONS_DIR / f"{date_str}_decisions.jsonl"
+        db_success = False
         
-        return _append_jsonl(file_path, record)
+        try:
+            with _db_cursor() as cursor:
+                if cursor:
+                    cursor.execute("""
+                        INSERT INTO decisions (
+                            decision_date, zin_version, mode, symbol, timeframe,
+                            decision, indicators, regime, risk_context, filters,
+                            reason_code, decision_id, confidence, metadata
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        )
+                    """, (
+                        date_str,
+                        record.get("zin_version"),
+                        record.get("mode", "live"),
+                        record.get("symbol"),
+                        record.get("timeframe"),
+                        record.get("decision"),
+                        _to_json(record.get("indicators")),
+                        _to_json(record.get("regime")),
+                        _to_json(record.get("risk_context")),
+                        _to_json(record.get("filters")),
+                        record.get("reason_code"),
+                        record.get("decision_id"),
+                        record.get("confidence"),
+                        _to_json(record)
+                    ))
+            db_success = cursor is not None
+        except Exception as e:
+            db_success = False
+            print(f"[DATA-LOGGER] DB decision insert failed: {e}")
+        
+        file_path = DECISIONS_DIR / f"{date_str}_decisions.jsonl"
+        file_success = _append_jsonl(file_path, record)
+        
+        return db_success or file_success
     
     def log_daily_summary(self, summary_record: Dict[str, Any]) -> bool:
         """
-        Log a daily summary to a per-day JSON file.
+        Log a daily summary to PostgreSQL and per-day JSON file.
         
-        Expected fields:
-        - date, zin_version, mode
-        - total_trades, win_rate
-        - total_pnl_abs, total_pnl_pct
-        - max_drawdown_pct
-        - biggest_win_pct, biggest_loss_pct
-        - subjective_tag (optional), notes (optional)
-        
-        Returns True on success, False on failure.
+        Returns True on success (either DB or file), False on total failure.
         """
         record = {
             "logged_at": _get_timestamp(),
@@ -170,23 +308,67 @@ class DataLogger:
         }
         
         date_str = summary_record.get("date", _get_date_str())
-        file_path = DAILY_DIR / f"{date_str}_summary.json"
+        db_success = False
         
-        success = _write_json(file_path, record)
-        if success:
+        try:
+            with _db_cursor() as cursor:
+                if cursor:
+                    cursor.execute("""
+                        INSERT INTO daily_summaries (
+                            summary_date, zin_version, mode, total_trades,
+                            win_rate, total_pnl_abs, total_pnl_pct,
+                            max_drawdown_pct, biggest_win_pct, biggest_loss_pct,
+                            subjective_tag, notes
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        )
+                        ON CONFLICT (summary_date) DO UPDATE SET
+                            zin_version = EXCLUDED.zin_version,
+                            mode = EXCLUDED.mode,
+                            total_trades = EXCLUDED.total_trades,
+                            win_rate = EXCLUDED.win_rate,
+                            total_pnl_abs = EXCLUDED.total_pnl_abs,
+                            total_pnl_pct = EXCLUDED.total_pnl_pct,
+                            max_drawdown_pct = EXCLUDED.max_drawdown_pct,
+                            biggest_win_pct = EXCLUDED.biggest_win_pct,
+                            biggest_loss_pct = EXCLUDED.biggest_loss_pct,
+                            subjective_tag = EXCLUDED.subjective_tag,
+                            notes = EXCLUDED.notes,
+                            logged_at = NOW()
+                    """, (
+                        date_str,
+                        record.get("zin_version"),
+                        record.get("mode", "live"),
+                        record.get("total_trades", 0),
+                        record.get("win_rate"),
+                        record.get("total_pnl_abs"),
+                        record.get("total_pnl_pct"),
+                        record.get("max_drawdown_pct"),
+                        record.get("biggest_win_pct"),
+                        record.get("biggest_loss_pct"),
+                        record.get("subjective_tag"),
+                        record.get("notes")
+                    ))
+            db_success = cursor is not None
+            if db_success:
+                print(f"[DATA-LOGGER] Daily summary logged to DB for {date_str}")
+        except Exception as e:
+            db_success = False
+            print(f"[DATA-LOGGER] DB daily summary insert failed: {e}")
+        
+        file_path = DAILY_DIR / f"{date_str}_summary.json"
+        file_success = _write_json(file_path, record)
+        
+        if db_success or file_success:
             print(f"[DATA-LOGGER] Daily summary logged for {date_str}")
-        return success
+        
+        return db_success or file_success
     
     def log_version(self, version_record: Dict[str, Any]) -> bool:
         """
-        Log a version/config snapshot to the versions JSONL file.
+        Log a version/config snapshot to PostgreSQL and versions JSONL file.
         
-        Expected fields:
-        - timestamp, zin_version
-        - config (dict of key config values)
-        - comment (short description)
-        
-        Returns True on success, False on failure.
+        Returns True on success (either DB or file), False on total failure.
         """
         record = {
             "logged_at": _get_timestamp(),
@@ -194,24 +376,39 @@ class DataLogger:
             **version_record
         }
         
-        file_path = META_DIR / "versions.jsonl"
+        db_success = False
         
-        success = _append_jsonl(file_path, record)
-        if success:
+        try:
+            with _db_cursor() as cursor:
+                if cursor:
+                    cursor.execute("""
+                        INSERT INTO versions (zin_version, config, comment)
+                        VALUES (%s, %s, %s)
+                    """, (
+                        record.get("zin_version"),
+                        _to_json(record.get("config")),
+                        record.get("comment")
+                    ))
+            db_success = cursor is not None
+            if db_success:
+                print(f"[DATA-LOGGER] Version logged to DB: {self.zin_version}")
+        except Exception as e:
+            db_success = False
+            print(f"[DATA-LOGGER] DB version insert failed: {e}")
+        
+        file_path = META_DIR / "versions.jsonl"
+        file_success = _append_jsonl(file_path, record)
+        
+        if db_success or file_success:
             print(f"[DATA-LOGGER] Version logged: {self.zin_version}")
-        return success
+        
+        return db_success or file_success
     
     def log_anomaly(self, anomaly_record: Dict[str, Any]) -> bool:
         """
-        Log an anomaly/unexpected event to the anomalies JSONL file.
+        Log an anomaly/unexpected event to PostgreSQL and anomalies JSONL file.
         
-        Expected fields:
-        - timestamp, zin_version
-        - type (UNEXPECTED_BEHAVIOR, API_ERROR, POSITION_MISMATCH, etc.)
-        - description (human-readable message)
-        - context (dict with extras like symbol, regime, etc.)
-        
-        Returns True on success, False on failure.
+        Returns True on success (either DB or file), False on total failure.
         """
         record = {
             "logged_at": _get_timestamp(),
@@ -219,19 +416,40 @@ class DataLogger:
             **anomaly_record
         }
         
-        file_path = ANOMALIES_DIR / "anomalies.jsonl"
+        db_success = False
         
-        success = _append_jsonl(file_path, record)
-        if success:
+        try:
+            with _db_cursor() as cursor:
+                if cursor:
+                    context = anomaly_record.get("context", {})
+                    cursor.execute("""
+                        INSERT INTO anomalies (
+                            zin_version, anomaly_type, description, context, symbol, severity
+                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (
+                        record.get("zin_version"),
+                        anomaly_record.get("type", "UNKNOWN"),
+                        anomaly_record.get("description"),
+                        _to_json(context),
+                        context.get("symbol") if isinstance(context, dict) else None,
+                        anomaly_record.get("severity", "warning")
+                    ))
+            db_success = cursor is not None
+        except Exception as e:
+            db_success = False
+            print(f"[DATA-LOGGER] DB anomaly insert failed: {e}")
+        
+        file_path = ANOMALIES_DIR / "anomalies.jsonl"
+        file_success = _append_jsonl(file_path, record)
+        
+        if db_success or file_success:
             print(f"[DATA-LOGGER] Anomaly logged: {anomaly_record.get('type', 'UNKNOWN')} - {anomaly_record.get('description', 'N/A')[:50]}")
-        return success
+        
+        return db_success or file_success
     
     def log_snapshot(self, snapshot_record: Dict[str, Any]) -> Optional[str]:
         """
-        Log a state snapshot to an individual JSON file.
-        
-        Snapshots are saved as individual JSON files with ISO timestamp filenames:
-        - data/snapshots/YYYYMMDDTHH-MM-SSZ_snapshot.json
+        Log a state snapshot to PostgreSQL and individual JSON file.
         
         Returns filepath on success, None on failure.
         """
@@ -246,11 +464,43 @@ class DataLogger:
             
             logged_at = record.get("logged_at", _get_timestamp())
             dt = datetime.fromisoformat(logged_at.replace('Z', '+00:00'))
-            filename = dt.strftime("%Y%m%dT%H-%M-%SZ") + "_snapshot.json"
+            snapshot_id = dt.strftime("%Y%m%dT%H-%M-%SZ")
+            filename = snapshot_id + "_snapshot.json"
+            
+            try:
+                with _db_cursor() as cursor:
+                    if cursor:
+                        cursor.execute("""
+                            INSERT INTO snapshots (
+                                snapshot_id, zin_version, account_status, risk_config,
+                                open_positions, performance_summary, system_health, metadata
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (snapshot_id) DO UPDATE SET
+                                zin_version = EXCLUDED.zin_version,
+                                account_status = EXCLUDED.account_status,
+                                risk_config = EXCLUDED.risk_config,
+                                open_positions = EXCLUDED.open_positions,
+                                performance_summary = EXCLUDED.performance_summary,
+                                system_health = EXCLUDED.system_health,
+                                metadata = EXCLUDED.metadata,
+                                logged_at = NOW()
+                        """, (
+                            snapshot_id,
+                            record.get("zin_version"),
+                            _to_json(snapshot_record.get("account_status")),
+                            _to_json(snapshot_record.get("risk_config")),
+                            _to_json(snapshot_record.get("open_positions")),
+                            _to_json(snapshot_record.get("performance_summary")),
+                            _to_json(snapshot_record.get("system_health")),
+                            _to_json(record)
+                        ))
+                        print(f"[DATA-LOGGER] Snapshot logged to DB: {snapshot_id}")
+            except Exception as e:
+                print(f"[DATA-LOGGER] DB snapshot insert failed: {e}")
             
             file_path = SNAPSHOTS_DIR / filename
-            
             success = _write_json(file_path, record)
+            
             if success:
                 print(f"[DATA-LOGGER] Snapshot logged: {file_path}")
                 return str(file_path)
@@ -308,14 +558,6 @@ def log_anomaly_event(
 ) -> bool:
     """
     Convenience function to log an anomaly event with a simplified interface.
-    
-    Args:
-        anomaly_type: Type of anomaly (e.g., "API_ERROR", "POSITION_MISMATCH")
-        description: Human-readable description
-        symbol: Optional symbol associated with the anomaly
-        **context: Additional context key-value pairs
-    
-    Returns True on success, False on failure.
     """
     record = {
         "timestamp": _get_timestamp(),
@@ -337,16 +579,26 @@ def generate_decision_id(symbol: str, timeframe: str = "5m") -> str:
 
 def read_trades_for_date(date_str: str) -> list:
     """
-    Read all trades for a given date.
-    
-    Args:
-        date_str: Date in YYYY-MM-DD format
-    
-    Returns list of trade records.
+    Read all trades for a given date from PostgreSQL (primary) or file (fallback).
     """
-    file_path = TRADES_DIR / f"{date_str}_trades.jsonl"
     trades = []
     
+    try:
+        with _db_cursor() as cursor:
+            if cursor:
+                cursor.execute("""
+                    SELECT metadata FROM trades WHERE trade_date = %s ORDER BY logged_at
+                """, (date_str,))
+                rows = cursor.fetchall()
+                for row in rows:
+                    if row[0]:
+                        trades.append(json.loads(row[0]) if isinstance(row[0], str) else row[0])
+                if trades:
+                    return trades
+    except Exception as e:
+        print(f"[DATA-LOGGER] DB read failed, falling back to file: {e}")
+    
+    file_path = TRADES_DIR / f"{date_str}_trades.jsonl"
     try:
         if file_path.exists():
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -363,11 +615,6 @@ def read_trades_for_date(date_str: str) -> list:
 def compute_daily_stats(date_str: str = None) -> Dict[str, Any]:
     """
     Compute daily statistics from trade logs.
-    
-    Args:
-        date_str: Date in YYYY-MM-DD format, defaults to today
-    
-    Returns dict with computed stats.
     """
     if date_str is None:
         date_str = _get_date_str()
