@@ -128,8 +128,9 @@ def send_notification(message: str, force: bool = True) -> bool:
 
 def send_startup_test_ping() -> bool:
     """
-    Send a test message when bot starts up to verify Discord integration.
-    Returns True if test successful.
+    Send a comprehensive startup message when bot starts up.
+    Includes mode, database status, environment, and version.
+    Returns True if sent successfully.
     """
     config = get_notification_config()
     
@@ -140,26 +141,64 @@ def send_startup_test_ping() -> bool:
     from exchange_manager import get_mode_str, is_paper_mode
     
     mode = get_mode_str().upper()
-    mode_emoji = "🔴" if mode == "LIVE" else "📝"
+    validate_only = os.environ.get("KRAKEN_VALIDATE_ONLY", "0") == "1"
+    is_deployed = os.environ.get("REPLIT_DEPLOYMENT", "") == "1"
+    
+    if validate_only:
+        mode_emoji = "📝"
+        mode_display = "PAPER (Validate-Only)"
+        color = 0xffa500
+    elif mode == "LIVE":
+        mode_emoji = "🔴"
+        mode_display = "LIVE TRADING"
+        color = 0xff0000
+    else:
+        mode_emoji = "📝"
+        mode_display = "PAPER"
+        color = 0x00ff00
+    
+    db_status = "❌ Not configured"
+    db_url = os.environ.get("DATABASE_URL", "")
+    if db_url:
+        try:
+            import psycopg2
+            conn = psycopg2.connect(db_url)
+            conn.close()
+            db_status = "✅ Connected"
+        except Exception as e:
+            db_status = f"⚠️ Error: {str(e)[:30]}"
+    
+    env_type = "Reserved VM" if is_deployed else "Dev Workspace"
+    
+    try:
+        from autopilot import get_zin_version
+        version = get_zin_version()
+    except:
+        version = "unknown"
     
     embed = {
-        "title": f"{mode_emoji} Zyn Trading Bot Started",
-        "description": f"Trading mode: **{mode}**",
-        "color": 0x00ff00,
+        "title": f"{mode_emoji} Zin Autopilot Started",
+        "description": f"**Mode: {mode_display}**",
+        "color": color,
         "fields": [
             {
-                "name": "Status",
-                "value": "✅ Online and ready",
+                "name": "Environment",
+                "value": env_type,
                 "inline": True
             },
             {
-                "name": "Time",
-                "value": datetime.now().strftime('%I:%M %p UTC'),
+                "name": "Database",
+                "value": db_status,
+                "inline": True
+            },
+            {
+                "name": "Version",
+                "value": version,
                 "inline": True
             }
         ],
         "footer": {
-            "text": "Discord notifications are working"
+            "text": f"Started at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
         },
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -167,9 +206,9 @@ def send_startup_test_ping() -> bool:
     result = send_discord_message(embed=embed, force=True)
     
     if result:
-        print("[DISCORD-TEST] ✅ Startup test ping sent successfully!")
+        print("[DISCORD-TEST] ✅ Startup notification sent successfully!")
     else:
-        print("[DISCORD-TEST] ❌ Failed to send startup test ping")
+        print("[DISCORD-TEST] ❌ Failed to send startup notification")
     
     return result
 
