@@ -387,11 +387,29 @@ def notify_daily_summary():
     change_usd = 0
     
     try:
+        from account_state import get_portfolio_snapshot
+        from exchange_manager import get_mode_str
+        
+        mode = get_mode_str()
+        snapshot = get_portfolio_snapshot()
+        equity = snapshot.get("total_equity_usd", 0)
+        
         state_path = Path(__file__).parent / "state.json"
         if state_path.exists():
             state = json.loads(state_path.read_text())
-            equity = state.get("equity_now_usd", 0)
-            change_usd = state.get("equity_change_usd", 0)
+            state_equity = state.get("equity_now_usd", 0)
+            state_change = state.get("equity_change_usd", 0)
+            
+            if mode == "live":
+                if state_equity > 0 and abs(state_equity - equity) / max(state_equity, equity) < 0.5:
+                    change_usd = state_change
+                else:
+                    change_usd = 0
+                    print(f"[DAILY-SUMMARY] Stale state.json detected (state: ${state_equity:.2f} vs live: ${equity:.2f}), P&L reset to 0")
+            else:
+                change_usd = state_change
+        
+        print(f"[DAILY-SUMMARY] Mode: {mode}, Fresh equity: ${equity:.2f}, P&L: ${change_usd:.2f}")
         
         try:
             from data_logger import log_daily_summary, compute_daily_stats
@@ -466,12 +484,10 @@ def notify_weekly_summary():
             return
     
     try:
-        state_path = Path(__file__).parent / "state.json"
-        if not state_path.exists():
-            return
+        from account_state import get_portfolio_snapshot
         
-        state = json.loads(state_path.read_text())
-        equity = state.get("equity_now_usd", 0)
+        snapshot = get_portfolio_snapshot()
+        equity = snapshot.get("total_equity_usd", 0)
         
         embed = {
             "title": "🚀 Weekly Summary",
