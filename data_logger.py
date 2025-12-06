@@ -19,6 +19,23 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 from contextlib import contextmanager
 
+_discord_db_error_func = None
+
+def _send_db_error_discord(operation: str, error: str, context: str = ""):
+    """Send database error to Discord (lazy import to avoid circular dependency)."""
+    global _discord_db_error_func
+    if _discord_db_error_func is None:
+        try:
+            from discord_notifications import send_database_error_notification
+            _discord_db_error_func = send_database_error_notification
+        except ImportError:
+            _discord_db_error_func = lambda *args, **kwargs: False
+    
+    try:
+        _discord_db_error_func(operation, error, context)
+    except Exception:
+        pass
+
 DATA_DIR = Path("data")
 TRADES_DIR = DATA_DIR / "trades"
 DECISIONS_DIR = DATA_DIR / "decisions"
@@ -234,6 +251,7 @@ class DataLogger:
         except Exception as e:
             db_success = False
             print(f"[DATA-LOGGER] DB trade insert failed: {e}")
+            _send_db_error_discord("trade_log", str(e), trade_record.get('symbol', ''))
         
         file_path = TRADES_DIR / f"{date_str}_trades.jsonl"
         file_success = _append_jsonl(file_path, record)
@@ -289,6 +307,8 @@ class DataLogger:
         except Exception as e:
             db_success = False
             print(f"[DATA-LOGGER] DB decision insert failed: {e}")
+            if decision_record.get("decision") in ["BUY", "SELL"]:
+                _send_db_error_discord("decision_log", str(e), decision_record.get('symbol', ''))
         
         file_path = DECISIONS_DIR / f"{date_str}_decisions.jsonl"
         file_success = _append_jsonl(file_path, record)

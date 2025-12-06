@@ -501,3 +501,59 @@ def check_summaries():
     """Check if it's time to send daily/weekly summaries."""
     notify_daily_summary()
     notify_weekly_summary()
+
+
+_db_error_last_sent = {}
+
+def send_database_error_notification(operation: str, error: str, context: str = "") -> bool:
+    """
+    Send Discord alert when database write fails.
+    Rate-limited to prevent spam (max 1 per operation type per 5 minutes).
+    
+    Args:
+        operation: Type of operation (e.g., "trade_log", "decision_log")
+        error: Error message
+        context: Additional context (e.g., symbol, trade details)
+    
+    Returns:
+        True if sent successfully
+    """
+    import time
+    global _db_error_last_sent
+    
+    now = time.time()
+    last_sent = _db_error_last_sent.get(operation, 0)
+    if now - last_sent < 300:
+        return False
+    
+    _db_error_last_sent[operation] = now
+    
+    embed = {
+        "title": "⚠️ Database Write Failed",
+        "color": 0xFFA500,
+        "fields": [
+            {
+                "name": "Operation",
+                "value": operation,
+                "inline": True
+            },
+            {
+                "name": "Error",
+                "value": str(error)[:200],
+                "inline": False
+            }
+        ],
+        "footer": {
+            "text": "Check DATABASE_URL configuration"
+        },
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    if context:
+        embed["fields"].insert(1, {
+            "name": "Context",
+            "value": str(context)[:100],
+            "inline": True
+        })
+    
+    return send_discord_message(embed=embed, force=True)

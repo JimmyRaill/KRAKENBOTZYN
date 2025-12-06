@@ -15,6 +15,23 @@ from contextlib import contextmanager
 
 SQLITE_DB_PATH = Path(__file__).parent / "trading_memory.db"
 
+_discord_db_error_func = None
+
+def _send_db_error_discord(operation: str, error: str, context: str = ""):
+    """Send database error to Discord (lazy import to avoid circular dependency)."""
+    global _discord_db_error_func
+    if _discord_db_error_func is None:
+        try:
+            from discord_notifications import send_database_error_notification
+            _discord_db_error_func = send_database_error_notification
+        except ImportError:
+            _discord_db_error_func = lambda *args, **kwargs: False
+    
+    try:
+        _discord_db_error_func(operation, error, context)
+    except Exception:
+        pass
+
 _pg_pool = None
 _use_postgres = None
 
@@ -297,6 +314,7 @@ def log_trade(
                 return cursor.lastrowid
     except Exception as e:
         print(f"[TELEMETRY-DB] Failed to log trade: {e}")
+        _send_db_error_discord("telemetry_trade", str(e), symbol)
         return None
 
 
