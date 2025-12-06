@@ -34,11 +34,12 @@ def _send_db_error_discord(operation: str, error: str, context: str = ""):
 
 _pg_pool = None
 _use_postgres = None
+_db_error_notified = False
 
 
 def _get_postgres_pool():
     """Get or create PostgreSQL connection pool."""
-    global _pg_pool, _use_postgres
+    global _pg_pool, _use_postgres, _db_error_notified
     
     if _use_postgres is False:
         return None
@@ -52,6 +53,9 @@ def _get_postgres_pool():
             if not database_url:
                 print("[TELEMETRY-DB] No DATABASE_URL, using SQLite fallback")
                 _use_postgres = False
+                if not _db_error_notified:
+                    _db_error_notified = True
+                    _send_db_error_discord("telemetry_db_init", "DATABASE_URL not configured", "Using SQLite fallback")
                 return None
             
             _pg_pool = psycopg2.pool.SimpleConnectionPool(1, 5, database_url)
@@ -60,6 +64,9 @@ def _get_postgres_pool():
         except Exception as e:
             print(f"[TELEMETRY-DB] PostgreSQL unavailable, using SQLite: {e}")
             _use_postgres = False
+            if not _db_error_notified:
+                _db_error_notified = True
+                _send_db_error_discord("telemetry_db_init", str(e), "Connection pool failed")
             return None
     
     return _pg_pool

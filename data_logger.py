@@ -48,9 +48,11 @@ _db_pool = None
 _db_available = None
 
 
+_db_error_notified = False
+
 def _get_db_connection():
     """Get a database connection from the pool."""
-    global _db_pool, _db_available
+    global _db_pool, _db_available, _db_error_notified
     
     if _db_available is False:
         return None
@@ -64,6 +66,9 @@ def _get_db_connection():
             if not database_url:
                 print("[DATA-LOGGER] No DATABASE_URL found, using file-only mode")
                 _db_available = False
+                if not _db_error_notified:
+                    _db_error_notified = True
+                    _send_db_error_discord("db_init", "DATABASE_URL not configured", "Using file-only mode")
                 return None
             
             _db_pool = psycopg2.pool.SimpleConnectionPool(1, 5, database_url)
@@ -72,12 +77,16 @@ def _get_db_connection():
         except Exception as e:
             print(f"[DATA-LOGGER] PostgreSQL unavailable, using file-only mode: {e}")
             _db_available = False
+            if not _db_error_notified:
+                _db_error_notified = True
+                _send_db_error_discord("db_init", str(e), "Connection pool failed")
             return None
     
     try:
         return _db_pool.getconn()
     except Exception as e:
         print(f"[DATA-LOGGER] Failed to get DB connection: {e}")
+        _send_db_error_discord("db_connection", str(e), "Pool exhausted")
         return None
 
 
