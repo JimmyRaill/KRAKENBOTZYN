@@ -25,8 +25,8 @@ class IndicatorConfig:
     
     # ATR settings
     atr_period: int = 14
-    atr_stop_multiplier: float = 3.0  # WIDENED from 2.0 - gives trades room to breathe
-    atr_take_profit_multiplier: float = 4.5  # INCREASED to 4.5 - ensures R:R >= 1.5 (4.5/3.0 = 1.5)
+    atr_stop_multiplier: float = 2.0  # CONSERVATIVE: tighter stop for better R:R
+    atr_take_profit_multiplier: float = 3.0  # CONSERVATIVE: achievable TP target (R:R = 1.5)
     
     # Fallback percentages (when ATR unavailable)
     fallback_stop_pct: float = 0.02  # 2%
@@ -83,9 +83,9 @@ class RiskConfig:
 @dataclass
 class RegimeConfig:
     """Market regime detection thresholds"""
-    # ADX thresholds (AGGRESSIVE: lowered for more trading opportunities)
-    adx_threshold: float = 10.0  # ADX > 10 = trending market (lowered to 10.0 to match observed ADX 10.5-11.8)
-    min_adx: float = 8.0  # ADX < 8 = dead market (was 10)
+    # ADX thresholds (CONSERVATIVE: require real trend strength)
+    adx_threshold: float = 18.0  # ADX > 18 = trending market (CONSERVATIVE: was 10, industry standard is 20-25)
+    min_adx: float = 12.0  # ADX < 12 = dead market (raised from 8)
     
     # Volatility thresholds (AGGRESSIVE: lowered to trade quieter markets)
     min_volatility_pct: float = 0.0005  # 0.05% minimum (was 0.08%)
@@ -146,14 +146,14 @@ class TradingConfig:
     fee_safety_multiplier: float = 1.5     # Required edge = round_trip_fees * this multiplier
     
     # Phase 3B: Regime filter settings (blocks trades in bad conditions)
-    regime_filter_enabled: bool = False    # Default OFF - set REGIME_FILTER_ENABLED=1 to enable
+    regime_filter_enabled: bool = True     # CONSERVATIVE: Default ON - blocks low-volatility/low-volume setups
     regime_min_atr_pct: float = 0.2        # Min ATR as % of price (0.2% = relaxed threshold, was 0.3%)
     regime_atr_warning_pct: float = 0.3    # ATR below this but above min triggers soft warning
     regime_min_volume_usd: float = 10000.0 # Min 24h volume in USD
     regime_trend_required: bool = False    # Require clear trend (ADX above threshold)
     
     # Phase 4: Confidence-based decision engine
-    min_confidence_threshold: float = 0.65   # Minimum confidence to allow any trade
+    min_confidence_threshold: float = 0.75   # CONSERVATIVE: Higher threshold - only take high-conviction trades
     regime_override_confidence: float = 0.75 # Confidence level that can override unfavorable regime
     regime_penalty: float = 0.15             # Confidence penalty for unfavorable regime (instead of hard block)
     breakout_boost: float = 0.10             # Confidence boost for breakout conditions (RSI > 70, ADX > 25, price > SMA20)

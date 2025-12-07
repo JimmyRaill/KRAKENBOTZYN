@@ -919,9 +919,9 @@ class StrategyOrchestrator:
                 if htf.htf_aligned and htf.dominant_trend == 'up':
                     confidence = 0.85
                 
-                # Calculate stops with WIDER ATR multipliers
-                atr_sl_mult = self.config.indicators.atr_stop_multiplier  # Now 3.0
-                atr_tp_mult = self.config.indicators.atr_take_profit_multiplier  # Now 4.0
+                # Calculate stops with ATR multipliers
+                atr_sl_mult = self.config.indicators.atr_stop_multiplier  # 2.0 (conservative)
+                atr_tp_mult = self.config.indicators.atr_take_profit_multiplier  # 3.0 (conservative)
                 stop_loss = price - (atr_sl_mult * atr) if atr else price * 0.97
                 take_profit = price + (atr_tp_mult * atr) if atr else price * 1.06
                 
@@ -1271,8 +1271,8 @@ class StrategyOrchestrator:
             if htf.dominant_trend == 'up':
                 confidence = min(confidence + 0.1, 0.9)
             
-            atr_sl_mult = self.config.indicators.atr_stop_multiplier  # Now 3.0
-            atr_tp_mult = self.config.indicators.atr_take_profit_multiplier  # Now 4.0
+            atr_sl_mult = self.config.indicators.atr_stop_multiplier  # 2.0 (conservative)
+            atr_tp_mult = self.config.indicators.atr_take_profit_multiplier  # 3.0 (conservative)
             
             return TradeSignal(
                 action='long',

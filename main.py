@@ -99,14 +99,32 @@ def send_startup_notification():
     try:
         from discord_notifications import send_notification
         from exchange_manager import get_mode_str
-        from trading_config import get_zin_version
+        from trading_config import get_zin_version, get_config
         
         mode = get_mode_str().upper()
         version = get_zin_version()
+        config = get_config()
         
         # Determine if this is a Reserved VM deployment
         is_deployed = os.getenv("REPLIT_DEPLOYMENT", "") == "1"
         deploy_type = "Reserved VM" if is_deployed else "Development Workspace"
+        
+        # Database connectivity status
+        db_status = "Not Configured"
+        try:
+            db_url = os.getenv("DATABASE_URL")
+            if db_url:
+                try:
+                    import psycopg2
+                    conn = psycopg2.connect(db_url, connect_timeout=5)
+                    conn.close()
+                    db_status = "Connected"
+                except ImportError:
+                    db_status = "Unavailable (psycopg2 not installed)"
+                except Exception as conn_err:
+                    db_status = f"Error: {str(conn_err)[:30]}"
+        except Exception:
+            db_status = "Check Failed"
         
         message = (
             f"🚀 **ZIN STARTUP** 🚀\n"
@@ -114,7 +132,15 @@ def send_startup_notification():
             f"**Version:** {version}\n"
             f"**Mode:** {mode}\n"
             f"**Environment:** {deploy_type}\n"
+            f"**Database:** {db_status}\n"
             f"**Time:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Strategy Config:**\n"
+            f"• Regime Filter: {'ON' if config.regime_filter_enabled else 'OFF'}\n"
+            f"• Confidence Threshold: {config.min_confidence_threshold:.2f}\n"
+            f"• ATR SL Multiplier: {config.indicators.atr_stop_multiplier:.1f}x\n"
+            f"• ATR TP Multiplier: {config.indicators.atr_take_profit_multiplier:.1f}x\n"
+            f"• ADX Threshold: {config.regime.adx_threshold:.1f}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"Autopilot and API server are now running."
         )
