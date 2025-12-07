@@ -1,0 +1,200 @@
+I want to implement a **reliable, end-to-end trading mode switch** for Zin that is controlled by the LIVE/PAPER toggle on my dashboard UI.
+
+Critical requirements (read carefully and do NOT skip anything):
+
+- The dashboard toggle must control the **actual trading mode used by the Reserved VM autopilot**, not just the dev server.
+- When I switch to PAPER:
+  - The VM MUST trade in paper mode (no real funds).
+  - I must get an immediate Discord alert like: "⚪ Zin is now in PAPER mode."
+- When I switch to LIVE:
+  - The VM MUST trade live with real funds.
+  - I must get an immediate Discord alert like: "🔴 Zin is now in LIVE mode."
+- The UI, backend API, and VM must all agree on the **same single source of truth** for the trading mode.
+- Take your time. Do **not** guess or handwave. Every step must point to real files, functions, or logs.
+
+────────────────────
+PHASE 1 – DISCOVERY (NO CHANGES YET)
+────────────────────
+
+1. Find the current dashboard toggle implementation:
+   - Locate the frontend file(s) for the dashboard page shown in the screenshot (Zin logo, Bot Status, Portfolio, Trading Mode card with LIVE / Paper ↔ Live toggle).
+   - Identify:
+     - The React/component (or framework) file that renders the LIVE/PAPER toggle.
+     - What event handler runs when the toggle is clicked.
+     - Any API call or endpoint that’s currently triggered when the toggle changes.
+   - Paste:
+     - The component code for the trading mode card + toggle.
+     - The code that runs on toggle change (including any fetch/axios call).
+
+2. Find how trading mode is represented on the backend/API:
+   - Search the backend (api.py, api_watchdog.py, autopilot.py, backtest_mode.py, etc.) for terms like:
+     - "mode", "live", "paper", "PAPER_MODE", "TRADING_MODE", "is_paper", "is_live".
+   - Identify:
+     - The **single source of truth** (if any) for trading mode (env var, DB, JSON file like heartbeat.json, config object, etc.).
+     - The API endpoint(s) that read or write this value (if they exist).
+   - Paste:
+     - The current type/enum/flag that represents trading mode.
+     - Any endpoint definitions related to trading mode (method, URL, handler function).
+     - Any code that switches between live vs paper clients or credentials.
+
+3. Find how the Reserved VM autopilot decides LIVE vs PAPER:
+   - In autopilot-related files (e.g., autopilot.py, backtest_mode.py, api_watchdog.py, account_state.py), locate where the autopilot:
+     - Initializes the trading client(s).
+     - Chooses between real Kraken account vs paper/sim account.
+   - Paste:
+     - The function where the trading client is created.
+     - The logic/conditions that decide "live" vs "paper" (env var, flag, config, etc.).
+   - Also confirm whether the VM polls some state (e.g. DB or heartbeat.json) to know its current mode.
+
+4. Find Discord notification plumbing:
+   - Search for existing code that sends Discord alerts, e.g. the ones already sending messages like:
+     - "🚀 ZIN STARTUP 🚀"
+     - "Zin Autopilot Started – Mode: LIVE TRADING"
+     - Trade alerts, PnL summaries, DB warnings.
+   - Paste:
+     - The module/function responsible for sending Discord messages.
+     - Any helper(s) that format and send alerts (e.g. discord_notifier.py, alerts.py, etc.).
+
+5. Summary (MANDATORY):
+   - Based ONLY on the code you found, summarize:
+     - Is there currently a working path from the dashboard toggle → backend API → VM mode switch?
+     - Or does the toggle only change UI state without affecting the VM?
+   - Identify the **single source of truth** we should use for trading mode going forward (e.g. DB row, JSON file, or env + config).
+
+Do NOT modify any code in Phase 1. Just collect and paste the relevant snippets and a precise summary.
+
+────────────────────
+PHASE 2 – DESIGN A ROBUST MODE TOGGLE FLOW
+────────────────────
+
+Based on what you found, design a clean, explicit flow:
+
+- **Single Source of Truth**
+  - Choose where trading mode will live (e.g. a `trading_mode` field in a DB table, a small config JSON, or a settings record).
+  - This source must be readable/writable by:
+    - The dashboard backend endpoint.
+    - The VM/autopilot process.
+
+- **Mode Enum/Type**
+  - Define something explicit, not just booleans:
+    - e.g. `TradingMode = Enum('LIVE', 'PAPER')` or constants `MODE_LIVE = "live"`, `MODE_PAPER = "paper"`.
+
+- **API Contract**
+  - Define an authenticated endpoint, for example:
+    - `GET /api/trading-mode` → returns `{ mode: "live" | "paper" }`.
+    - `POST /api/trading-mode` with `{ mode: "live" | "paper" }` → updates the mode in the source of truth and triggers Discord notification.
+  - The POST handler must:
+    - Validate the new mode.
+    - Update the stored mode.
+    - Log the change server-side.
+    - Trigger a Discord alert:
+      - LIVE: "🔴 Zin is now in LIVE mode."
+      - PAPER: "⚪ Zin is now in PAPER mode."
+
+- **VM / Autopilot Integration**
+  - Decide how the VM picks up mode changes:
+    - Either:
+      - Polls the source of truth periodically (e.g. every N seconds), OR
+      - Reads mode at startup and is restarted when the mode changes.
+  - For now, a polling mechanism is fine, as long as it is reliable.
+  - The trading engine must:
+    - Use the active mode to decide which account/client/keys to use.
+    - Never place real trades when mode == PAPER.
+    - Never place paper trades when mode == LIVE.
+
+Explain this design clearly, referencing the actual modules and patterns in the existing codebase.
+
+────────────────────
+PHASE 3 – IMPLEMENTATION
+────────────────────
+
+Once the design is written and looks reasonable, implement it step-by-step.
+
+1. Mode enum and single source of truth:
+   - Implement a clear `TradingMode` enum or constants in a central config/util module.
+   - Implement a small abstraction, e.g. `get_trading_mode()` and `set_trading_mode(mode: TradingMode)` that:
+     - Read/write the mode from the chosen source (DB, JSON, etc.).
+     - Validate values.
+     - Log changes.
+
+2. Backend API endpoints:
+   - Implement:
+     - `GET /api/trading-mode`
+     - `POST /api/trading-mode`
+   - Make sure:
+     - They use `get_trading_mode()` / `set_trading_mode()` (no duplicate logic).
+     - They are protected the same way other sensitive endpoints are (auth).
+     - `POST` triggers a Discord notification via the existing alert/notification system.
+
+3. Discord notifications:
+   - Using the existing Discord alert helper(s), add two new alert types:
+     - `mode_live_changed` → "🔴 Zin is now in LIVE mode."
+     - `mode_paper_changed` → "⚪ Zin is now in PAPER mode."
+   - Ensure these alerts fire **only when the mode actually changes**, not on every POST of the same mode.
+   - Confirm these notifications arrive in the same `#alerts` channel as the other bot alerts.
+
+4. Frontend wiring:
+   - Update the trading mode card / toggle component to:
+     - On initial load: call `GET /api/trading-mode` and set the toggle accordingly.
+     - On toggle change:
+       - Optimistically update UI but also send `POST /api/trading-mode` with the new mode.
+       - Handle errors (e.g. revert toggle and show error if POST fails).
+   - Make sure the text/indicator (LIVE vs PAPER, icon/color) corresponds exactly to the mode returned by the API.
+
+5. VM/autopilot integration:
+   - In the autopilot / trading engine process:
+     - Replace any hardcoded mode logic with calls to `get_trading_mode()` (or equivalent).
+     - If using env vars for LIVE/PAPER selection today, clearly document how mode will now be controlled by the central mode source.
+   - Add a periodic task in the VM (if not already present) that:
+     - Polls the current mode (e.g. every 10–30 seconds).
+     - Updates its internal state/client if mode changes.
+     - Logs a clear message: e.g. `"[MODE] Switched to LIVE"` / `"[MODE] Switched to PAPER"`.
+
+6. Safety:
+   - Ensure that:
+     - In PAPER mode, **no live Kraken orders** can be submitted (e.g. guard inside the order placement function that checks mode).
+     - In LIVE mode, the paper/backtest engine is not used.
+   - Add assertions or explicit checks in the lowest-level order execution module so that mode mismatches are impossible or at least loudly logged.
+
+────────────────────
+PHASE 4 – VERIFICATION & TESTING (MANDATORY)
+────────────────────
+
+Implement explicit tests / checks:
+
+1. Unit / integration style tests (if test infra exists):
+   - Test `set_trading_mode("paper")` then `get_trading_mode()` returns PAPER.
+   - Test `POST /api/trading-mode` with "live" and "paper":
+     - Correct status code.
+     - Stored mode updated.
+     - Discord alert helper called with the right message.
+
+2. Manual end-to-end scenario (describe steps clearly):
+   - Scenario A: Switch to PAPER
+     - Start VM / autopilot.
+     - Confirm in logs current mode (e.g. "Starting in LIVE mode").
+     - Use the dashboard toggle to switch to PAPER.
+     - Verify:
+       - Discord receives "⚪ Zin is now in PAPER mode."
+       - VM logs a mode change: `"[MODE] Switched to PAPER"`.
+       - New trades after the switch use the paper client / no live orders on the real account.
+
+   - Scenario B: Switch to LIVE
+     - From PAPER mode, switch back to LIVE using the dashboard toggle.
+     - Verify:
+       - Discord receives "🔴 Zin is now in LIVE mode."
+       - VM logs `"[MODE] Switched to LIVE"`.
+       - New trades after this point use the live client.
+
+3. Final summary:
+   - Explain exactly how:
+     - Dashboard toggle → API → single source of truth → VM → Discord
+     now works as a chain.
+   - Point me to:
+     - The frontend file for the toggle.
+     - The backend endpoints.
+     - The mode storage implementation.
+     - The autopilot logic that chooses mode.
+     - The functions that send the Discord "mode changed" alerts.
+
+Do not skip any phase. Work methodically, and always paste the relevant code snippets you are modifying so I can review them if needed.

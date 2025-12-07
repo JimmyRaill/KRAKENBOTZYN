@@ -1776,15 +1776,22 @@ def set_trading_mode_endpoint(request: TradingModeRequest):
     Set trading mode (paper or live).
     CRITICAL: Updates .env file FIRST, then runtime exchange manager.
     Thread-safe with lock to prevent concurrent mode changes.
+    Sends Discord notification when mode actually changes.
     """
     with _mode_lock:
         try:
+            from exchange_manager import set_trading_mode, get_mode_str, is_paper_mode
+            from discord_notifications import send_notification
+            from datetime import datetime, timezone
+            
             mode = request.mode.lower().strip()
             
             if mode not in ("paper", "live"):
                 return {"status": "error", "message": f"Invalid mode: {mode}. Must be 'paper' or 'live'."}
             
             paper_mode = (mode == "paper")
+            old_paper_mode = is_paper_mode()
+            mode_actually_changed = (paper_mode != old_paper_mode)
             
             # CRITICAL: Update .env file FIRST before setting mode
             env_path = Path(__file__).with_name(".env")
@@ -1807,11 +1814,36 @@ def set_trading_mode_endpoint(request: TradingModeRequest):
                 return {"status": "error", "message": ".env file not found"}
             
             # NOW update exchange manager (after .env is persisted)
-            from exchange_manager import set_trading_mode, get_mode_str
             set_trading_mode(paper_mode)
             
             new_mode = get_mode_str()
-            warning = "" if paper_mode else " ⚠️ REAL MONEY AT RISK! Restart autopilot to apply."
+            warning = "" if paper_mode else " ⚠️ REAL MONEY AT RISK!"
+            
+            # Send Discord notification ONLY if mode actually changed
+            if mode_actually_changed:
+                timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+                if paper_mode:
+                    discord_msg = (
+                        f"⚪ **MODE SWITCH: PAPER** ⚪\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Zin is now in **PAPER** mode.\n"
+                        f"No real trades will be executed.\n"
+                        f"**Time:** {timestamp}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━"
+                    )
+                else:
+                    discord_msg = (
+                        f"🔴 **MODE SWITCH: LIVE** 🔴\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚠️ Zin is now in **LIVE** mode!\n"
+                        f"Real money is at risk.\n"
+                        f"**Time:** {timestamp}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━"
+                    )
+                try:
+                    send_notification(discord_msg)
+                except Exception as discord_err:
+                    print(f"[MODE-SWITCH] Discord notification failed: {discord_err}")
             
             return {
                 "status": "success",
@@ -1819,7 +1851,8 @@ def set_trading_mode_endpoint(request: TradingModeRequest):
                 "mode": new_mode,
                 "is_paper": paper_mode,
                 "is_live": not paper_mode,
-                "note": "Autopilot must be restarted for mode change to take full effect"
+                "mode_changed": mode_actually_changed,
+                "note": "Mode change takes effect immediately for new trades"
             }
         except Exception as e:
             return {"status": "error", "message": str(e)}
